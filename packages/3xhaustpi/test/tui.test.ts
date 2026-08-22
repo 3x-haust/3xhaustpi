@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	bindTuiSigint,
 	cellWidth,
 	footerSegmentOrder,
 	formatHelpCommandLines,
@@ -10,6 +11,7 @@ import {
 	formatTranscriptEntry,
 	formatTuiActivityLine,
 	formatTuiStatusLine,
+	isTuiCtrlC,
 	layoutTuiFrame,
 	orderModelsForPicker,
 	parseTuiCommand,
@@ -464,13 +466,14 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output.join("\n")).not.toMatch(/[├└]|^\s*(?:You|3xhaust)\s*$/gmu);
 	});
 
-	it("collapses adjacent wide conversation margins to one row", () => {
+	it("preserves prompt padding while collapsing adjacent card margins", () => {
 		// Given
-		const output = fitTranscriptCards(
+		const rendered = fitTranscriptCards(
 			["You 안녕", "3xhaust 안녕하세요.", "You 안녕?", "3xhaust 반갑습니다."],
 			80,
 			20,
-		).map((line) => stripAnsi(line));
+		);
+		const output = rendered.map((line) => stripAnsi(line));
 
 		// When
 		const firstPrompt = output.findIndex((line) => line.includes("안녕"));
@@ -479,9 +482,10 @@ describe("Pi-native event-driven TUI renderer", () => {
 		const secondAnswer = output.findIndex((line) => line.includes("반갑습니다."));
 
 		// Then
-		expect(firstAnswer - firstPrompt).toBe(2);
+		expect(firstAnswer - firstPrompt).toBe(3);
 		expect(secondPrompt - firstAnswer).toBe(2);
-		expect(secondAnswer - secondPrompt).toBe(2);
+		expect(secondAnswer - secondPrompt).toBe(3);
+		expect(rendered[secondPrompt - 1]).toContain("\u001b[48;5;238m");
 	});
 
 	it("places pre-response work immediately before final assistant prose", () => {
@@ -722,8 +726,33 @@ describe("Pi-native event-driven TUI renderer", () => {
 	});
 
 	it("exits on one empty-composer Ctrl+C even while runtime cleanup remains active", () => {
+		expect(isTuiCtrlC("\u0003")).toBe(true);
+		expect(isTuiCtrlC("\u001b[99;5u")).toBe(true);
+		expect(isTuiCtrlC("\u001b[27;5;99~")).toBe(true);
+		expect(isTuiCtrlC("c")).toBe(false);
 		expect(resolveCtrlCAction("draft")).toBe("clear-input");
 		expect(resolveCtrlCAction("")).toBe("exit");
+	});
+
+	it("routes terminal SIGINT through the same clean TUI exit", () => {
+		let listener: (() => void) | undefined;
+		const target = {
+			on: (_event: "SIGINT", handler: () => void) => {
+				listener = handler;
+			},
+			removeListener: (_event: "SIGINT", handler: () => void) => {
+				if (listener === handler) listener = undefined;
+			},
+		};
+		let exits = 0;
+		const unbind = bindTuiSigint(target, () => {
+			exits += 1;
+		});
+
+		listener?.();
+		expect(exits).toBe(1);
+		unbind();
+		expect(listener).toBeUndefined();
 	});
 
 	it("renders the target prompt band, answer flow, title, activity, and composer", () => {
@@ -850,9 +879,10 @@ describe("Pi-native event-driven TUI renderer", () => {
 		const user = lines.findIndex((line) => line.includes("안녕") && !line.includes("안녕하세요"));
 		const assistant = lines.findIndex((line) => line.includes("안녕하세요"));
 		expect(user).toBeGreaterThan(0);
-		expect(assistant - user).toBe(2);
+		expect(assistant - user).toBe(3);
 		expect(lines[user - 1]?.trim()).toBe("");
 		expect(lines[user + 1]?.trim()).toBe("");
+		expect(lines[user + 2]?.trim()).toBe("");
 		expect(lines[assistant - 1]?.trim()).toBe("");
 		expect(lines[assistant + 1]?.trim()).toBe("");
 	});
@@ -867,9 +897,10 @@ describe("Pi-native event-driven TUI renderer", () => {
 		const thought = lines.findIndex((line) => line.includes("Thought:"));
 
 		expect(prompt).toBeGreaterThan(0);
-		expect(thought - prompt).toBe(2);
+		expect(thought - prompt).toBe(3);
 		expect(lines[prompt - 1]?.trim()).toBe("");
 		expect(lines[prompt + 1]?.trim()).toBe("");
+		expect(lines[prompt + 2]?.trim()).toBe("");
 	});
 
 	it("keeps one row between work and answer bodies at every supported width", () => {

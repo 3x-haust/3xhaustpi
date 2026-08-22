@@ -5,6 +5,7 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Editor,
+	matchesKey,
 	ProcessTerminal,
 	type SlashCommand,
 	Text,
@@ -136,6 +137,20 @@ export interface TuiDesktopHost {
 		action: DesktopComputerAction,
 		options?: { readonly signal?: AbortSignal },
 	): Promise<DesktopActionResult>;
+}
+
+export interface TuiSigintTarget {
+	on(event: "SIGINT", listener: () => void): unknown;
+	removeListener(event: "SIGINT", listener: () => void): unknown;
+}
+
+export function bindTuiSigint(target: TuiSigintTarget, requestExit: () => void): () => void {
+	target.on("SIGINT", requestExit);
+	return () => target.removeListener("SIGINT", requestExit);
+}
+
+export function isTuiCtrlC(value: string): boolean {
+	return matchesKey(value, "ctrl+c");
 }
 
 function compactTokens(value: number): string {
@@ -1442,7 +1457,7 @@ export async function runTui(input: {
 		drainQueue();
 	};
 	ui.addInputListener((value) => {
-		if (value === "\u0003") {
+		if (isTuiCtrlC(value)) {
 			const action = resolveCtrlCAction(editor.getText());
 			if (action === "clear-input") {
 				editor.setText("");
@@ -1471,9 +1486,14 @@ export async function runTui(input: {
 		return undefined;
 	});
 	ui.setFocus(editor);
-	ui.start();
-	drainQueue();
-	await closed;
-	if (workAnimationTimer) clearInterval(workAnimationTimer);
-	database.close();
+	const unbindSigint = bindTuiSigint(process, requestExit);
+	try {
+		ui.start();
+		drainQueue();
+		await closed;
+	} finally {
+		unbindSigint();
+		if (workAnimationTimer) clearInterval(workAnimationTimer);
+		database.close();
+	}
 }

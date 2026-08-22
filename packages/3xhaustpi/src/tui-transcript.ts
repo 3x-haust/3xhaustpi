@@ -154,7 +154,7 @@ function messageCard(value: string, columns: number): string[] {
 		const rows = physicalLines
 			.flatMap((physical) => wrapPlainLine(physical, contentWidth))
 			.map((line) => promptSurfaceLine(`${bodyIndent}${line}`, columns));
-		if (columns >= 40) return [promptSurfaceLine("", columns), ...rows, ""];
+		if (columns >= 40) return [promptSurfaceLine("", columns), ...rows, promptSurfaceLine("", columns), ""];
 		return rows;
 	}
 	if (role === "threeXhaust") {
@@ -269,7 +269,7 @@ function transcriptCards(entries: readonly string[], columns: number): string[][
 			stripAnsi(previousGap).trim().length === 0 &&
 			stripAnsi(nextGap).trim().length === 0
 		) {
-			if (nextGap === "") previousCard.pop();
+			if (template.role === "you" || nextGap === "") previousCard.pop();
 			else renderedCard.shift();
 		}
 		cards.push(renderedCard);

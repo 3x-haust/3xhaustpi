@@ -144,7 +144,7 @@ or transcript budget.
 | Surface | Wide/full | Compact | Minimal/degraded |
 | --- | --- | --- | --- |
 | title | product, project, model | product and project | product |
-| user prompt | empty tint row, content, neutral separator row | empty tint row, content, neutral separator row | content row only |
+| user prompt | empty tint row, content, empty tint row, neutral separator row | empty tint row, content, empty tint row, neutral separator row | content row only |
 | thought | duration and work summary | duration | hide before answer |
 | answer | readable capped measure | terminal measure | terminal measure |
 | metrics | throughput, cache, duration | throughput, cache, duration when they fit | duration |
@@ -168,15 +168,15 @@ or transcript budget.
 - Submitted prompts are full-width `prompt-surface` bands. The surface, not a
   speaker name, identifies the user role. `You`, `User`, `3xhaust`, and generic
   assistant labels never render.
-- Wide and compact prompt bands use an empty tinted row above the prompt and a
-  neutral terminal-background separator below it. Minimal and degraded modes
-  may collapse these rows before content.
+- Wide and compact prompt bands use symmetric empty tinted rows above and below
+  the prompt, followed by one neutral terminal-background separator. Minimal
+  and degraded modes may collapse these rows before content.
 - Wide and compact assistant output uses one terminal-background row above and
   below bright answer prose. Minimal output may collapse the leading row.
-- Adjacent prompt/answer margins collapse to one visible row; conversation
-  bodies never accumulate a two-row gap.
-- When a tinted prompt margin meets pending work or an answer, collapse the
-  tinted row and keep one neutral terminal-background row as the separator.
+- Prompt bottom padding remains tinted and is followed by one neutral separator
+  before pending work or an answer.
+- Every repeated prompt preserves its tinted top padding; the preceding
+  assistant relinquishes its neutral trailing margin instead.
 - Prompt, durable work, answer, and response telemetry bodies use the same
   one-row semantic boundary. Work rows never touch answer prose, and telemetry
   never touches the final answer body.
