@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	configuredPythonConcurrency,
+	parseDurableCodingTaskCheckpoint,
 	providerCacheSessionId,
 	resumeCodingTask,
 	runCodingTask,
@@ -623,6 +624,98 @@ describe("standalone runtime foundations", () => {
 		expect(recovered.findResumeCheckpoint()?.outboxState).toBe("indeterminate");
 		expect(() => recovered.claimResumeCheckpoint()).toThrow(/indeterminate.*blocked/iu);
 		recovered.close();
+	});
+
+	it("turns an explicit indeterminate resume into an auditable fresh restart", () => {
+		const directory = temporaryDirectory();
+		const databasePath = join(directory, "state.sqlite");
+		const state = new ThreeXhaustState(databasePath);
+		state.beginRun({
+			projectId: "prj_explicit_restart",
+			projectPath: directory,
+			sessionId: "session_explicit_restart",
+			requestId: "req_explicit_restart",
+			fingerprint: "digest_explicit_restart",
+			payload: '{"objective":"resume explicitly"}',
+			checkpoint:
+				'{"version":1,"phase":"provider-ready","projectRoot":"fixture","objective":"resume explicitly","approve":false,"provider":"openai-codex","model":"gpt-5.6-terra","sessionId":"session_explicit_restart","requestId":"req_explicit_restart","fingerprint":"digest_explicit_restart","snapshotSha256":"fixture","generation":1}',
+			generation: 1,
+		});
+		state.markProviderDispatching("req_explicit_restart", 1);
+		state.close();
+
+		const recovered = new ThreeXhaustState(databasePath);
+		recovered.recoverInterruptedRuns();
+		expect(recovered.claimExplicitResume()).toMatchObject({
+			kind: "restart",
+			checkpoint: {
+				sessionId: "session_explicit_restart",
+				requestId: "req_explicit_restart",
+				outboxState: "indeterminate",
+			},
+		});
+		expect(recovered.findResumeCheckpoint()).toBeUndefined();
+		expect(recovered.inspectWorkspace(directory).requests[0]).toMatchObject({
+			id: "req_explicit_restart",
+			status: "indeterminate",
+		});
+		recovered.close();
+	});
+
+	it("reads the observationIds array written by follow-up checkpoints", () => {
+		const checkpoint: ResumeCheckpoint = {
+			sessionId: "session_followup_schema",
+			projectPath: "fixture",
+			requestId: "request_followup_schema",
+			requestPayload: '{"objective":"resume follow-up"}',
+			fingerprint: "fingerprint_followup_schema",
+			generation: 2,
+			outboxState: "indeterminate",
+			updatedAt: "2026-08-22T00:00:00.000Z",
+			payload: JSON.stringify({
+				version: 1,
+				phase: "followup-ready",
+				projectRoot: "fixture",
+				objective: "resume follow-up",
+				approve: false,
+				provider: "openai-codex",
+				model: "gpt-5.6-terra",
+				sessionId: "session_followup_schema",
+				requestId: "request_followup_schema",
+				fingerprint: "fingerprint_followup_schema",
+				snapshotSha256: "snapshot_followup_schema",
+				generation: 2,
+				result: {
+					output: {
+						protocolVersion: 2,
+						kind: "intent",
+						payload: {
+							kind: "inspect",
+							objective: "read package name",
+							target: { kind: "documents", documentIds: ["doc_package"], hint: "name" },
+							evidenceGoals: ["package name"],
+							constraints: [],
+							doneWhen: "package name is known",
+						},
+					},
+					usage: { input: 1, output: 1, cacheRead: 0 },
+				},
+				observationIds: ["obs_package_name"],
+			}),
+		};
+
+		expect(parseDurableCodingTaskCheckpoint(checkpoint, { explicitRestart: true }).observationIds).toEqual([
+			"obs_package_name",
+		]);
+		const legacyPayload = JSON.parse(checkpoint.payload) as Record<string, unknown>;
+		delete legacyPayload.observationIds;
+		legacyPayload.observationId = "obs_legacy_package_name";
+		expect(
+			parseDurableCodingTaskCheckpoint(
+				{ ...checkpoint, payload: JSON.stringify(legacyPayload) },
+				{ explicitRestart: true },
+			).observationIds,
+		).toEqual(["obs_legacy_package_name"]);
 	});
 
 	it("links one content-addressed observation to repeated independent sessions", () => {

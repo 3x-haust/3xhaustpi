@@ -302,7 +302,7 @@ interface DurableCodingTaskCheckpoint {
 	readonly generation: number;
 	readonly result?: PersistedSemanticResult;
 	readonly finalResult?: PersistedSemanticResult;
-	readonly observationId?: string;
+	readonly observationIds?: readonly string[];
 }
 
 interface PersistedSemanticResult {
@@ -311,7 +311,10 @@ interface PersistedSemanticResult {
 	readonly usage: CodingTaskUsage;
 }
 
-function parseDurableCodingTaskCheckpoint(checkpoint: ResumeCheckpoint): DurableCodingTaskCheckpoint {
+export function parseDurableCodingTaskCheckpoint(
+	checkpoint: ResumeCheckpoint,
+	options: { readonly explicitRestart?: boolean } = {},
+): DurableCodingTaskCheckpoint {
 	const candidate = JSON.parse(checkpoint.payload) as Partial<DurableCodingTaskCheckpoint>;
 	if (
 		candidate.version !== 1 ||
@@ -345,8 +348,26 @@ function parseDurableCodingTaskCheckpoint(checkpoint: ResumeCheckpoint): Durable
 	) {
 		throw new Error("Durable coding checkpoint identity does not match the state database");
 	}
+	const legacyObservationId = (candidate as { readonly observationId?: unknown }).observationId;
+	if (
+		candidate.observationIds !== undefined &&
+		(!Array.isArray(candidate.observationIds) ||
+			candidate.observationIds.length === 0 ||
+			candidate.observationIds.some((observationId) => typeof observationId !== "string" || !observationId))
+	) {
+		throw new Error("Follow-up checkpoint has invalid durable observations");
+	}
+	const observationIds =
+		candidate.observationIds ??
+		(typeof legacyObservationId === "string" && legacyObservationId ? [legacyObservationId] : undefined);
 	const ready = candidate.phase === "provider-ready" || candidate.phase === "followup-ready";
-	if ((ready && checkpoint.outboxState !== "queued") || (!ready && checkpoint.outboxState !== "settled")) {
+	if (options.explicitRestart && checkpoint.outboxState !== "indeterminate") {
+		throw new Error("Explicit restart requires an indeterminate provider receipt");
+	}
+	if (
+		!options.explicitRestart &&
+		((ready && checkpoint.outboxState !== "queued") || (!ready && checkpoint.outboxState !== "settled"))
+	) {
 		throw new Error(`Checkpoint provider state is ${checkpoint.outboxState}; automatic replay is blocked`);
 	}
 	const result = candidate.result
@@ -368,7 +389,7 @@ function parseDurableCodingTaskCheckpoint(checkpoint: ResumeCheckpoint): Durable
 		: undefined;
 	if (
 		(candidate.phase === "followup-ready" || candidate.phase === "followup-settled") &&
-		(!result || typeof candidate.observationId !== "string")
+		(!result || !observationIds)
 	) {
 		throw new Error("Follow-up checkpoint is missing its durable observation");
 	}
@@ -388,6 +409,7 @@ function parseDurableCodingTaskCheckpoint(checkpoint: ResumeCheckpoint): Durable
 		...(candidate as DurableCodingTaskCheckpoint),
 		...(result ? { result } : {}),
 		...(finalResult ? { finalResult } : {}),
+		...(observationIds ? { observationIds } : {}),
 	};
 }
 
@@ -954,8 +976,8 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 			observationDigests: [],
 		});
 		let finalResult: PersistedSemanticResult = first;
-		let observationId = recovered?.observationId;
-		const observationIds: string[] = recovered?.observationId ? [recovered.observationId] : [];
+		const observationIds: string[] = [...(recovered?.observationIds ?? [])];
+		let observationId = observationIds[0];
 		let checkpointGeneration = recovered?.generation ?? generation;
 		if (decision.kind === "readPlan" && decision.invocations.length >= 1) {
 			// Bounded parallel tool execution: every planned read capability runs
@@ -1231,18 +1253,22 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 
 export async function resumeCodingTask(input: ResumeCodingTaskInput): Promise<CodingTaskResult | undefined> {
 	const state = new ThreeXhaustState(input.statePath);
-	let checkpoint: ResumeCheckpoint | undefined;
+	let claim: ReturnType<ThreeXhaustState["claimExplicitResume"]>;
 	try {
 		state.recoverInterruptedRuns();
-		checkpoint = state.claimResumeCheckpoint(input.sessionId, input.projectRoot);
+		claim = state.claimExplicitResume(input.sessionId, input.projectRoot);
 	} finally {
 		state.close();
 	}
-	if (!checkpoint) return undefined;
+	if (!claim) return undefined;
+	const checkpoint = claim.checkpoint;
+	const restarted =
+		claim.kind === "restart" ? parseDurableCodingTaskCheckpoint(checkpoint, { explicitRestart: true }) : undefined;
 	return runCodingTask({
-		projectRoot: checkpoint.projectPath,
-		objective: "",
+		projectRoot: restarted?.projectRoot ?? checkpoint.projectPath,
+		objective: restarted?.objective ?? "",
 		approve: input.approve,
+		...(restarted ? { provider: restarted.provider, model: restarted.model } : {}),
 		...(input.statePath ? { statePath: input.statePath } : {}),
 		...(input.signal ? { signal: input.signal } : {}),
 		...(input.onEvent ? { onEvent: input.onEvent } : {}),
@@ -1251,6 +1277,6 @@ export async function resumeCodingTask(input: ResumeCodingTaskInput): Promise<Co
 		...(input.strict ? { strict: true } : {}),
 		...(input.preserveProviderSession ? { preserveProviderSession: true } : {}),
 		...(input.resources ? { resources: input.resources } : {}),
-		resumeCheckpoint: checkpoint,
+		...(claim.kind === "checkpoint" ? { resumeCheckpoint: checkpoint } : {}),
 	});
 }

@@ -388,25 +388,13 @@ async function doctor(project: string): Promise<void> {
 
 async function run(command: Extract<ThreeXhaustCommand, { readonly kind: "run" }>, project: string): Promise<void> {
 	if (command.resume) {
-		const checkpoint = (() => {
-			const state = new ThreeXhaustState();
-			try {
-				state.recoverInterruptedRuns();
-				const claimed = state.claimResumeCheckpoint(undefined, command.project ? project : undefined);
-				if (!claimed) throw new Error(`No durable ${PRODUCT_DISPLAY_NAME} checkpoint is available to resume.`);
-				return claimed;
-			} finally {
-				state.close();
-			}
-		})();
-		await runCodingTask({
-			projectRoot: checkpoint.projectPath,
-			objective: "",
+		const resumed = await resumeCodingTask({
 			approve: command.approve,
-			resumeCheckpoint: checkpoint,
+			...(command.project ? { projectRoot: project } : {}),
 			onEvent: printCodingTaskEvent,
 			resources: { enabled: true, allowProjectHooks: command.allowProjectHooks },
 		});
+		if (!resumed) throw new Error(`No durable ${PRODUCT_DISPLAY_NAME} checkpoint is available to resume.`);
 		return;
 	}
 	const requestId = `req_${randomUUID()}`;

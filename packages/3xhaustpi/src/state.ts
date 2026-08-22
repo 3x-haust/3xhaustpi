@@ -15,6 +15,10 @@ export interface ResumeCheckpoint {
 	readonly updatedAt: string;
 }
 
+export type ExplicitResumeClaim =
+	| { readonly kind: "checkpoint"; readonly checkpoint: ResumeCheckpoint }
+	| { readonly kind: "restart"; readonly checkpoint: ResumeCheckpoint };
+
 export interface BeginRunInput {
 	readonly projectId: string;
 	readonly projectPath: string;
@@ -503,6 +507,7 @@ export class ThreeXhaustState {
 				JOIN request_queue ON request_queue.session_id = chats.session_id
 				JOIN provider_outbox ON provider_outbox.request_id = request_queue.request_id
 				WHERE chats.status IN ('paused', 'queued', 'failed')
+					AND request_queue.status <> 'indeterminate'
 					${sessionId ? "AND chats.session_id = ?" : ""}
 					${projectPath ? "AND projects.canonical_path = ?" : ""}
 				ORDER BY checkpoints.updated_at DESC
@@ -552,21 +557,61 @@ export class ThreeXhaustState {
 			if (checkpoint.outboxState !== "queued" && checkpoint.outboxState !== "settled") {
 				throw new Error(`Provider outbox is ${checkpoint.outboxState}; resume is not safe`);
 			}
-			const claimed = this.#database
-				.prepare(
-					"UPDATE chats SET status = 'running', updated_at = ? WHERE session_id = ? AND status IN ('paused', 'queued', 'failed')",
-				)
-				.run(new Date().toISOString(), checkpoint.sessionId);
-			if (claimed.changes !== 1) throw new Error("Durable checkpoint was claimed by another runtime");
-			this.#database
-				.prepare("UPDATE request_queue SET status = 'running' WHERE request_id = ?")
-				.run(checkpoint.requestId);
+			this.#claimCheckpoint(checkpoint);
 			this.#database.exec("COMMIT");
 			return checkpoint;
 		} catch (error) {
 			this.#database.exec("ROLLBACK");
 			throw error;
 		}
+	}
+
+	claimExplicitResume(sessionId?: string, projectPath?: string): ExplicitResumeClaim | undefined {
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			const checkpoint = this.findResumeCheckpoint(sessionId, projectPath);
+			if (!checkpoint) {
+				this.#database.exec("COMMIT");
+				return undefined;
+			}
+			if (checkpoint.outboxState === "indeterminate") {
+				const request = this.#database
+					.prepare(
+						"UPDATE request_queue SET status = 'indeterminate' WHERE request_id = ? AND status IN ('queued', 'running', 'failed')",
+					)
+					.run(checkpoint.requestId);
+				if (request.changes !== 1) throw new Error("Indeterminate provider request could not be retired");
+				const chat = this.#database
+					.prepare(
+						"UPDATE chats SET status = 'failed', updated_at = ? WHERE session_id = ? AND status IN ('paused', 'queued', 'failed')",
+					)
+					.run(new Date().toISOString(), checkpoint.sessionId);
+				if (chat.changes !== 1) throw new Error("Indeterminate provider session could not be retired");
+				this.#database.exec("COMMIT");
+				return { kind: "restart", checkpoint };
+			}
+			if (checkpoint.outboxState !== "queued" && checkpoint.outboxState !== "settled") {
+				throw new Error(`Provider outbox is ${checkpoint.outboxState}; resume is not safe`);
+			}
+			this.#claimCheckpoint(checkpoint);
+			this.#database.exec("COMMIT");
+			return { kind: "checkpoint", checkpoint };
+		} catch (error) {
+			this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	#claimCheckpoint(checkpoint: ResumeCheckpoint): void {
+		const claimed = this.#database
+			.prepare(
+				"UPDATE chats SET status = 'running', updated_at = ? WHERE session_id = ? AND status IN ('paused', 'queued', 'failed')",
+			)
+			.run(new Date().toISOString(), checkpoint.sessionId);
+		if (claimed.changes !== 1) throw new Error("Durable checkpoint was claimed by another runtime");
+		this.#database
+			.prepare("UPDATE request_queue SET status = 'running' WHERE request_id = ?")
+			.run(checkpoint.requestId);
 	}
 
 	inspectWorkspace(projectPath: string): WorkspaceSnapshot {
