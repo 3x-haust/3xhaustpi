@@ -1,7 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ASSISTANT_DISPLAY_NAME } from "../src/product-identity.ts";
 import { stripAnsi } from "../src/tui-text.ts";
 import { AssistantTranscriptFlow, fitTranscriptCards, formatSubmittedPromptTurn } from "../src/tui-transcript.ts";
+
+let inheritedNoColor: string | undefined;
+let inheritedTerm: string | undefined;
+
+beforeEach(() => {
+	inheritedNoColor = process.env.NO_COLOR;
+	inheritedTerm = process.env.TERM;
+	delete process.env.NO_COLOR;
+	process.env.TERM = "xterm-256color";
+});
+
+afterEach(() => {
+	if (inheritedNoColor === undefined) delete process.env.NO_COLOR;
+	else process.env.NO_COLOR = inheritedNoColor;
+	if (inheritedTerm === undefined) delete process.env.TERM;
+	else process.env.TERM = inheritedTerm;
+});
 
 function visibleLines(entries: readonly string[], columns = 72, budget = 24): string[] {
 	return fitTranscriptCards(entries, columns, budget).map((line) => stripAnsi(line).trim());

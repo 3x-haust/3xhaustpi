@@ -2,10 +2,9 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CliArgumentError, parseCliArgs } from "./args.ts";
+import { formatCliError } from "./cli-error.ts";
 import { PRODUCT_DISPLAY_NAME } from "./product-identity.ts";
 
-const RED = "\u001b[38;5;203m";
-const RESET = "\u001b[0m";
 const directory = dirname(fileURLToPath(import.meta.url));
 const fullCliPath = join(directory, "cli-full.js");
 const tuiCliPath = join(directory, "cli-tui.js");
@@ -43,6 +42,6 @@ try {
 } catch (cause) {
 	const message = cause instanceof Error ? cause.message : String(cause);
 	const prefix = cause instanceof CliArgumentError ? "Usage error" : PRODUCT_DISPLAY_NAME;
-	console.error(`${RED}${prefix}: ${message}${RESET}`);
+	console.error(formatCliError(prefix, message, process.env.NO_COLOR === undefined && process.env.TERM !== "dumb"));
 	process.exitCode = 2;
 }

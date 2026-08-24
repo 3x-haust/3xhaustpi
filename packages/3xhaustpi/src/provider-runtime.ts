@@ -1,9 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
 import type {
 	Api,
-	AuthEvent,
-	AuthPrompt,
 	Credential,
 	CredentialInfo,
 	CredentialStore,
@@ -14,6 +10,16 @@ import type {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { FileCredentialStore, SystemCredentialStore, systemCredentialStoreName } from "./credential-store.ts";
 import { ACTIVE_KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE, resolveAuthPath } from "./identity.ts";
+import { answerAuthPrompt, notifyAuth } from "./provider-auth-prompt.ts";
+import { sanitizeTerminalText } from "./terminal-sanitizer.ts";
+
+export {
+	type AuthPromptInput,
+	type AuthPromptQuestionOptions,
+	type AuthPromptTerminal,
+	answerAuthPrompt,
+	createTerminalAuthPromptInput,
+} from "./provider-auth-prompt.ts";
 
 export const DEFAULT_PROVIDER = "openai-codex";
 export const DEFAULT_MODEL = "gpt-5.6-terra";
@@ -104,53 +110,6 @@ export function providerCredentialOverride(providerId: string, value: string): P
 	return { providerId, credential: credentialFromWire(value) };
 }
 
-function question(prompt: string, signal?: AbortSignal): Promise<string> {
-	const readline = createInterface({ input: process.stdin, output: process.stdout });
-	return new Promise((resolve, reject) => {
-		const abort = () => {
-			readline.close();
-			reject(new Error("Login cancelled"));
-		};
-		signal?.addEventListener("abort", abort, { once: true });
-		readline.question(prompt, (answer) => {
-			signal?.removeEventListener("abort", abort);
-			readline.close();
-			resolve(answer);
-		});
-	});
-}
-
-async function answerPrompt(prompt: AuthPrompt): Promise<string> {
-	if (prompt.type === "select") {
-		console.log(`\n${prompt.message}`);
-		for (let index = 0; index < prompt.options.length; index += 1) {
-			const option = prompt.options[index]!;
-			console.log(`  ${index + 1}. ${option.label}`);
-		}
-		const answer = Number.parseInt(await question(`Enter number (1-${prompt.options.length}): `, prompt.signal), 10);
-		const selected = prompt.options[answer - 1];
-		if (!selected) throw new Error("Invalid login selection");
-		return selected.id;
-	}
-	return question(`${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `, prompt.signal);
-}
-
-function notifyAuth(event: AuthEvent): void {
-	if (event.type === "auth_url") {
-		console.log(`\nOpen this URL in your browser:\n${event.url}`);
-		if (event.instructions) console.log(event.instructions);
-		if (process.platform === "darwin") spawnSync("open", [event.url], { stdio: "ignore" });
-		return;
-	}
-	if (event.type === "device_code") {
-		console.log(`\nOpen this URL in your browser:\n${event.verificationUri}`);
-		console.log(`Enter code: ${event.userCode}`);
-		if (process.platform === "darwin") spawnSync("open", [event.verificationUri], { stdio: "ignore" });
-		return;
-	}
-	console.log(event.message);
-}
-
 export function credentialStoreDescription(): string {
 	return CREDENTIAL_BACKEND === "file"
 		? `private file ${AUTH_PATH}`
@@ -176,8 +135,8 @@ export async function loginProvider(providerId = DEFAULT_PROVIDER): Promise<void
 	const provider = models.getProvider(providerId);
 	if (!provider) throw new Error(`Unknown provider: ${providerId}`);
 	const type = provider.auth.oauth ? "oauth" : "api_key";
-	await models.login(providerId, type, { prompt: answerPrompt, notify: notifyAuth });
-	console.log(`Credentials saved to ${credentialStoreDescription()}`);
+	await models.login(providerId, type, { prompt: answerAuthPrompt, notify: notifyAuth });
+	console.log(sanitizeTerminalText(`Credentials saved to ${credentialStoreDescription()}`));
 }
 
 export async function providerStatuses(

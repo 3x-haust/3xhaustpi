@@ -1,8 +1,38 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stripAnsi } from "../src/tui-text.ts";
 import { fitTranscriptCards } from "../src/tui-transcript.ts";
 
+let inheritedNoColor: string | undefined;
+let inheritedTerm: string | undefined;
+
+beforeEach(() => {
+	inheritedNoColor = process.env.NO_COLOR;
+	inheritedTerm = process.env.TERM;
+	delete process.env.NO_COLOR;
+	process.env.TERM = "xterm-256color";
+});
+
+afterEach(() => {
+	if (inheritedNoColor === undefined) delete process.env.NO_COLOR;
+	else process.env.NO_COLOR = inheritedNoColor;
+	if (inheritedTerm === undefined) delete process.env.TERM;
+	else process.env.TERM = inheritedTerm;
+});
+
 describe("compact conversation spacing", () => {
+	it("keeps the user role visible when color is unavailable", () => {
+		const previousNoColor = process.env.NO_COLOR;
+		process.env.NO_COLOR = "1";
+		try {
+			const rendered = fitTranscriptCards(["You 안녕"], 56, 12);
+			expect(rendered).toContain("> 안녕");
+			expect(rendered.join("")).not.toContain("\u001b[");
+		} finally {
+			if (previousNoColor === undefined) delete process.env.NO_COLOR;
+			else process.env.NO_COLOR = previousNoColor;
+		}
+	});
+
 	it("keeps symmetric prompt padding before its neutral trailing row", () => {
 		for (const columns of [56, 72, 80, 120]) {
 			const rendered = fitTranscriptCards(["You 안녕"], columns, 12);

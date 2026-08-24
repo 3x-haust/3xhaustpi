@@ -14,17 +14,16 @@ capability names, paths, permissions, timeouts, revisions, and execution.
 Credentials are stored in macOS Keychain, Windows Credential Manager, or Linux
 Secret Service; the local mode-0600 file contains non-secret metadata only.
 
-As of 2026-07-31 the package has passed local `npm pack`, isolated global
+This package build is `3xhaustpi@0.1.9`. It has passed local `npm pack`, isolated global
 install, real-provider coding, crash-resume, and a five-case, 50-pair
 real-provider benchmark with 98% semantic-only and 100% direct-tool
 provider-reported warm cache-hit requests. Capability success and model-output
-validity were 100% in both arms. It has not yet been published to the public npm
-registry.
+validity were 100% in both arms. No publish is performed by build or test commands.
 
-The idle TUI starts the coding runtime in a short-lived worker only when a task
-begins. Five isolated runs measured 0% idle CPU and a 58.41/58.45 MiB median
-mean/max RSS, 38.23% below the 94.55 MiB pre-worker baseline. An actual
-`openai-codex/gpt-5.6-terra` task completed through this worker boundary.
+The TUI starts the coding runtime worker on the first task and reuses it across
+normal sequential turns. Cancellation and exit reap the worker process tree.
+Idle redraw is event-driven; only active-work shimmer uses a 120 ms timer.
+An actual `openai-codex/gpt-5.6-terra` task completed through this boundary.
 
 External-app Computer Use ships platform adapters for macOS System Events,
 Windows UI Automation, and Linux AT-SPI 2 behind one semantic role/name and

@@ -1,30 +1,57 @@
-import { describe, expect, it } from "vitest";
+import { homedir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	bindTuiSigint,
 	cellWidth,
 	footerSegmentOrder,
 	formatHelpCommandLines,
 	formatModelCommandLines,
+	formatPatchApprovalReview,
 	formatResponseMetrics,
 	formatStatusFooter,
 	formatSubmittedPromptTurn,
+	formatToolApprovalReview,
+	formatToolApprovalTranscriptEntry,
 	formatTranscriptEntry,
 	formatTuiActivityLine,
 	formatTuiStatusLine,
+	formatVisibleTranscriptEntry,
 	isTuiCtrlC,
 	layoutTuiFrame,
 	orderModelsForPicker,
 	parseTuiCommand,
 	renderTuiFrame,
+	reportedContextTokens,
 	resolveCtrlCAction,
 	resolveModelSelection,
+	resolveTuiInputAction,
 	sanitizeTerminalText,
 	stripAnsi,
 	TranscriptViewport,
 	type TuiViewState,
+	terminalBelowFloor,
+	terminalFloorLines,
 	transcriptViewportRows,
 } from "../src/tui.ts";
+import { approvalFitsTerminal } from "../src/tui-approval.ts";
 import { fitTranscriptCards } from "../src/tui-transcript.ts";
+
+let inheritedNoColor: string | undefined;
+let inheritedTerm: string | undefined;
+
+beforeEach(() => {
+	inheritedNoColor = process.env.NO_COLOR;
+	inheritedTerm = process.env.TERM;
+	delete process.env.NO_COLOR;
+	process.env.TERM = "xterm-256color";
+});
+
+afterEach(() => {
+	if (inheritedNoColor === undefined) delete process.env.NO_COLOR;
+	else process.env.NO_COLOR = inheritedNoColor;
+	if (inheritedTerm === undefined) delete process.env.TERM;
+	else process.env.TERM = inheritedTerm;
+});
 
 const state: TuiViewState = {
 	projectRoot: "/tmp/project",
@@ -94,6 +121,16 @@ describe("Pi-native event-driven TUI renderer", () => {
 		}
 	});
 
+	it("renders only the exit affordance below the physical terminal floor", () => {
+		expect(terminalBelowFloor(19, 8)).toBe(true);
+		expect(terminalBelowFloor(20, 7)).toBe(true);
+		expect(terminalBelowFloor(20, 8)).toBe(false);
+		expect(terminalFloorLines(12, 2)).toEqual(["3xhaustPi", "/exit"]);
+		expect(terminalFloorLines(19, 8).at(0)).toBe("3xhaustPi too small");
+		expect(renderTuiFrame(state, 12, 2)).toBe("3xhaustPi\n/exit");
+		expect(visibleLines(renderTuiFrame(state, 20, 8)).at(-1)).toBe("3xhaustPi");
+	});
+
 	it("renders physical bounds and density collapse without synthetic minimum overflow", () => {
 		for (const [columns, rows] of [
 			[20, 8],
@@ -139,7 +176,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(lines.at(-2)).toContain("gpt-5.6-terra:medium");
 		expect(lines.at(-2)).not.toMatch(/ready|tasks/u);
 		expect(lines.at(-1)).toBe("(😺 3xhaustPi Native) project");
-		expect(lines).toContainEqual(expect.stringContaining("• Queued (1 waiting)"));
+		expect(lines.join("\n")).not.toContain("Queued");
 		expect(lines.at(-3)).toMatch(/^─+$/u);
 		expect(lines.at(-4)).toContain("> ");
 		expect(lines.at(-1)).not.toContain("> ");
@@ -244,12 +281,12 @@ describe("Pi-native event-driven TUI renderer", () => {
 	});
 
 	it("formats only measured response telemetry without inventing values", () => {
+		expect(reportedContextTokens({ input: 1_000, cacheRead: 6_000, cacheWrite: 3_000 })).toBe(10_000);
 		expect(
 			formatResponseMetrics({
 				input: 668,
 				output: 7,
 				cacheRead: 3_584,
-				cacheReadHighWater: 3_584,
 				durationMs: 500,
 			}),
 		).toBe("TPS 14.0 tok/s. Cache hit 100.0%, 0.5s");
@@ -274,9 +311,10 @@ describe("Pi-native event-driven TUI renderer", () => {
 				input: 1_000,
 				output: 50,
 				cacheRead: 250,
+				cacheWrite: 750,
 				durationMs: 500,
 			}),
-		).toBe("TPS 100.0 tok/s. Cache hit 20.0%, 0.5s");
+		).toBe("TPS 100.0 tok/s. Cache hit 25.0%, 0.5s");
 		expect(
 			formatResponseMetrics({
 				input: 1_000,
@@ -284,7 +322,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 				cacheRead: 250,
 				durationMs: 5_000,
 			}),
-		).toBe("TPS 15.8 tok/s. Cache hit 20.0%, 5.0s");
+		).toBe("TPS 15.8 tok/s. Cache hit 100.0%, 5.0s");
 		expect(
 			formatResponseMetrics({
 				input: 500,
@@ -292,7 +330,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 				cacheRead: 8_000,
 				durationMs: 5_000,
 			}),
-		).toBe("TPS 15.8 tok/s. Cache hit 94.1%, 5.0s");
+		).toBe("TPS 15.8 tok/s. Cache hit 100.0%, 5.0s");
 		expect(
 			formatResponseMetrics({
 				input: 1_000,
@@ -300,7 +338,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 				cacheRead: 6_417,
 				durationMs: 5_000,
 			}),
-		).toBe("TPS 15.8 tok/s. Cache hit 86.5%, 5.0s");
+		).toBe("TPS 15.8 tok/s. Cache hit 100.0%, 5.0s");
 		expect(formatResponseMetrics({ input: null, output: null, cacheRead: null, durationMs: 1_200 })).toBe("1.2s");
 	});
 
@@ -355,7 +393,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(answer).toBeLessThan(metrics);
 	});
 
-	it("shows prompt content instead of surface spacers in a one-row transcript budget", () => {
+	it("shows prompt content at the minimum supported terminal height", () => {
 		const output = visibleLines(
 			renderTuiFrame(
 				{
@@ -364,7 +402,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 					queuedRequests: [],
 				},
 				120,
-				5,
+				8,
 			),
 		).join("\n");
 
@@ -391,6 +429,15 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output).not.toContain("Y2xpcGJvYXJk");
 		expect(visibleLines(output).join("\n")).toContain("safeafterdone");
 		expect(stripAnsi(formatTuiActivityLine({ status: "running", detail: malicious }))).toContain("safeafterdone");
+	});
+
+	it("sanitizes a project path compacted beneath the home directory", () => {
+		const maliciousPath = `${homedir()}/project\u001b]52;c;Y2xpcGJvYXJk\u0007`;
+		const output = renderTuiFrame({ ...state, projectRoot: maliciousPath }, 120, 16);
+
+		expect(output).not.toContain("\u001b]52");
+		expect(output).not.toContain("Y2xpcGJvYXJk");
+		expect(visibleLines(output).join("\n")).toContain("~/project");
 	});
 
 	it("uses one activity row and a double-rule shell composer", () => {
@@ -653,7 +700,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(turns).toEqual(["You Inspect the callback"]);
 	});
 
-	it("keeps durable queued requests in status rather than duplicating them in the transcript", () => {
+	it("keeps internal durable queues out of idle workflow chrome", () => {
 		const output = visibleLines(
 			renderTuiFrame(
 				{
@@ -666,11 +713,11 @@ describe("Pi-native event-driven TUI renderer", () => {
 				22,
 			),
 		).join("\n");
-		expect(output).toContain("• Queued (1 waiting)");
+		expect(output).not.toContain("Queued");
 		expect(output).not.toContain("Follow-up request");
 	});
 
-	it("does not count persisted paused or queued chats as active executions", () => {
+	it("does not expose persisted recovery states as a paused conversation", () => {
 		const output = visibleLines(
 			renderTuiFrame(
 				{
@@ -688,7 +735,8 @@ describe("Pi-native event-driven TUI renderer", () => {
 				22,
 			),
 		).join("\n");
-		expect(output).toContain("• Paused (/resume to continue)");
+		expect(output).not.toContain("Paused");
+		expect(output).not.toContain("/resume to continue");
 		expect(output).not.toContain("Working (2 active");
 	});
 
@@ -703,12 +751,12 @@ describe("Pi-native event-driven TUI renderer", () => {
 			stripAnsi(formatTuiActivityLine({ status: "running", detail: "write src/some/really-long-file-name.ts" }, 28)),
 		).toMatch(/^• Working \(write src\/som… · esc to interrupt\)$/u);
 		expect(stripAnsi(formatTuiActivityLine({ status: "ready", activeCount: 2, queuedCount: 4 }))).toBe(
-			"• Working (2 active · esc to interrupt)",
+			"• Working (2 active · 4 pending · esc to interrupt)",
 		);
 		expect(
 			stripAnsi(formatTuiActivityLine({ status: "ready", activeCount: 0, queuedCount: 4, resumable: true })),
-		).toContain("• Paused (/resume to continue) · 4 queued");
-		expect(stripAnsi(formatTuiActivityLine({ status: "ready", queuedCount: 4 }))).toBe("• Queued (4 waiting)");
+		).toBe("");
+		expect(stripAnsi(formatTuiActivityLine({ status: "ready", queuedCount: 4 }))).toBe("");
 		expect(stripAnsi(formatTuiActivityLine({ status: "ready" }))).toBe("");
 		expect(
 			stripAnsi(
@@ -732,6 +780,125 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(isTuiCtrlC("c")).toBe(false);
 		expect(resolveCtrlCAction("draft")).toBe("clear-input");
 		expect(resolveCtrlCAction("")).toBe("exit");
+	});
+
+	it("gives approval and active-work keys deterministic ownership", () => {
+		expect(resolveTuiInputAction("\u0003", { approvalPending: true, active: true, composerText: "" })).toBe(
+			"reject-approval",
+		);
+		expect(resolveTuiInputAction("\u001b", { approvalPending: true, active: true, composerText: "" })).toBe(
+			"reject-approval",
+		);
+		expect(resolveTuiInputAction("R", { approvalPending: true, active: true, composerText: "" })).toBe(
+			"pass-approval-input",
+		);
+		expect(
+			resolveTuiInputAction("y", { approvalPending: true, active: true, composerText: "Reply with exactl" }),
+		).toBe("pass-approval-input");
+		expect(
+			resolveTuiInputAction("\u001b[200~BRACKETED café 漢字 exactly\u001b[201~", {
+				approvalPending: true,
+				active: true,
+				composerText: "",
+			}),
+		).toBe("pass-approval-input");
+		expect(
+			resolveTuiInputAction("y", {
+				approvalPending: true,
+				approvalReviewable: false,
+				active: true,
+				composerText: "",
+			}),
+		).toBe("consume-approval");
+		expect(resolveTuiInputAction("\u001b[5~", { approvalPending: true, active: true, composerText: "" })).toBe(
+			"pass",
+		);
+		expect(resolveTuiInputAction("\u001b", { approvalPending: false, active: true, composerText: "" })).toBe(
+			"interrupt",
+		);
+		expect(resolveTuiInputAction("\u001b", { approvalPending: false, active: false, composerText: "" })).toBe("pass");
+		expect(resolveTuiInputAction("?", { approvalPending: false, active: false, composerText: "" })).toBe("open-help");
+	});
+
+	it("shows every approved mutation line or rejects the review", () => {
+		const tool = formatToolApprovalReview({
+			approvalId: "call_write",
+			toolName: "write",
+			summary: "write src/file.ts",
+			targetPath: "src/file.ts",
+			beforeSha256: "a".repeat(64),
+			afterSha256: "b".repeat(64),
+			preview: "first\nsecond",
+		});
+		expect(tool.reviewable).toBe(true);
+		expect(tool.lines).toContain("first");
+		expect(tool.lines).toContain("second");
+		expect(tool.lines.join("\n")).toContain("aaaaaaaaaaaa → bbbbbbbbbbbb");
+
+		const oversized = formatPatchApprovalReview({
+			patchId: "patch_large",
+			targetRevision: "revision",
+			files: ["src/file.ts"],
+			diff: Array.from({ length: 101 }, (_, index) => `line ${index}`).join("\n"),
+		});
+		expect(oversized.reviewable).toBe(true);
+		expect(oversized.lines).toContain("line 100");
+		expect(approvalFitsTerminal("Tool approval  write\npath short.txt\npreview", 56, 12)).toBe(true);
+		expect(
+			approvalFitsTerminal(
+				`Tool approval  write\n${Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n")}`,
+				56,
+				12,
+			),
+		).toBe(false);
+		expect(approvalFitsTerminal("Tool approval  write\npath short.txt\npreview", 40, 10)).toBe(false);
+	});
+
+	it("keeps the full tool approval visible after a submitted prompt", () => {
+		const entry = formatToolApprovalTranscriptEntry({
+			approvalId: "call_write",
+			toolName: "write",
+			summary: "write qa-approval-probe.txt",
+			targetPath: "qa-approval-probe.txt",
+			beforeSha256: "a".repeat(64),
+			afterSha256: "b".repeat(64),
+			preview: "approval probe",
+		});
+		const visible = stripAnsi(fitTranscriptCards(["You create the probe", entry], 100, 30).join("\n"));
+
+		expect(visible).toContain("Tool approval");
+		expect(visible).toContain("qa-approval-probe.txt");
+		expect(visible).toContain("aaaaaaaaaaaa → bbbbbbbbbbbb");
+		expect(visible).toContain("approval probe");
+		expect(visible).not.toContain("Press y to run · n/Escape to reject");
+	});
+
+	it("keeps live command output visible after a submitted prompt", () => {
+		const visible = stripAnsi(
+			fitTranscriptCards(
+				["You inspect the durable graph", formatVisibleTranscriptEntry("Execution graph  request_123")],
+				100,
+				30,
+			).join("\n"),
+		);
+
+		expect(visible).toContain("Execution graph  request_123");
+	});
+
+	it("keeps extended grapheme clusters atomic", () => {
+		expect(cellWidth("👨‍👩‍👧‍👦")).toBe(2);
+		expect(cellWidth("🇰🇷")).toBe(2);
+		expect(cellWidth("👍🏽")).toBe(2);
+		expect(cellWidth("e\u0301")).toBe(1);
+	});
+
+	it("never splits an oversized token inside a grapheme cluster", () => {
+		const rendered = fitTranscriptCards([`You ${"a".repeat(50)}👨‍👩‍👧‍👦z`], 56, 20)
+			.map((line) => stripAnsi(line))
+			.join("\n");
+
+		expect(rendered).toContain("👨‍👩‍👧‍👦");
+		expect(rendered).not.toContain("👨‍\n");
 	});
 
 	it("routes terminal SIGINT through the same clean TUI exit", () => {
@@ -762,7 +929,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output).not.toContain("진단 결과도 확인해");
 		expect(visibleLines(output).at(-2)).toContain("gpt-5.6-terra:medium");
 		expect(output).toContain("\u001b[48;5;238m");
-		expect(visibleLines(output)).toContain("• Working (esc to interrupt)");
+		expect(visibleLines(output)).toContain("• Working (1 pending · esc to interrupt)");
 		expect(visibleLines(output).at(-4)).toContain("> 로그인 오류를 조사해");
 		expect(visibleLines(output).at(-2)).toContain("openai-codex");
 		expect(visibleLines(output).at(-2)).toContain("35K/400K");
@@ -924,7 +1091,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 	it("keeps the status row quiet while the composer owns input affordance", () => {
 		expect(stripAnsi(formatTuiStatusLine("ready", "", 0))).toBe("");
 		expect(stripAnsi(formatTuiStatusLine("running", "planning…", 1))).toContain(
-			"• Working (planning… · esc to interrupt)",
+			"• Working (planning… · 1 pending · esc to interrupt)",
 		);
 	});
 
@@ -935,10 +1102,18 @@ describe("Pi-native event-driven TUI renderer", () => {
 		}
 		const lines = formatHelpCommandLines(56);
 		const output = lines.join("\n");
-		for (const token of ["/resources", "/clear", "/resume", "/chat <n>", "/mcp tools <server>"] as const) {
+		for (const token of [
+			"/resources",
+			"/clear",
+			"/resume [session]",
+			"/recover [checkpoint]",
+			"/chat <session>",
+			"/mcp tools <server>",
+		] as const) {
 			expect(output).toContain(token);
 			expect(output).not.toMatch(new RegExp(`${token.slice(0, -1)}\\n${token.slice(-1)}`));
 		}
+		expect(output).not.toContain("/queue");
 		for (const line of output.split("\n")) expect(cellWidth(stripAnsi(line))).toBeLessThanOrEqual(56);
 	});
 

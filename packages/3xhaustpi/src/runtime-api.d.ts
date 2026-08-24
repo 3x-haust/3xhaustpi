@@ -15,6 +15,7 @@ export interface CodingTaskPatchProposal {
 export type CodingTaskEvent =
 	| {
 			readonly type: "session.started";
+			readonly runtimeKind: "native-agent" | "semantic-checkpoint";
 			readonly sessionId: string;
 			readonly provider: string;
 			readonly model: string;
@@ -28,11 +29,25 @@ export type CodingTaskEvent =
 	  }
 	| {
 			readonly type: "capability.started";
-			readonly capability: "searchText" | "searchSymbol" | "readRanges" | "applyPatch" | "getDiagnostics";
+			readonly capability: string;
 	  }
 	| {
 			readonly type: "capability.completed";
-			readonly capability: "searchText" | "searchSymbol" | "readRanges" | "applyPatch" | "getDiagnostics";
+			readonly capability: string;
+			readonly success: boolean;
+			readonly durationMs: number;
+			readonly summary: string;
+	  }
+	| {
+			readonly type: "work.started";
+			readonly workId: string;
+			readonly parentWorkId?: string;
+			readonly kind: "tool" | "agent";
+			readonly label: string;
+	  }
+	| {
+			readonly type: "work.completed";
+			readonly workId: string;
 			readonly success: boolean;
 			readonly durationMs: number;
 			readonly summary: string;
@@ -49,6 +64,10 @@ export type CodingTaskEvent =
 			readonly command: string;
 			readonly output: string;
 			readonly durationMs: number;
+	  }
+	| {
+			readonly type: "assistant.delta";
+			readonly text: string;
 	  }
 	| {
 			readonly type: "assistant.message";
@@ -89,8 +108,14 @@ export interface CodingTaskInput {
 	readonly preserveProviderSession?: boolean;
 	readonly signal?: AbortSignal;
 	readonly onEvent?: (event: CodingTaskEvent) => void;
+	readonly recordEffectBoundary?: (effect: CodingTaskEffectBoundary) => Promise<void>;
 	readonly requestApproval?: (proposal: CodingTaskPatchProposal) => Promise<boolean>;
 	readonly resources?: CodingTaskResourceOptions;
+}
+
+export interface CodingTaskEffectBoundary {
+	readonly effectId: string;
+	readonly kind: "provider";
 }
 
 export interface CodingTaskImage {
@@ -109,6 +134,7 @@ export interface ResumeCodingTaskInput {
 	readonly preserveProviderSession?: boolean;
 	readonly signal?: AbortSignal;
 	readonly onEvent?: (event: CodingTaskEvent) => void;
+	readonly recordEffectBoundary?: (effect: CodingTaskEffectBoundary) => Promise<void>;
 	readonly requestApproval?: (proposal: CodingTaskPatchProposal) => Promise<boolean>;
 	readonly resources?: CodingTaskResourceOptions;
 }

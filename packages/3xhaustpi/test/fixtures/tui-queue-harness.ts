@@ -84,6 +84,7 @@ await runTui({
 		});
 		hooks.onEvent({
 			type: "session.started",
+			runtimeKind: "native-agent",
 			sessionId,
 			provider: "fixture-provider",
 			model: "fixture-model",
@@ -152,6 +153,7 @@ await runTui({
 		}
 		hooks.onEvent({
 			type: "session.started",
+			runtimeKind: "native-agent",
 			sessionId: checkpoint.sessionId,
 			provider: "fixture-provider",
 			model: "fixture-model",

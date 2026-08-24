@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import type { CodingTaskEvent } from "./coding-runtime.ts";
+import { isolateProcessGroup, isProcessTreeRunning, signalProcessTree } from "./process-tree.ts";
 import type { ObserverHook } from "./resource-loader.ts";
 
 export interface HookOutcome {
@@ -34,6 +35,22 @@ function sanitizedEvent(event: CodingTaskEvent): Readonly<Record<string, unknown
 				schemaVersion: 1,
 				type: event.type,
 				capability: event.capability,
+				success: event.success,
+				durationMs: event.durationMs,
+			};
+		case "work.started":
+			return {
+				schemaVersion: 1,
+				type: event.type,
+				workId: event.workId,
+				parentWorkId: event.parentWorkId,
+				kind: event.kind,
+			};
+		case "work.completed":
+			return {
+				schemaVersion: 1,
+				type: event.type,
+				workId: event.workId,
 				success: event.success,
 				durationMs: event.durationMs,
 			};
@@ -90,29 +107,44 @@ async function runHook(
 	return await new Promise((resolve) => {
 		const child = spawn(hook.command, [...hook.args], {
 			cwd: options.cwd,
+			detached: isolateProcessGroup,
 			env: minimalEnvironment(),
 			shell: false,
 			stdio: ["pipe", "ignore", "ignore"],
 		});
 		let settled = false;
+		let timedOut = false;
+		let killTimer: NodeJS.Timeout | undefined;
 		const finish = (outcome: HookOutcome) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
 			resolve(outcome);
 		};
+		const timedOutOutcome = (): HookOutcome => ({ id: hook.id, status: "timed-out" });
 		const timer = setTimeout(() => {
-			child.kill("SIGKILL");
-			finish({ id: hook.id, status: "timed-out" });
+			timedOut = true;
+			if (!child.pid) return finish(timedOutOutcome());
+			signalProcessTree(child.pid, "SIGTERM");
+			killTimer = setTimeout(() => {
+				if (child.pid) signalProcessTree(child.pid, "SIGKILL");
+				finish(timedOutOutcome());
+			}, 250);
 		}, options.timeoutMs);
-		child.once("error", () => finish({ id: hook.id, status: "failed" }));
-		child.once("exit", (code) =>
+		child.once("error", () => finish(timedOut ? timedOutOutcome() : { id: hook.id, status: "failed" }));
+		child.once("exit", (code) => {
+			if (timedOut) {
+				if (child.pid && isProcessTreeRunning(child.pid)) return;
+				finish(timedOutOutcome());
+				return;
+			}
 			finish({
 				id: hook.id,
 				status: code === 0 ? "completed" : "failed",
 				...(code === null ? {} : { exitCode: code }),
-			}),
-		);
+			});
+		});
 		child.stdin.end(`${JSON.stringify(sanitizedEvent(event))}\n`);
 	});
 }

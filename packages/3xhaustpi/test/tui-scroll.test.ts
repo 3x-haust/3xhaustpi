@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { formatTuiActivityLine, TranscriptViewport, TUI_SCROLL_KEYS } from "../src/tui.ts";
+import { formatTuiActivityLine, isTuiTranscriptScrollInput, TranscriptViewport, TUI_SCROLL_KEYS } from "../src/tui.ts";
 import { stripAnsi } from "../src/tui-text.ts";
+import { fitTranscriptCards } from "../src/tui-transcript-viewport.ts";
 
 function entry(label: string): string {
 	return `line ${label}`;
@@ -13,6 +14,13 @@ describe("TUI keyboard navigation", () => {
 		expect(TUI_SCROLL_KEYS.altUp).toBe("\u001b[1;3A");
 		expect(TUI_SCROLL_KEYS.altDown).toBe("\u001b[1;3B");
 		expect(TUI_SCROLL_KEYS.altEnd).toBe("\u001b[1;3F");
+	});
+
+	it("owns transcript scrolling only while the composer is empty", () => {
+		expect(isTuiTranscriptScrollInput(TUI_SCROLL_KEYS.pageUp, "")).toBe(true);
+		expect(isTuiTranscriptScrollInput(TUI_SCROLL_KEYS.altDown, "")).toBe(true);
+		expect(isTuiTranscriptScrollInput(TUI_SCROLL_KEYS.pageUp, "draft")).toBe(false);
+		expect(isTuiTranscriptScrollInput(TUI_SCROLL_KEYS.altDown, "/model ")).toBe(false);
 	});
 
 	it("renders older transcript windows while scrolled up and follows tail again at zero", () => {
@@ -50,5 +58,12 @@ describe("TUI keyboard navigation", () => {
 		expect(running).toContain("Working");
 		expect(running).toContain("searchText…");
 		expect(running).toContain("↓ 3 new");
+	});
+
+	it("marks omitted card content before showing its tail", () => {
+		const visible = stripAnsi(fitTranscriptCards(["3xhaust Answer\nfirst\nsecond\nthird\nfourth"], 40, 3).join("\n"));
+
+		expect(visible).toContain("omitted");
+		expect(visible).toContain("fourth");
 	});
 });

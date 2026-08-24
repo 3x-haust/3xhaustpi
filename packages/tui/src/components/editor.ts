@@ -390,7 +390,7 @@ export class Editor implements Component, Focusable {
 		const paddingX = options.paddingX ?? 0;
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
 		const maxVisible = options.autocompleteMaxVisible ?? 5;
-		this.autocompleteMaxVisible = Number.isFinite(maxVisible) ? Math.max(3, Math.min(20, Math.floor(maxVisible))) : 5;
+		this.autocompleteMaxVisible = Number.isFinite(maxVisible) ? Math.max(0, Math.min(20, Math.floor(maxVisible))) : 5;
 		this.autocompletePresentation = options.autocompletePresentation ?? "inline";
 		this.placeholder = options.placeholder ?? "";
 		this.promptPrefix = options.promptPrefix ?? "";
@@ -430,11 +430,25 @@ export class Editor implements Component, Focusable {
 	}
 
 	setAutocompleteMaxVisible(maxVisible: number): void {
-		const newMaxVisible = Number.isFinite(maxVisible) ? Math.max(3, Math.min(20, Math.floor(maxVisible))) : 5;
+		const newMaxVisible = Number.isFinite(maxVisible) ? Math.max(0, Math.min(20, Math.floor(maxVisible))) : 5;
 		if (this.autocompleteMaxVisible !== newMaxVisible) {
 			this.autocompleteMaxVisible = newMaxVisible;
+			this.autocompleteList?.setMaxVisible(newMaxVisible);
+			if (newMaxVisible === 0) this.clearAutocompleteUi();
 			this.tui.requestRender();
 		}
+	}
+
+	setMaxVisibleLines(maxVisibleLines: number): void {
+		const next = Number.isFinite(maxVisibleLines) ? Math.max(1, Math.min(20, Math.floor(maxVisibleLines))) : 1;
+		if (this.maxVisibleLines !== next) {
+			this.maxVisibleLines = next;
+			this.tui.requestRender();
+		}
+	}
+
+	setAutocompleteScrollInfoVisible(visible: boolean): void {
+		this.autocompleteList?.setScrollInfoVisible(visible);
 	}
 
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
@@ -2423,6 +2437,7 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 		const terminalColumns = this.tui.terminal.columns;
+		const terminalRows = this.tui.terminal.rows;
 		const narrow = terminalColumns < 80;
 		this.autocompleteOverlayHandle = this.tui.showOverlay(
 			new AutocompleteOverlaySurface(this.autocompleteList, this.borderColor),
@@ -2430,7 +2445,7 @@ export class Editor implements Component, Focusable {
 				width: narrow ? Math.max(1, terminalColumns) : Math.min(76, Math.max(1, terminalColumns - 4)),
 				maxHeight: "40%",
 				anchor: "bottom-center",
-				margin: { top: 1, right: narrow ? 0 : 2, bottom: 5, left: narrow ? 0 : 2 },
+				margin: { top: terminalRows <= 8 ? 0 : 1, right: narrow ? 0 : 2, bottom: 5, left: narrow ? 0 : 2 },
 				nonCapturing: true,
 			},
 		);

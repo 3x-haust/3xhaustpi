@@ -14,7 +14,7 @@ await build({
 		"credential-broker": resolve(packageRoot, "src/credential-broker.ts"),
 		"auth-runtime": resolve(packageRoot, "src/auth-runtime.ts"),
 		"desktop-runtime": resolve(packageRoot, "src/desktop-runtime.ts"),
-		runtime: resolve(packageRoot, "src/coding-runtime.ts"),
+		runtime: resolve(packageRoot, "src/runtime-entry.ts"),
 		"tui-runtime-worker": resolve(packageRoot, "src/tui-runtime-worker.ts"),
 	},
 	outdir: outputDirectory,

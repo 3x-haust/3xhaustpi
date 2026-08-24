@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { isolateProcessGroup, signalProcessTree, terminateProcessTree } from "./process-tree.ts";
 import { PRODUCT_MACHINE_NAME, PRODUCT_VERSION } from "./product-identity.ts";
 import { loadMcpServerConfiguration } from "./resource-hub.ts";
 
@@ -63,6 +64,7 @@ class StdioMcpClient {
 		{ readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void }
 	>();
 	private readonly timer: NodeJS.Timeout;
+	private termination: Promise<void> | undefined;
 
 	constructor(child: ChildProcessWithoutNullStreams, timeoutMs: number) {
 		this.child = child;
@@ -74,6 +76,7 @@ class StdioMcpClient {
 		child.once("error", (error) => this.fail(error));
 		child.once("close", (code, signal) => {
 			this.closed = true;
+			void this.beginTermination();
 			this.fail(
 				new Error(`MCP server exited before responding (code ${code ?? "null"}, signal ${signal ?? "null"})`),
 			);
@@ -109,7 +112,7 @@ class StdioMcpClient {
 			this.pending.delete(id);
 		}
 		this.child.stdin.end();
-		if (!this.closed) this.child.kill("SIGTERM");
+		await this.beginTermination();
 	}
 
 	private write(message: unknown): void {
@@ -142,11 +145,17 @@ class StdioMcpClient {
 	}
 
 	private fail(error: Error): void {
-		if (!this.closed) this.child.kill("SIGTERM");
+		if (!this.closed && this.child.pid) signalProcessTree(this.child.pid, "SIGTERM");
+		void this.beginTermination();
 		for (const [id, pending] of this.pending) {
 			pending.reject(error);
 			this.pending.delete(id);
 		}
+	}
+
+	private beginTermination(): Promise<void> {
+		this.termination ??= terminateProcessTree(this.child);
+		return this.termination;
 	}
 }
 
@@ -167,6 +176,7 @@ async function withMcpClient<T>(
 	if (!configuration) throw new Error(`MCP server is not configured: ${input.server}`);
 	const child = spawn(configuration.command, configuration.args ?? [], {
 		cwd: input.projectRoot,
+		detached: isolateProcessGroup,
 		shell: false,
 		stdio: ["pipe", "pipe", "pipe"],
 	});
@@ -187,7 +197,15 @@ function isResponse(value: unknown): value is JsonRpcResponse {
 		readonly result?: unknown;
 		readonly error?: unknown;
 	};
-	return record.jsonrpc === "2.0" && typeof record.id === "number" && ("result" in record || "error" in record);
+	if (record.jsonrpc !== "2.0" || typeof record.id !== "number") return false;
+	if ("result" in record) return !("error" in record);
+	if (!("error" in record) || typeof record.error !== "object" || record.error === null || Array.isArray(record.error))
+		return false;
+	const error = record.error as { readonly code?: unknown; readonly message?: unknown };
+	return (
+		(error.code === undefined || typeof error.code === "number") &&
+		(error.message === undefined || typeof error.message === "string")
+	);
 }
 
 function objectField(value: unknown, field: string): unknown {

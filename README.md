@@ -21,7 +21,7 @@ npm install -g 3xhaustpi
 
 ```bash
 npm pack ./packages/3xhaustpi
-npm install -g ./3xhaustpi-0.1.0.tgz
+npm install -g ./3xhaustpi-0.1.9.tgz
 3xhaustpi --version
 ```
 
@@ -89,7 +89,7 @@ metadata-only 형식으로 자동 마이그레이션합니다. API-key provider�
 timeout, revision, permission은 host가 결정합니다. provider가 raw tool call을
 반환하거나 patch revision이 stale이면 fail-closed로 거부합니다.
 
-## 4. 프로젝트, 채팅, queue, resume
+## 4. 프로젝트와 session
 
 ```bash
 3xhaustpi --project ./my-project
@@ -99,17 +99,18 @@ timeout, revision, permission은 host가 결정합니다. provider가 raw tool c
 SQLite에는 project/session/request queue/checkpoint/outbox/observation/
 approval/patch journal/cache 상태를 저장합니다.
 
-- `/projects`, `/project <number>`, `/chats`, `/chat <number>`로 Pi 기본
-  autocomplete 안에서 project→chat을 탐색하고 전환합니다.
-- `/resume [chat]`은 현재 project의 최신 checkpoint 또는 선택한 interrupted
-  chat만 재개합니다.
+- `/projects`, `/project <number>`, `/sessions`, `/resume [session]`으로
+  project와 저장된 Pi conversation을 검색하고 전환합니다. `/chats`와
+  `/chat <session>`은 같은 native session surface의 alias입니다.
+- `/new`는 새 conversation generation을 시작합니다.
+- `/recover [checkpoint]`만 legacy durable checkpoint를 명시적으로 복구합니다.
 - TUI 입력은 실행 전에 SQLite queue에 먼저 저장됩니다.
 - 실행 중 follow-up은 FIFO로 처리되고, TUI process가 종료되어도 다음 실행에서
   대기 요청을 복원합니다.
 - request fingerprint와 ID로 중복 실행을 차단합니다.
 - line-range context는 다음 요청에 bounded context로 붙습니다.
-- process crash 뒤 `--resume` 또는 TUI의 `/resume`이 해당 project의 durable
-  checkpoint를 claim해 재개합니다.
+- process crash 뒤 CLI의 `--resume` 또는 TUI의 `/recover`가 해당 project의
+  durable checkpoint를 claim해 재개합니다.
 - 상태 조회나 화면 refresh는 실행 상태를 변경하지 않습니다. interrupted
   recovery는 resume 경계에서만 명시적으로 수행합니다.
 - provider가 요청을 받았는지 불명확하면 `indeterminate`로 남기고 자동
@@ -147,10 +148,10 @@ SQLite에는 기록하지 않습니다.
 - extension은 harness, policy, schema, executor를 교체할 수 없습니다.
 - raw MCP schema/tool name은 모델에 노출하지 않습니다.
 
-TUI는 black/charcoal 기반의 event-driven ANSI UI입니다. polling loop,
-animation timer, idle redraw가 없습니다. coding runtime은 첫 작업 때 별도
-worker로 올라가고 완료 후 종료되므로 유휴 TUI가 provider와 executor 모듈을
-상주시킬 필요가 없습니다.
+TUI는 black/charcoal 기반의 event-driven ANSI UI입니다. polling loop와
+idle redraw는 없고, 작업 중 grayscale shimmer만 120 ms animation timer를
+사용합니다. coding runtime worker는 첫 작업 때 올라와 정상적인 연속 turn
+사이에서 재사용되며, 취소·종료 때 process tree 전체를 정리합니다.
 
 외부 앱 Computer Use도 같은 Pi TUI에서 실행할 수 있습니다.
 
@@ -239,7 +240,7 @@ direct-tool보다 model-side end-to-end latency와 throughput이 느렸습니다
 
 증거:
 `artifacts/real-llm/paired-1785484534806.json`
-(SHA-256 `73b204c6b5316da45296514746773d1c16a916df6b457e281956b0c85caeb7c8`)
+(SHA-256 `10c3e7ad49de0329565a5c75e5f8276e763b9bef1b74b570483ecfccbd6fdab1`)
 
 Desktop app Performance 화면도 이 corpus metadata와 실제 acceptance를
 직접 읽습니다. GUI 검증 캡처는
@@ -294,14 +295,21 @@ GitHub Release asset 이름:
 SHA256SUMS
 ```
 
-다운로드 후 `SHA256SUMS`와 archive checksum을 먼저 확인합니다.
-현재 저장소 artifact 6개는 checksum, archive structure, 대상별 keyring
-binary 검증을 모두 통과했습니다. darwin-arm64는 빈 temp directory에서
-bundled Node/Python, macOS Keychain, 기존 OAuth와 실제 provider 작업까지
-검증했습니다. 최신 archive의 `3xhaustpi doctor`는 bundled Node 22.23.1,
-Python 3.13.14, SQLite, semantic compiler, Keychain, macOS 외부 앱 Computer
-Use 15개 GUI application과 native manifest를 실제 확인합니다. 나머지 5개는
-해당 실제 OS/architecture에서의 실행 검증이 아직 필요합니다.
+다운로드 후 archive 옆의 `.sha256` 파일로 checksum을 먼저 확인합니다.
+`artifacts/native-0.1.9-parity-final`에는 현재 0.1.9 소스로 만든 6개 target archive와
+각 checksum이 있습니다. 모든 archive의 checksum과 embedded
+`runtime-manifest.json` product/version/target을 확인했고, `cli.js`,
+`cli-tui.js`, `cli-full.js`, `runtime.js`, `tui-runtime-worker.js`가 frozen
+local `dist`와 byte-identical한지 검증했습니다. 이 빌드는 bundled Node
+22.23.1과 Python 3.13.14를 포함합니다. target별 실제 OS 실행 검증은
+별도로 필요합니다.
+
+`artifacts/native`, `artifacts/native-0.1.8`, `artifacts/native-0.1.8-final`,
+`artifacts/deployment-audit.json`은 기존 0.1.0 검증과 중간 0.1.8 build의
+증거이므로 덮어쓰지 않고
+보존합니다. 0.1.0 darwin-arm64 증거는 빈 temp directory에서 bundled
+Node/Python, macOS Keychain, 기존 OAuth, 실제 provider 작업, 15개 GUI
+application Computer Use를 검증한 기록입니다.
 
 같은 darwin-arm64 archive의 실제 Pi TUI에서 `/computer`를 입력해 현재
 실행 중인 15개 GUI application을 accessibility host로 조회했습니다. 증거는

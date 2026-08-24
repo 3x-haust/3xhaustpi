@@ -44,6 +44,8 @@ made of boxes nor a decorative chatbot.
 - ANSI resets must survive clipping and wrapping.
 - `NO_COLOR` and monochrome terminals retain the same symbols, labels, rails,
   and reverse-video selection; only semantic hues disappear.
+- When prompt tint is unavailable, submitted user rows use a leading `>` role
+  marker and collapse decorative prompt padding.
 - On 16-color terminals, accent/info map to cyan, success/diff-add to green,
   warning to yellow, and failure/diff-remove to red.
 - Focus uses reverse video plus a leading marker; active-but-unfocused state
@@ -113,7 +115,8 @@ Height is also a first-class constraint:
 - Transcript may fall to one row only when essential fixed chrome consumes the
   rest.
 - Supported physical floor is `20x8`. Below it, emit at most the physical rows
-  and columns with `3xhaustPi · terminal too small`, `/exit`, and no picker.
+  and columns with an adaptively shortened `3xhaustPi` terminal-size warning,
+  `/exit`, and no picker.
 - Validation matrix: `20x8`, `32x10`, `40x12`, `56x22`, `72x24`, `80x24`,
   and `120x32`.
 
@@ -158,7 +161,7 @@ or transcript budget.
 - One product label only: no duplicated `3xhaustPi` project name.
 - Owns only product and workspace identity.
 - Anchors the final shell row below the context title and composer.
-- Full/compact: `3xhaustPi  ·  project`
+- Full/compact: `(😺 3xhaustPi Native) project`
 - Minimal: `3xhaustPi`
 - Model and run state never repeat here.
 
@@ -260,7 +263,8 @@ output is capped at 100 lines and ends with an omitted-line count.
 - Running: `• Working (<detail> · esc to interrupt)`, never spinner-only. A
   grayscale shimmer sweeps only this activity text while work is active.
 - Review: approval action and key choices.
-- Queued: count remains visible without flooding the transcript.
+- Pending input: visible only while a human entry awaits delivery; internal
+  checkpoint/request queue state never appears here.
 - Detached scroll: new-output count and return-to-latest key.
 
 #### Concurrent Activity Arbitration
@@ -271,7 +275,7 @@ The single row resolves simultaneous state in this order:
 2. foreground failure or cancellation event
 3. current foreground capability
 4. active agents/tools aggregate
-5. queued follow-ups
+5. pending user input
 6. latest response telemetry, otherwise blank
 
 Within one priority, show the latest foreground target. A completion immediately
@@ -284,6 +288,11 @@ selects the next active sibling; it never leaves a stale target.
 - `/` opens command discovery; command and model tokens remain intact.
 - Matching full-width rules above and below the input create a stable
   double-rule shell. There is no decorative side rail.
+- It grows to a bounded multiline height, then owns internal scroll.
+- Up/Down navigate wrapped composer rows before prompt history.
+- External editor integration handles long input.
+- Draft survives picker dismissal, interruption, session-picker cancellation,
+  and recoverable errors.
 
 ### Command / Model Picker
 
@@ -301,10 +310,11 @@ selects the next active sibling; it never leaves a stale target.
 - Metrics occupy the idle activity row instead of the conversation transcript.
 - TPS and duration use the sum of assistant `message_start` → `message_end`
   intervals. Tool execution and idle queue time are excluded.
-- Cache hit measures retained reusable prefix: provider-reported cached input
-  tokens divided by the warm session's cache-read high-water mark. Newly
-  appended user/assistant suffix tokens are not cache misses. Cold turns omit
-  the cache field instead of displaying a meaningless `0.0%`.
+- Cache hit uses provider-reported input semantics:
+  `cacheRead / (uncachedInput + cacheRead)`. Newly appended suffix tokens are
+  therefore counted as uncached input instead of being hidden by a session
+  high-water mark. Cold turns omit the cache field instead of displaying a
+  meaningless `0.0%`.
 - Full/wide: throughput, cache-hit ratio, and duration when measured.
 - Compact: throughput, cache-hit ratio, and duration remain together when the
   complete line fits; lower-priority segments collapse only on overflow.
@@ -316,15 +326,15 @@ selects the next active sibling; it never leaves a stale target.
 | Runtime state | Transcript | Activity | Composer | Status | Accepted keys / transition |
 | --- | --- | --- | --- | --- | --- |
 | ready | none | latest response telemetry or blank | enabled | none | text submits; `/` opens picker |
-| waiting for model | none | `• Working` | queue enabled | none | empty-composer `Ctrl+C` aborts and exits |
-| assistant streaming | unlabeled answer row | `• Working` | queue enabled | metrics appear when idle | empty-composer `Ctrl+C` aborts and exits |
-| tool running | muted work row | verb + capability | queue enabled | none | empty-composer `Ctrl+C` aborts and exits |
-| agent active | emphasized work row | agent action | queue enabled | none | durable work row only |
-| approval requested | attached approval row | explicit subject + keys | disabled | warning health | `y` approve, `n` reject, `Esc` reject |
-| queued follow-up | no duplicate transcript row | queued count | enabled | none | `/queue`, `/clear` |
-| cancelled | cancellation result row | cancelled then ready | enabled | none | next input |
-| failed | error/result row | concise failure then ready | enabled | none | `/resume` when available |
-| interrupted/resumable | system row | resume available | enabled | none | `/resume` |
+| waiting for model | none | `• Working` | pending input enabled | none | `Esc` interrupts; empty-composer `Ctrl+C` interrupts |
+| assistant streaming | unlabeled answer row | `• Working` | pending input enabled | metrics appear when idle | `Esc` preserves pending input and completed output |
+| tool running | muted work row | verb + capability | pending input enabled | none | pending input waits for safe delivery |
+| agent active | named state row | owner + action | pending input enabled when parent-owned | none | navigate owner or wait |
+| approval requested | actor/action plus scrollable preview | explicit subject + labeled scope choices | disabled | warning health | approval surface; `Esc` safe reject |
+| pending input | no duplicate transcript row | pending delivery count while pending | enabled | none | recall/edit/remove |
+| cancelled | durable canceled/incomplete row | canceled until deliberate action | restored pending input | none | retry, edit, or new input |
+| failed | durable cause/incomplete row | retry reason/attempt or fatal state | enabled when safe | none | retry, inspect, or new input |
+| recoverable checkpoint | no pause fiction | recovery notice only when action is required | enabled for commands | none | automatic recovery or explicit repair |
 | provider unavailable | system/error row | explicit provider issue | enabled for commands | none | `/model`, `/accounts` |
 | context warning/critical | no duplicate prose | warning in activity only at critical | enabled | none | `/new`, `/clear` |
 | no models/no matches | picker empty state | unchanged | picker owns input | none | edit query or `Esc` |
@@ -333,8 +343,10 @@ selects the next active sibling; it never leaves a stale target.
 An event has one primary surface. Durable conversation facts go to the
 transcript; measured response telemetry and ephemeral work go to activity.
 
-The `agent active` transition exposes no dedicated detail picker in this
-redesign; the durable work row is the only agent detail surface.
+The transcript remains compact. `/agents [n]` exposes a durable read-only
+execution projection for the latest or selected operation, with real
+tool/subagent identities, hierarchy, state, measured duration, and failure
+summary. It never invents nodes from prose or animation state.
 
 ## 6. Motion & Interaction
 
@@ -394,6 +406,8 @@ Depth comes from luminance and containment, not nested boxes:
 - separators: one-cell ghost rules
 
 No gradients, shadows, rounded-card imitation, or decorative emoji clusters.
+The single cat glyph in the product identity is the fixed brand mark, not a
+general-purpose icon or decorative cluster.
 
 ## 8. Accessibility Constraints & Accepted Debt
 
@@ -409,32 +423,103 @@ No gradients, shadows, rounded-card imitation, or decorative emoji clusters.
 - Command tokens and key hints never wrap mid-token.
 - Keyboard-only use is complete; no mouse-only action exists.
 - Visual QA uses true PTY screen state, not flattened differential logs.
+- Final QA covers both spawn-at-size and live resize at `19x7`, `20x8`,
+  `40x10`, `56x12`, `80x24`, and `120x36`.
+- Approval actions, composer, activity, and at least one transcript row are
+  reserved before identity, cwd, provider/model detail, or metrics.
+- Every logical activity, rule, and approval-action row is cell-clipped before
+  layout and occupies exactly one physical row.
+- CJK grapheme width is not treated as IME proof. Candidate `Esc`/`Enter` is
+  consumed by composition before application shortcuts; bracketed and per-byte
+  paste preserve UTF-8.
+- Every advertised command, keybinding, and picker action has a reachable
+  implementation.
+
+### Binding Interaction Contract
+
+This contract supersedes older examples in this document where session
+recovery, internal queue state, or approval keys conflict with it.
+
+- Pi `SessionManager` is the user-conversation source of truth. Session list,
+  resume, new, transcript hydration, and later fork/branch read the same source.
+- A project-scoped `AgentSessionRuntime` owns active switching so persisted
+  model/provider/thinking, cwd-bound resources/extensions, usage, and lifecycle
+  hooks restore coherently. Pointer-only one-shot reopen is called continuation,
+  not switching.
+- SQLite checkpoint/outbox state remains a separate execution-recovery ledger.
+  Recovery cannot change the selected conversation.
+- `/resume` without an ID/name opens a project-scoped searchable session picker.
+  Direct lookup failure reports the selector and reopens that picker.
+- `/new` may allocate lazily, but the next accepted write must use a different
+  conversation identity and the old transcript is no longer presented as
+  current.
+- Native conversation IDs and legacy checkpoint/run IDs are different typed
+  namespaces. Only native conversation events can mutate the active-session
+  pointer.
+- A pending human input is in exactly one recoverable state: draft, queued,
+  attached, completed, or canceled-and-restored.
+- Every queued request binds immutable canonical project, conversation
+  generation/session, provider, and model at admission. Reclaim never rebuilds
+  routing from mutable UI state.
+- Active conversation publication is generation CAS fenced by the request's
+  live lease. Stale completion and stale `/new` cannot overwrite a newer head.
+- Until true live steering exists, Enter during work honestly queues the next
+  task. Steering and follow-up modifiers are introduced only when both delivery
+  paths exist and are labeled.
+- Pending entries remain represented by their submitted transcript turn and an
+  active-work count, execute FIFO, and survive interruption. There is no
+  separate queue-management screen.
+  Idle chrome never exposes internal checkpoint, paused, outbox, or request
+  queue vocabulary.
+- Session new/switch rejects while work or bound pending requests exist unless
+  the transition atomically settles or rebinds them.
+- Dispatch order is IME composition, blocking approval/dialog, picker,
+  composer, active-turn control, transcript navigation, then global exit.
+- A focus-acquiring click never approves, submits, selects, or dismisses.
+- Approval shows the exact operation, target, identity hashes, reviewable
+  preview, and fixed action row. Native approval is deliberately per-invocation
+  `y/n`; session/scoped policy is not advertised until a policy runtime exists.
+- Approval `Esc` is safe reject/dismiss. `Ctrl+C` cannot terminate the TUI while
+  approval owns focus. Oversized content scrolls instead of being rejected only
+  for exceeding viewport height.
+- The transcript is the sole base scroll owner. A full-history viewer is a
+  separate focused overlay with page, top/bottom, close, and follow-tail
+  controls.
+- Subagents expose name, measured running/completed/failed state, and durable
+  parent/child relation. Input ownership and delegated approval are added only
+  with a corresponding runtime protocol.
+- Transient errors show cause, attempt/countdown where applicable, preserve
+  completed partial output, and remain visible until deliberate action.
+- A linear transcript-friendly mode removes animation and decorative borders
+  while preserving every state and action label. Keyboard help is discoverable.
 
 ### Critical Screen Specifications
 
-1. **Idle:** context title, empty transcript, ready or resumable activity, and
-   focused `>` composer. “Workspace ready” is not chat.
+1. **Idle:** transcript, optional measured metrics, and focused `>` composer.
+   Internal resumability and storage queues are not workflow chrome.
 2. **Streaming:** partial unlabeled assistant prose, explicit working state, and
-   composer still available for durable queueing.
-3. **Parallel work:** restrained work rows with explicit states; no role labels,
-   execution tree, or repeated full-card boxes.
-4. **Approval:** originating execution row plus attached approval, activity owns
-   `y/n` keys, composer disabled.
-5. **Failure:** failed child/result remains durable; activity returns to ready
-   after concise acknowledgement.
+   composer available for the documented pending-input contract.
+3. **Parallel work:** named owner/state rows with parent/child relation and no
+   repeated full-card boxes.
+4. **Approval:** exact action/diff, reviewable preview, fixed labeled action
+   row, and approval disabled whenever the complete review does not fit.
+5. **Failure:** durable cause/incomplete marker and actionable retry/inspect
+   state; completed partial output remains.
 6. **Detached transcript:** content position is stable; `↓ N new` is visible.
 7. **Command/model picker:** bounded overlay, active row in reverse video,
    shell remains visible.
 8. **Compact/minimal:** prompt tint and unlabeled answer remain; optional
    metrics disappear before content.
 9. **Degraded:** bounded context title, prompt surface, composer, and exit path.
+10. **Session picker:** searchable root sessions with metadata, selector errors
+    that reopen the picker, and transcript hydration on selection.
+11. **Pending input:** submitted turns and pending count remain visible and are
+    preserved through interruption without exposing storage queue vocabulary.
+12. **Subagent:** measured state and hierarchy are explicit.
 
 ### Accepted Debt
 
-- Interactive tool-result expansion, transcript search, and a dedicated
-  agent/task pane require additional interaction state. This redesign provides
-  bounded durable rows and scrolling only; it must not expose controls for
-  expansion, search, or agent detail that are not implemented.
 - Terminal themes vary. The ANSI-256 palette assumes a dark or neutral terminal
-  and is validated for contrast through luminance hierarchy rather than exact
-  background ownership.
+  and requires final light, dark, and custom-theme contrast checks.
+- Cloud/background orchestration commands remain absent unless the corresponding
+  runtime capability exists; the UI never advertises a placeholder action.
