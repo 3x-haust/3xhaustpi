@@ -10,6 +10,7 @@ on:
       - "packages/core/**"
       - "packages/pi-adapter/**"
       - "packages/pi-session/**"
+      - "packages/3xhaustpi/**"
       - "3xhaust/**"
       - "package-lock.json"
       - ".github/workflows/3xhaust-compat.yml"
@@ -78,6 +79,7 @@ jobs:
           npm --prefix packages/core run build
           npm --prefix packages/pi-adapter run build
           npm --prefix packages/pi-session run build
+          npm --prefix packages/3xhaustpi run build
 
       - name: Test provider/model core
         run: npm --prefix packages/ai test
@@ -90,6 +92,8 @@ jobs:
 
       - name: Smoke-test the 3xhaustPi embedding surface
         run: node 3xhaust/verify-embedding.mjs
+      - name: Test the 3xhaustPi package
+        run: npm --prefix packages/3xhaustpi test
 
       - name: Inventory package and binary assets
         shell: bash
