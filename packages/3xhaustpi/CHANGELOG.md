@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed manual release recovery to verify the requested tag/source/version and safely replace assets on reruns.
+- Fixed project snapshots and semantic searches to prefer coding-agent's managed ripgrep binary with a bounded Node fallback.
+- Fixed approved file writes on Windows hosts where directory `fsync` reports `EPERM`.
+- Fixed existing-file patch replacement and rollback on Windows without overwriting concurrent changes.
+- Fixed project diagnostics on Windows by invoking npm through the command interpreter.
+
 ## [0.1.10] - 2026-08-26
 
 ### Added

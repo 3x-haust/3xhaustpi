@@ -5,6 +5,7 @@
 ### Added
 
 - Added a local compaction benchmark that measures continuation-critical context retention, stale-data leakage, token reduction, and serialization latency.
+- Added public managed-tool resolution exports for consumers that invoke bundled `rg` or `fd`.
 
 ### Changed
 

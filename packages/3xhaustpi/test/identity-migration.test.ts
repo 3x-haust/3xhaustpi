@@ -111,7 +111,7 @@ describe("3xhaustpi legacy persistence migration", () => {
 		},
 	);
 
-	it("repairs migrated credential metadata permissions", () => {
+	it.runIf(process.platform !== "win32")("repairs migrated credential metadata permissions", () => {
 		const home = temporaryDirectory();
 		const legacy = join(home, ".3xhaustpi");
 		mkdirSync(legacy);

@@ -6,10 +6,13 @@ on:
     paths:
       - "packages/ai/**"
       - "packages/agent/**"
+      - "packages/tui/**"
+      - "packages/coding-agent/**"
       - "packages/semantic-contract/**"
       - "packages/core/**"
       - "packages/pi-adapter/**"
       - "packages/pi-session/**"
+      - "packages/3xhaustpi/**"
       - "3xhaust/**"
       - "package-lock.json"
       - ".github/workflows/3xhaust-compat.yml"
@@ -74,10 +77,13 @@ jobs:
           npm --prefix packages/ai run hydrate-model-data
           npm --prefix packages/ai run build:offline
           npm --prefix packages/agent run build
+          npm --prefix packages/tui run build
+          npm --prefix packages/coding-agent run build
           npm --prefix packages/semantic-contract run build
           npm --prefix packages/core run build
           npm --prefix packages/pi-adapter run build
           npm --prefix packages/pi-session run build
+          npm --prefix packages/3xhaustpi run build
 
       - name: Test provider/model core
         run: npm --prefix packages/ai test
@@ -90,6 +96,8 @@ jobs:
 
       - name: Smoke-test the 3xhaustPi embedding surface
         run: node 3xhaust/verify-embedding.mjs
+      - name: Test the 3xhaustPi package
+        run: npm --prefix packages/3xhaustpi test
 
       - name: Inventory package and binary assets
         shell: bash

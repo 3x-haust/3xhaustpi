@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed OpenAI Codex Responses requests to send explicit `maxTokens` values as `max_output_tokens`.
+- Fixed Cloudflare AI Gateway builds and Workers AI passthrough models when refreshed gateway metadata omits those models.
 
 ## [0.82.1] - 2026-07-25
 

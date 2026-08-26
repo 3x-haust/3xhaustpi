@@ -424,7 +424,7 @@ describe("standalone runtime foundations", () => {
 
 		expect(() => applyPreparedFiles(project, prepared)).toThrow(/changed before apply/u);
 		expect(readFileSync(firstPath, "utf8")).toBe("first before\n");
-		expect(statSync(firstPath).mode & 0o777).toBe(0o751);
+		if (process.platform !== "win32") expect(statSync(firstPath).mode & 0o777).toBe(0o751);
 		expect(readFileSync(secondPath, "utf8")).toBe("second raced\n");
 	});
 
@@ -792,7 +792,7 @@ describe("standalone runtime foundations", () => {
 		expect(snapshot.stableContext).toContain("oldText is exactly the marker");
 	});
 
-	it("honors the process umask for a newly patched file", () => {
+	it.runIf(process.platform !== "win32")("honors the process umask for a newly patched file", () => {
 		const project = temporaryDirectory();
 		const snapshot = createProjectSnapshot(project, "create README.md");
 		const document = snapshot.documents.find(({ relativePath }) => relativePath === "README.md");
@@ -878,7 +878,7 @@ describe("standalone runtime foundations", () => {
 		}));
 
 		expect(await store.list()).toEqual([{ providerId: "openai-codex", type: "oauth" }]);
-		expect(statSync(path).mode & 0o777).toBe(0o600);
+		if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readFileSync(path, "utf8")).toContain("secret-access");
 	});
 
@@ -917,7 +917,7 @@ describe("standalone runtime foundations", () => {
 		const metadata = readFileSync(path, "utf8");
 		expect(metadata).not.toContain("legacy-secret");
 		expect(metadata).toContain('"storage": "os-keyring"');
-		expect(statSync(path).mode & 0o777).toBe(0o600);
+		if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
 
 		await store.modify("openai-codex", async (current) => ({
 			...current,

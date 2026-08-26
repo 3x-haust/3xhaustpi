@@ -1317,8 +1317,13 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Cloudflare AI Gateway models
-		if (data["cloudflare-ai-gateway"]?.models) {
-			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
+		const cloudflareAIGatewayModels = {
+			...Object.fromEntries(
+				Object.entries(data["cloudflare-workers-ai"]?.models ?? {}).map(([id, model]) => [`workers-ai/${id}`, model]),
+			),
+			...(data["cloudflare-ai-gateway"]?.models ?? {}),
+		};
+		for (const [prefixedId, model] of Object.entries(cloudflareAIGatewayModels)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1370,7 +1375,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					...(compat ? { compat } : {}),
 				});
 				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
-			}
 		}
 
 		// Process xAi models

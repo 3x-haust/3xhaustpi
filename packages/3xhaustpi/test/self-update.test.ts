@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	runSelfUpdate,
@@ -105,6 +105,8 @@ describe("self-update verification", () => {
 		);
 		expect(installedVersion).toBe("0.1.0");
 		expect(installHistory).toHaveLength(2);
-		expect(installHistory[1]).toContain("/rollback/");
+		const [, rollbackArchive] = installHistory;
+		if (!rollbackArchive) throw new Error("rollback archive was not installed");
+		expect(basename(dirname(rollbackArchive))).toBe("rollback");
 	});
 });
