@@ -18,6 +18,10 @@
 		},
 		"./rpc-entry": {
 			"import": "./dist/rpc-entry.js"
+		},
+		"./tools-manager": {
+			"types": "./dist/utils/tools-manager.d.ts",
+			"import": "./dist/utils/tools-manager.js"
 		}
 	},
 	"files": [

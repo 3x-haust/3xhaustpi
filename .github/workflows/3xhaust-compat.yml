@@ -79,6 +79,7 @@ jobs:
           npm --prefix packages/agent run build
           npm --prefix packages/tui run build
           npm --prefix packages/coding-agent run build
+          node --input-type=module -e 'const { ensureTool } = await import("@earendil-works/pi-coding-agent/tools-manager"); if (!await ensureTool("rg", true)) throw new Error("ripgrep setup failed")'
           npm --prefix packages/semantic-contract run build
           npm --prefix packages/core run build
           npm --prefix packages/pi-adapter run build

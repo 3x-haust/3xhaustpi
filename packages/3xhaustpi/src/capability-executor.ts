@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { getToolPath } from "@earendil-works/pi-coding-agent/tools-manager";
 import type { CapabilityInvocation } from "../../core/src/index.ts";
 
 export interface CapabilityExecution {
@@ -44,16 +45,24 @@ export function executeReadCapability(invocation: CapabilityInvocation, projectR
 	]);
 	const cached = readCache.get(cacheKey);
 	if (cached) return { ...cached, cacheHit: true };
-	const result = spawnSync("rg", ["-n", "--fixed-strings", "--glob", "!node_modules/**", queryOf(invocation), "."], {
-		cwd: projectRoot,
-		encoding: "utf8",
-		timeout: invocation.timeoutMs,
-		maxBuffer: 1_048_576,
-	});
+	const ripgrepPath = getToolPath("rg");
+	if (!ripgrepPath) {
+		return { status: "failed", summary: "Search requires ripgrep", matchCount: 0, outputHashInput: "" };
+	}
+	const result = spawnSync(
+		ripgrepPath,
+		["-n", "--fixed-strings", "--glob", "!node_modules/**", queryOf(invocation), "."],
+		{
+			cwd: projectRoot,
+			encoding: "utf8",
+			timeout: invocation.timeoutMs,
+			maxBuffer: 1_048_576,
+		},
+	);
 	if (result.error && "code" in result.error && result.error.code === "ETIMEDOUT") {
 		return { status: "timed-out", summary: "Search timed out", matchCount: 0, outputHashInput: "" };
 	}
-	const lines = result.stdout
+	const lines = (result.stdout ?? "")
 		.trim()
 		.split("\n")
 		.filter(Boolean)

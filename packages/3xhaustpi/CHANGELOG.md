@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed manual release recovery to verify the requested tag/source/version and safely replace assets on reruns.
+- Fixed project snapshots and semantic searches to use coding-agent's managed ripgrep binary instead of assuming `rg` is on `PATH`.
 
 ## [0.1.10] - 2026-08-26
 
