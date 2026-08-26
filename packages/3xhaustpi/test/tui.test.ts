@@ -26,6 +26,7 @@ import {
 	resolveModelSelection,
 	resolveTuiInputAction,
 	sanitizeTerminalText,
+	shouldDeferTuiInputToImageViewer,
 	stripAnsi,
 	TranscriptViewport,
 	type TuiViewState,
@@ -34,6 +35,9 @@ import {
 	transcriptViewportRows,
 } from "../src/tui.ts";
 import { approvalFitsTerminal } from "../src/tui-approval.ts";
+import { TUI_PRIMARY_COMMANDS } from "../src/tui-command-catalog.ts";
+import { contextHeaderRail, identityRail } from "../src/tui-layout-frame.ts";
+import { formatWorkCompletionLine } from "../src/tui-live-events.ts";
 import { fitTranscriptCards } from "../src/tui-transcript.ts";
 
 let inheritedNoColor: string | undefined;
@@ -175,7 +179,8 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(lines.at(-2)).toContain("/tmp/project");
 		expect(lines.at(-2)).toContain("gpt-5.6-terra:medium");
 		expect(lines.at(-2)).not.toMatch(/ready|tasks/u);
-		expect(lines.at(-1)).toBe("(😺 3xhaustPi Native) project");
+		expect(lines.at(-1)).toContain("(😺 3xhaustPi Native) project");
+		expect(lines.at(-1)).toContain("Ctx 35K/400K · 8.8%");
 		expect(lines.join("\n")).not.toContain("Queued");
 		expect(lines.at(-3)).toMatch(/^─+$/u);
 		expect(lines.at(-4)).toContain("> ");
@@ -183,9 +188,10 @@ describe("Pi-native event-driven TUI renderer", () => {
 	});
 
 	it("keeps the model in the wide title and the status footer rail", () => {
-		expect(footerSegmentOrder()).toEqual(["model", "context", "provider", "tasks"]);
+		expect(footerSegmentOrder()).toEqual(["context", "model", "provider", "tasks"]);
 		const minimal = visibleLines(renderTuiFrame(state, 40, 12));
 		expect(minimal.at(-2)).toBe("gpt-5.6-terra:medium");
+		expect(minimal.at(-1)).toContain("Ctx 35K/400K · 8.8%");
 		expect(minimal.at(-4)).toContain("> ");
 		const wide = visibleLines(renderTuiFrame(state, 120, 12));
 		expect(wide.at(-2)).toContain("gpt-5.6-terra:medium");
@@ -202,13 +208,18 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output.at(-2)).toContain("gpt-5.6-terra");
 		expect(output.at(-4)).toContain("> ");
 		expect(output.at(-1)).toContain("3xhaustPi");
+		expect(output.at(-1)).toContain("Ctx 35K/400K · 8.8%");
 	});
 
 	it("never admits a lower-priority footer segment after a higher one cannot fit", () => {
 		const footer = stripAnsi(formatStatusFooter(state, 26));
-		expect(footer).toContain("gpt-5.6-terra:medium");
+		expect(footer).toContain("35K/400K");
+		expect(footer).not.toContain("gpt-5.6-terra:medium");
 		expect(footer).not.toContain("openai-codex");
 		expect(footer).not.toContain("q1/t1");
+		expect(
+			stripAnsi(formatStatusFooter({ ...state, contextTokens: undefined, contextLimit: undefined }, 26)),
+		).not.toContain("0.0%");
 	});
 
 	it("has explicit tiny-terminal degradation without losing essential rails", () => {
@@ -281,7 +292,9 @@ describe("Pi-native event-driven TUI renderer", () => {
 	});
 
 	it("formats only measured response telemetry without inventing values", () => {
-		expect(reportedContextTokens({ input: 1_000, cacheRead: 6_000, cacheWrite: 3_000 })).toBe(10_000);
+		expect(reportedContextTokens({ input: 1_000, output: 250, cacheRead: 6_000, cacheWrite: 3_000 })).toBe(10_250);
+		expect(reportedContextTokens({ input: 1_000, output: 250, cacheRead: null, cacheWrite: 0 })).toBeUndefined();
+		expect(reportedContextTokens({ input: 1_000, output: 250, cacheRead: 0 })).toBeUndefined();
 		expect(
 			formatResponseMetrics({
 				input: 668,
@@ -340,6 +353,40 @@ describe("Pi-native event-driven TUI renderer", () => {
 			}),
 		).toBe("TPS 15.8 tok/s. Cache hit 100.0%, 5.0s");
 		expect(formatResponseMetrics({ input: null, output: null, cacheRead: null, durationMs: 1_200 })).toBe("1.2s");
+	});
+
+	it("advertises installed skill browsing in command help", () => {
+		expect(stripAnsi(formatHelpCommandLines(72).join("\n"))).toContain("/skills");
+	});
+
+	it("advertises and routes pending-input recall during active work", () => {
+		// Given: active work, one queued request, and an empty composer.
+		const context = {
+			approvalPending: false,
+			active: true,
+			composerText: "",
+			pendingCount: 1,
+		} as const;
+
+		// When: the user presses Up instead of submitting another request.
+		const action = resolveTuiInputAction("\u001b[A", context);
+
+		// Then: the newest pending request is recalled and the key is discoverable.
+		expect(action).toBe("recall-pending");
+		expect(stripAnsi(formatHelpCommandLines(72).join("\n"))).toContain("↑ edit pending");
+		expect(resolveTuiInputAction("\u001b[A", { ...context, composerText: "draft" })).toBe("pass");
+		expect(resolveTuiInputAction("\u001b[A", { ...context, active: false })).toBe("pass");
+	});
+
+	it("defers Escape to a focused overlay during active work", () => {
+		expect(
+			resolveTuiInputAction("\u001b", {
+				approvalPending: false,
+				active: true,
+				composerText: "",
+				overlayOpen: true,
+			}),
+		).toBe("pass");
 	});
 
 	it("keeps an oversized assistant answer visible when response metrics fit", () => {
@@ -440,6 +487,27 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(visibleLines(output).join("\n")).toContain("~/project");
 	});
 
+	it("sanitizes completed work into one physical transcript row", () => {
+		// Given: a work event containing CJK, OSC/CSI controls, and embedded newlines.
+		const event = {
+			type: "work.completed",
+			workId: "call_read",
+			success: true,
+			durationMs: 12.5,
+			label: "읽기\u001b]52;c;Y2xpcA==\u0007\n도구",
+			summary: "완료\u001b[2J\n추가",
+		} as const;
+
+		// When: the event becomes a visible transcript row.
+		const line = formatWorkCompletionLine(event);
+
+		// Then: dynamic fields are sanitized without losing CJK content.
+		expect(line).not.toContain("\n");
+		expect(line).not.toContain("\u001b]52");
+		expect(line).not.toContain("\u001b[2J");
+		expect(stripAnsi(line)).toBe("✓ 읽기 도구  12.5 ms · 완료 추가");
+	});
+
 	it("uses one activity row and a double-rule shell composer", () => {
 		const layout = layoutTuiFrame(72, 24);
 		const output = visibleLines(renderTuiFrame({ ...state, status: "running", activeTasks: 0 }, 72, 24));
@@ -454,6 +522,29 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output.at(-4)).not.toContain("Ask anything");
 		expect(output.at(-3)).toMatch(/^─+$/u);
 		expect(output.at(-2)).toContain("gpt-5.6-terra");
+	});
+
+	it("keeps precise context usage visible when the title cannot fit it", () => {
+		// Given: a compact terminal, a small measured context, and an active goal.
+		const measured = {
+			...state,
+			projectRoot: "/tmp/3xhaustpi",
+			contextTokens: 175,
+			contextLimit: 400_000,
+			goal: "Ship durable goals without hiding context",
+		};
+		const layout = layoutTuiFrame(63, 20);
+
+		// When: the context title and identity rail share the constrained shell.
+		const title = stripAnsi(contextHeaderRail(measured, layout));
+		const identity = stripAnsi(identityRail(measured, layout));
+
+		// Then: context remains precise and wins width over goal prose.
+		expect(title).not.toContain("175/400K");
+		expect(identity).toContain("Ctx 175/400K · 0.04%");
+		expect(identity).toContain("Goal");
+		expect(cellWidth(identity)).toBeLessThanOrEqual(63);
+		expect(stripAnsi(identityRail({ ...measured, contextTokens: undefined }, layout))).toContain("Ctx —/400K");
 	});
 
 	it("separates prompt surface and assistant prose without speaker rails", () => {
@@ -513,7 +604,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output.join("\n")).not.toMatch(/[├└]|^\s*(?:You|3xhaust)\s*$/gmu);
 	});
 
-	it("preserves prompt padding while collapsing adjacent card margins", () => {
+	it("preserves prompt padding and neutral answer boundaries", () => {
 		// Given
 		const rendered = fitTranscriptCards(
 			["You 안녕", "3xhaust 안녕하세요.", "You 안녕?", "3xhaust 반갑습니다."],
@@ -530,8 +621,9 @@ describe("Pi-native event-driven TUI renderer", () => {
 
 		// Then
 		expect(firstAnswer - firstPrompt).toBe(3);
-		expect(secondPrompt - firstAnswer).toBe(2);
+		expect(secondPrompt - firstAnswer).toBe(3);
 		expect(secondAnswer - secondPrompt).toBe(3);
+		expect(rendered[secondPrompt - 2]).toBe("");
 		expect(rendered[secondPrompt - 1]).toContain("\u001b[48;5;238m");
 	});
 
@@ -747,9 +839,12 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(stripAnsi(formatTuiActivityLine({ status: "error", detail: "diagnostics failed" }))).toBe(
 			"• Failed (diagnostics failed)",
 		);
-		expect(
-			stripAnsi(formatTuiActivityLine({ status: "running", detail: "write src/some/really-long-file-name.ts" }, 28)),
-		).toMatch(/^• Working \(write src\/som… · esc to interrupt\)$/u);
+		const narrowWork = stripAnsi(
+			formatTuiActivityLine({ status: "running", detail: "write src/some/really-long-file-name.ts" }, 28),
+		);
+		expect(cellWidth(narrowWork)).toBeLessThanOrEqual(27);
+		expect(narrowWork).toMatch(/^• Working \(write src\/som/u);
+		expect(narrowWork).toContain("…");
 		expect(stripAnsi(formatTuiActivityLine({ status: "ready", activeCount: 2, queuedCount: 4 }))).toBe(
 			"• Working (2 active · 4 pending · esc to interrupt)",
 		);
@@ -771,6 +866,11 @@ describe("Pi-native event-driven TUI renderer", () => {
 		);
 		expect(cellWidth(narrowMetrics)).toBeLessThanOrEqual(24);
 		expect(narrowMetrics).toContain("…");
+		const cjkActive = stripAnsi(
+			formatTuiActivityLine({ status: "running", detail: "검토 보조", activeCount: 1, animationFrame: 0 }, 40),
+		);
+		expect(cellWidth(cjkActive)).toBeLessThanOrEqual(39);
+		expect(cjkActive).toContain("…");
 	});
 
 	it("exits on one empty-composer Ctrl+C even while runtime cleanup remains active", () => {
@@ -783,6 +883,23 @@ describe("Pi-native event-driven TUI renderer", () => {
 	});
 
 	it("gives approval and active-work keys deterministic ownership", () => {
+		expect(
+			resolveTuiInputAction("y", {
+				approvalPending: true,
+				approvalReviewable: true,
+				active: true,
+				composerText: "",
+				overlayOpen: true,
+			}),
+		).toBe("approve-approval");
+		expect(
+			resolveTuiInputAction("\u001b", {
+				approvalPending: true,
+				active: true,
+				composerText: "",
+				overlayOpen: true,
+			}),
+		).toBe("reject-approval");
 		expect(resolveTuiInputAction("\u0003", { approvalPending: true, active: true, composerText: "" })).toBe(
 			"reject-approval",
 		);
@@ -818,6 +935,12 @@ describe("Pi-native event-driven TUI renderer", () => {
 		);
 		expect(resolveTuiInputAction("\u001b", { approvalPending: false, active: false, composerText: "" })).toBe("pass");
 		expect(resolveTuiInputAction("?", { approvalPending: false, active: false, composerText: "" })).toBe("open-help");
+	});
+
+	it("does not defer active-work Escape to the enlarged image viewer", () => {
+		expect(shouldDeferTuiInputToImageViewer(true, "interrupt")).toBe(false);
+		expect(shouldDeferTuiInputToImageViewer(true, "pass")).toBe(true);
+		expect(shouldDeferTuiInputToImageViewer(false, "interrupt")).toBe(false);
 	});
 
 	it("shows every approved mutation line or rejects the review", () => {
@@ -932,7 +1055,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(visibleLines(output)).toContain("• Working (1 pending · esc to interrupt)");
 		expect(visibleLines(output).at(-4)).toContain("> 로그인 오류를 조사해");
 		expect(visibleLines(output).at(-2)).toContain("openai-codex");
-		expect(visibleLines(output).at(-2)).toContain("35K/400K");
+		expect(visibleLines(output).at(-1)).toContain("Ctx 35K/400K · 8.8%");
 		expect(visibleLines(output).join("\n")).not.toMatch(/^\s*(?:You|3xhaust)\s*$/gmu);
 		expect(output).not.toMatch(/🤖/u);
 	});
@@ -1102,18 +1225,11 @@ describe("Pi-native event-driven TUI renderer", () => {
 		}
 		const lines = formatHelpCommandLines(56);
 		const output = lines.join("\n");
-		for (const token of [
-			"/resources",
-			"/clear",
-			"/resume [session]",
-			"/recover [checkpoint]",
-			"/chat <session>",
-			"/mcp tools <server>",
-		] as const) {
+		for (const { usage: token } of TUI_PRIMARY_COMMANDS) {
 			expect(output).toContain(token);
 			expect(output).not.toMatch(new RegExp(`${token.slice(0, -1)}\\n${token.slice(-1)}`));
 		}
-		expect(output).not.toContain("/queue");
+		for (const hidden of ["/clear", "/recover", "/chat ", "/mcp ", "/computer"]) expect(output).not.toContain(hidden);
 		for (const line of output.split("\n")) expect(cellWidth(stripAnsi(line))).toBeLessThanOrEqual(56);
 	});
 

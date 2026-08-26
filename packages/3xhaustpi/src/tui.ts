@@ -29,6 +29,7 @@ export {
 	resolveCtrlCAction,
 	resolveModelSelection,
 	resolveTuiInputAction,
+	shouldDeferTuiInputToImageViewer,
 } from "./tui-command-helpers.ts";
 export type {
 	RunTuiInput,

@@ -56,6 +56,7 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 	const providerImages = images.map((image) => ({ type: "image" as const, ...image }));
 	const provider = recovered?.provider ?? input.provider ?? DEFAULT_PROVIDER;
 	const modelId = recovered?.model ?? input.model ?? DEFAULT_MODEL;
+	const accountId = recovered?.accountId ?? input.accountId;
 	const resources = input.resources?.enabled
 		? loadHarnessResources({
 				projectRoot,
@@ -73,6 +74,7 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 	};
 	const models = createProviderRuntime(
 		input.credential ? providerCredentialOverride(provider, input.credential) : undefined,
+		accountId,
 	);
 	const needsProvider = !recovered || recovered.phase === "provider-ready" || recovered.phase === "followup-ready";
 	if (needsProvider && !(await models.checkAuth(provider))) {
@@ -99,6 +101,7 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 		approve: input.approve,
 		provider,
 		model: modelId,
+		...(accountId ? { accountId } : {}),
 		sessionId,
 		requestId,
 		fingerprint,

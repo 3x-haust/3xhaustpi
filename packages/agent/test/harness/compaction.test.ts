@@ -484,8 +484,8 @@ describe("harness compaction", () => {
 			},
 		]);
 		const result = serializeConversation(messages);
-		expect(result).toContain("[Tool result]:");
-		expect(result).toContain("[... 3000 more characters truncated]");
+		expect(result).toContain("[Tool result name=read id=tc1 status=success]:");
+		expect(result).toContain("[... 3000 characters omitted ...]");
 	});
 
 	it("passes reasoning through generateSummary only for reasoning models with thinking enabled", async () => {

@@ -12,14 +12,20 @@ import {
 	formatToolApprovalReview,
 	formatToolApprovalTranscriptEntry,
 } from "./tui-approval.ts";
-import type { TuiLiveCore } from "./tui-live-state.ts";
-import { appendTaskCompletion, type TuiLiveView } from "./tui-live-view.ts";
+import { resetLiveContextTelemetry, type TuiLiveCore } from "./tui-live-state.ts";
+import { appendTaskCompletion, formatTaskCompletionLine, type TuiLiveView } from "./tui-live-view.ts";
 import { failure, muted, success, text } from "./tui-text.ts";
 
 export interface TuiTaskEvents {
 	onTaskEvent(event: CodingTaskEvent): void;
 	requestApproval(proposal: CodingTaskPatchProposal): Promise<boolean>;
 	requestToolApproval(request: AgentToolApprovalRequest): Promise<boolean>;
+}
+
+export function formatWorkCompletionLine(
+	event: Extract<CodingTaskEvent, { readonly type: "work.completed" }> & { readonly label: string },
+): string {
+	return formatTaskCompletionLine(event.success, event.label, event.durationMs, event.summary);
 }
 
 export function conversationSessionFromEvent(
@@ -31,14 +37,19 @@ export function conversationSessionFromEvent(
 
 export function createTuiTaskEvents(core: TuiLiveCore, view: TuiLiveView): TuiTaskEvents {
 	const { state, database } = core;
+	const closeInspectionOverlay = () => {
+		view.closeHistory();
+		if (core.ui.hasOverlay()) core.ui.hideOverlay();
+	};
 	const onTaskEvent = (event: CodingTaskEvent) => {
 		if (event.type === "session.started") {
 			const conversation = conversationSessionFromEvent(event);
 			const nextMetricsScope = `${event.sessionId}\u0000${event.provider}\u0000${event.model}`;
-			if (state.metricsScope !== nextMetricsScope) {
-				state.metricsScope = nextMetricsScope;
-				state.latestCacheHitRatio = undefined;
-			}
+			const scopeChanged = state.metricsScope !== undefined && state.metricsScope !== nextMetricsScope;
+			if (scopeChanged) resetLiveContextTelemetry(state);
+			state.metricsScope = nextMetricsScope;
+			state.latestCacheHitRatio = undefined;
+			state.latestMetricsLine = undefined;
 			state.provider = event.provider;
 			state.model = event.model;
 			state.responseOutputTokens = 0;
@@ -59,6 +70,7 @@ export function createTuiTaskEvents(core: TuiLiveCore, view: TuiLiveView): TuiTa
 			}
 			view.updateChrome();
 		} else if (event.type === "model.completed") {
+			if (state.metricsScope === undefined) return;
 			state.latestContextTokens = reportedContextTokens(event.usage);
 			state.responseOutputTokens += event.usage.output ?? 0;
 			state.responseDurationMs += event.durationMs;
@@ -120,7 +132,7 @@ export function createTuiTaskEvents(core: TuiLiveCore, view: TuiLiveView): TuiTa
 		} else if (event.type === "patch.proposed") {
 			view.refreshWorkspace();
 			state.phase = "awaiting-approval";
-			view.closeHistory();
+			closeInspectionOverlay();
 			view.followTranscript();
 			view.appendPatch(event);
 			view.updateChrome(`${event.files.length} file${event.files.length === 1 ? "" : "s"}`);
@@ -138,6 +150,7 @@ export function createTuiTaskEvents(core: TuiLiveCore, view: TuiLiveView): TuiTa
 				reject(new Error("A TUI approval is already pending."));
 				return;
 			}
+			closeInspectionOverlay();
 			state.approvalResolve = resolve;
 			state.approvalKind = "patch";
 			state.approvalReviewText = formatPatchApprovalTranscriptEntry(proposal);
@@ -148,7 +161,7 @@ export function createTuiTaskEvents(core: TuiLiveCore, view: TuiLiveView): TuiTa
 	const requestToolApproval = (request: AgentToolApprovalRequest): Promise<boolean> => {
 		const review = formatToolApprovalReview(request);
 		const reviewText = formatToolApprovalTranscriptEntry(request);
-		view.closeHistory();
+		closeInspectionOverlay();
 		view.followTranscript();
 		view.appendText(reviewText);
 		if (!review.reviewable) return Promise.resolve(false);

@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { Editor, ProcessTerminal, Text, TUI } from "@earendil-works/pi-tui";
+import { type Editor, ProcessTerminal, Text, TUI } from "@earendil-works/pi-tui";
 import type { AgentToolApprovalRequest } from "./agent-runtime.ts";
 import type { AgentConversationSummary } from "./agent-session-catalog.ts";
+import { CacheWarmController } from "./cache-warm-controller.ts";
 import type { DesktopAccessibilityObservation, DesktopApplication } from "./desktop-runtime.ts";
 import { DesktopAccessibilityHost } from "./desktop-runtime.ts";
-import { type ClaimedTuiRequest, ThreeXhaustState, type TuiRequest, type WorkspaceSnapshot } from "./state.ts";
+import { DEFAULT_MODEL, DEFAULT_PROVIDER, modelContextWindow } from "./provider-runtime.ts";
+import {
+	type ClaimedTuiRequest,
+	ThreeXhaustState,
+	type TuiProjectGoal,
+	type TuiRequest,
+	type WorkspaceSnapshot,
+} from "./state.ts";
+import { TuiComposer } from "./tui-composer.ts";
 import type { RunTuiInput, TuiViewState } from "./tui-contract.ts";
 import { TranscriptViewport } from "./tui-layout-frame.ts";
 import { accent, dim, muted } from "./tui-text.ts";
@@ -20,6 +29,7 @@ export interface TuiLiveMutableState {
 	workspace: WorkspaceSnapshot;
 	conversationSessions: readonly AgentConversationSummary[];
 	queuedRequests: readonly TuiRequest[];
+	projectGoal: TuiProjectGoal | undefined;
 	phase: TuiViewState["status"];
 	approvalResolve: ((approved: boolean) => void) | undefined;
 	approvalKind: "patch" | "computer" | "tool" | undefined;
@@ -57,6 +67,7 @@ export interface TuiLiveCore {
 	readonly database: ThreeXhaustState;
 	readonly desktopHost: NonNullable<RunTuiInput["desktopHost"]>;
 	readonly ui: TUI;
+	readonly composer: TuiComposer;
 	readonly editor: Editor;
 	readonly transcriptEntries: string[];
 	readonly transcript: TranscriptViewport;
@@ -64,11 +75,33 @@ export interface TuiLiveCore {
 	readonly header: Text;
 	readonly brand: Text;
 	readonly divider: Text;
+	readonly cacheWarm: CacheWarmController;
 	readonly state: TuiLiveMutableState;
 	readonly workMotionEnabled: boolean;
 	readonly linearOutput: boolean;
 	readonly closed: Promise<void>;
 	readonly finish: () => void;
+}
+
+export function liveContextLimit(core: TuiLiveCore): number | undefined {
+	const initialProvider = core.input.provider ?? DEFAULT_PROVIDER;
+	const initialModel = core.input.model ?? DEFAULT_MODEL;
+	if (
+		core.input.contextLimit !== undefined &&
+		core.state.provider === initialProvider &&
+		core.state.model === initialModel
+	)
+		return core.input.contextLimit;
+	return modelContextWindow(core.state.provider, core.state.model);
+}
+
+export function resetLiveContextTelemetry(state: TuiLiveMutableState): void {
+	state.latestContextTokens = undefined;
+	state.latestCacheHitRatio = undefined;
+	state.latestMetricsLine = undefined;
+	state.responseOutputTokens = 0;
+	state.responseDurationMs = 0;
+	state.metricsScope = undefined;
 }
 
 function editorTheme() {
@@ -91,7 +124,7 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 	const workspace = database.inspectWorkspace(projectRoot);
 	const agentSessionId = database.findTuiAgentSession(projectRoot);
 	const ui = new TUI(new ProcessTerminal());
-	const editor = new Editor(ui, editorTheme(), {
+	const composer = new TuiComposer(ui, editorTheme(), {
 		paddingX: 1,
 		autocompletePresentation: "overlay",
 		promptPrefix: `${accent(">")} `,
@@ -99,12 +132,22 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 		maxVisibleLines: 6,
 		submitSlashArgumentCompletions: true,
 	});
+	const editor = composer.editor;
+	const cacheWarm = new CacheWarmController({
+		enabled:
+			input.warmCache !== undefined && database.findTuiProjectPreference(projectRoot, "cache-warm") === "eligible",
+		warm: (target, signal) => {
+			if (!input.warmCache) throw new Error("Cache warming is unavailable");
+			return input.warmCache({ ...target, signal });
+		},
+		onChange: () => ui.requestRender(),
+	});
 	const transcriptEntries: string[] = [];
 	const scrollOffset = { value: 0 };
 	const transcript = new TranscriptViewport(
 		transcriptEntries,
 		() => process.stdout.rows || 36,
-		() => Math.max(0, editor.render(process.stdout.columns || 120).length - 2),
+		() => Math.max(0, composer.render(process.stdout.columns || 120).length - 2),
 		() => scrollOffset.value,
 	);
 	let finish!: () => void;
@@ -117,6 +160,7 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 		database,
 		desktopHost: input.desktopHost ?? new DesktopAccessibilityHost(),
 		ui,
+		composer,
 		editor,
 		transcriptEntries,
 		transcript,
@@ -124,6 +168,7 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 		header: new Text("", 0, 0),
 		brand: new Text("", 0, 0),
 		divider: new Text("", 0, 0),
+		cacheWarm,
 		workMotionEnabled:
 			process.env.NO_COLOR === undefined &&
 			process.env.TERM !== "dumb" &&
@@ -134,12 +179,13 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 		finish,
 		state: {
 			projectRoot,
-			provider: input.provider ?? "openai-codex",
-			model: input.model ?? "gpt-5.6-terra",
+			provider: input.provider ?? DEFAULT_PROVIDER,
+			model: input.model ?? DEFAULT_MODEL,
 			thinkingLevel: input.thinkingLevel ?? "medium",
 			workspace,
 			conversationSessions: [],
 			queuedRequests: database.listTuiRequests(projectRoot).filter((request) => request.status === "queued"),
+			projectGoal: database.findTuiProjectGoal(projectRoot),
 			phase: "ready",
 			approvalResolve: undefined,
 			approvalKind: undefined,

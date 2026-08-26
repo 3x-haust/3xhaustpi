@@ -44,6 +44,34 @@ export class TuiOperationStore {
 		this.#effects.recover(projectPath, now);
 	}
 
+	findProjectPreference(projectPath: string, key: string): string | undefined {
+		if (!key.trim()) throw new Error("TUI project preference key is required");
+		const row = this.#database
+			.prepare(
+				`SELECT preference_value FROM tui_project_preferences
+				 WHERE canonical_path = ? AND preference_key = ?`,
+			)
+			.get(projectPath, key) as { readonly preference_value: string } | undefined;
+		return row?.preference_value;
+	}
+
+	setProjectPreference(projectPath: string, key: string, value: string | undefined): void {
+		if (!key.trim()) throw new Error("TUI project preference key is required");
+		if (value === undefined) {
+			this.#database
+				.prepare("DELETE FROM tui_project_preferences WHERE canonical_path = ? AND preference_key = ?")
+				.run(projectPath, key);
+			return;
+		}
+		this.#database
+			.prepare(
+				`INSERT OR REPLACE INTO tui_project_preferences(
+					canonical_path, preference_key, preference_value, updated_at
+				) VALUES (?, ?, ?, ?)`,
+			)
+			.run(projectPath, key, value, new Date().toISOString());
+	}
+
 	enqueue(input: EnqueueTuiRequestInput): { readonly request: TuiRequest; readonly inserted: boolean } {
 		return this.#queue.enqueue(input);
 	}
@@ -52,8 +80,77 @@ export class TuiOperationStore {
 		return this.#queue.list(projectPath);
 	}
 
+	recallNewest(projectPath: string, now?: string): TuiRequest | undefined {
+		return this.#queue.recallNewest(projectPath, now);
+	}
+
 	listHistory(projectPath: string): readonly TuiRequestHistoryItem[] {
 		return this.#queue.listHistory(projectPath);
+	}
+
+	listAccountExclusions(projectPath: string): readonly string[] {
+		const scopeKey = this.accountScopeKey(projectPath);
+		const rows = this.#database
+			.prepare(
+				`SELECT account_id FROM tui_session_account_exclusions
+				 WHERE canonical_path = ? AND scope_key = ? ORDER BY account_id`,
+			)
+			.all(projectPath, scopeKey) as unknown as Array<{ readonly account_id: string }>;
+		return rows.map(({ account_id }) => account_id);
+	}
+
+	setAccountsEnabled(projectPath: string, accountIds: readonly string[], enabled: boolean): void {
+		const scopeKey = this.accountScopeKey(projectPath);
+		const now = new Date().toISOString();
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			for (const accountId of new Set(accountIds)) {
+				if (!accountId.trim()) throw new Error("TUI account ID is required");
+				if (enabled) {
+					this.#database
+						.prepare(
+							`DELETE FROM tui_session_account_exclusions
+							 WHERE canonical_path = ? AND scope_key = ? AND account_id = ?`,
+						)
+						.run(projectPath, scopeKey, accountId);
+				} else {
+					this.#database
+						.prepare(
+							`INSERT OR REPLACE INTO tui_session_account_exclusions(
+								canonical_path, scope_key, account_id, updated_at
+							) VALUES (?, ?, ?, ?)`,
+						)
+						.run(projectPath, scopeKey, accountId, now);
+				}
+			}
+			this.#database.exec("COMMIT");
+		} catch (error) {
+			this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	findProviderAccount(projectPath: string, providerId: string): string | undefined {
+		const row = this.#database
+			.prepare(
+				`SELECT account_id FROM tui_session_provider_accounts
+				 WHERE canonical_path = ? AND scope_key = ? AND provider_id = ?`,
+			)
+			.get(projectPath, this.accountScopeKey(projectPath), providerId) as
+			| { readonly account_id: string }
+			| undefined;
+		return row?.account_id;
+	}
+
+	setProviderAccount(projectPath: string, providerId: string, accountId: string): void {
+		if (!providerId.trim() || !accountId.trim()) throw new Error("Provider and account IDs are required");
+		this.#database
+			.prepare(
+				`INSERT OR REPLACE INTO tui_session_provider_accounts(
+					canonical_path, scope_key, provider_id, account_id, updated_at
+				) VALUES (?, ?, ?, ?, ?)`,
+			)
+			.run(projectPath, this.accountScopeKey(projectPath), providerId, accountId, new Date().toISOString());
 	}
 
 	listExecutionGraphs(projectPath: string): readonly TuiExecutionProjection[] {
@@ -141,6 +238,40 @@ export class TuiOperationStore {
 				.get(input.projectPath) as { readonly generation: number; readonly session_id: string | null } | undefined;
 			const generation = current?.generation ?? 0;
 			if (generation !== input.expectedGeneration) throw new Error("TUI conversation generation is stale");
+			const draftScope = `draft:${generation}`;
+			const sessionScope = `session:${input.sessionId}`;
+			this.#database
+				.prepare(
+					`INSERT OR REPLACE INTO tui_session_account_exclusions(
+						canonical_path, scope_key, account_id, updated_at
+					)
+					SELECT canonical_path, ?, account_id, updated_at
+					FROM tui_session_account_exclusions
+					WHERE canonical_path = ? AND scope_key = ?`,
+				)
+				.run(sessionScope, input.projectPath, draftScope);
+			this.#database
+				.prepare(
+					`DELETE FROM tui_session_account_exclusions
+					 WHERE canonical_path = ? AND scope_key = ?`,
+				)
+				.run(input.projectPath, draftScope);
+			this.#database
+				.prepare(
+					`INSERT OR REPLACE INTO tui_session_provider_accounts(
+						canonical_path, scope_key, provider_id, account_id, updated_at
+					)
+					SELECT canonical_path, ?, provider_id, account_id, updated_at
+					FROM tui_session_provider_accounts
+					WHERE canonical_path = ? AND scope_key = ?`,
+				)
+				.run(sessionScope, input.projectPath, draftScope);
+			this.#database
+				.prepare(
+					`DELETE FROM tui_session_provider_accounts
+					 WHERE canonical_path = ? AND scope_key = ?`,
+				)
+				.run(input.projectPath, draftScope);
 			if (current) {
 				this.#database
 					.prepare(
@@ -231,5 +362,10 @@ export class TuiOperationStore {
 			expectedGeneration: current.generation,
 			sessionId: null,
 		});
+	}
+
+	private accountScopeKey(projectPath: string): string {
+		const head = this.readConversationHead(projectPath);
+		return head.sessionId ? `session:${head.sessionId}` : `draft:${head.generation}`;
 	}
 }

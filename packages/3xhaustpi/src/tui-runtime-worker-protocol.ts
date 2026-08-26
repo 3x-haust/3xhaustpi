@@ -1,3 +1,4 @@
+import { isImagePayloads } from "./image-payload.ts";
 import {
 	isRunId,
 	messageRunId,
@@ -26,6 +27,10 @@ function hasOptionalType(value: unknown, type: "string" | "boolean"): boolean {
 	return value === undefined || typeof value === type;
 }
 
+function isThinkingLevel(value: unknown): boolean {
+	return ["off", "minimal", "low", "medium", "high", "xhigh"].includes(String(value));
+}
+
 function isRuntimeRequest(value: unknown): value is TuiRuntimeRequest {
 	if (!isRecord(value) || typeof value.projectRoot !== "string") return false;
 	if (value.mode === "resume") {
@@ -33,6 +38,56 @@ function isRuntimeRequest(value: unknown): value is TuiRuntimeRequest {
 			hasOnlyKeys(value, ["mode", "projectRoot", "sessionId", "allowProjectHooks"]) &&
 			hasOptionalType(value.sessionId, "string") &&
 			hasOptionalType(value.allowProjectHooks, "boolean")
+		);
+	}
+	if (value.mode === "side-question") {
+		return (
+			hasOnlyKeys(value, [
+				"mode",
+				"projectRoot",
+				"question",
+				"context",
+				"provider",
+				"model",
+				"accountId",
+				"thinkingLevel",
+			]) &&
+			typeof value.question === "string" &&
+			typeof value.context === "string" &&
+			typeof value.provider === "string" &&
+			typeof value.model === "string" &&
+			hasOptionalType(value.accountId, "string") &&
+			isThinkingLevel(value.thinkingLevel)
+		);
+	}
+	if (value.mode === "compact") {
+		return (
+			hasOnlyKeys(value, [
+				"mode",
+				"projectRoot",
+				"sessionId",
+				"instructions",
+				"provider",
+				"model",
+				"accountId",
+				"thinkingLevel",
+			]) &&
+			typeof value.sessionId === "string" &&
+			hasOptionalType(value.instructions, "string") &&
+			typeof value.provider === "string" &&
+			typeof value.model === "string" &&
+			hasOptionalType(value.accountId, "string") &&
+			isThinkingLevel(value.thinkingLevel)
+		);
+	}
+	if (value.mode === "cache-warm") {
+		return (
+			hasOnlyKeys(value, ["mode", "projectRoot", "sessionId", "provider", "model", "accountId", "thinkingLevel"]) &&
+			typeof value.sessionId === "string" &&
+			typeof value.provider === "string" &&
+			typeof value.model === "string" &&
+			hasOptionalType(value.accountId, "string") &&
+			isThinkingLevel(value.thinkingLevel)
 		);
 	}
 	if (value.mode !== "run" || typeof value.objective !== "string") return false;
@@ -43,15 +98,18 @@ function isRuntimeRequest(value: unknown): value is TuiRuntimeRequest {
 			"objective",
 			"provider",
 			"model",
+			"accountId",
+			"images",
 			"sessionId",
 			"thinkingLevel",
 			"allowProjectHooks",
 		]) &&
 		hasOptionalType(value.provider, "string") &&
 		hasOptionalType(value.model, "string") &&
+		hasOptionalType(value.accountId, "string") &&
+		(value.images === undefined || isImagePayloads(value.images)) &&
 		hasOptionalType(value.sessionId, "string") &&
-		(value.thinkingLevel === undefined ||
-			["off", "minimal", "low", "medium", "high", "xhigh"].includes(String(value.thinkingLevel))) &&
+		(value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel)) &&
 		hasOptionalType(value.allowProjectHooks, "boolean")
 	);
 }
@@ -60,7 +118,7 @@ function isShutdownMessage(value: unknown): value is { readonly type: "shutdown"
 	return isRecord(value) && value.type === "shutdown" && hasOnlyKeys(value, ["type"]);
 }
 
-function isParentMessage(value: unknown): value is RuntimeParentMessage {
+export function isRuntimeParentMessage(value: unknown): value is RuntimeParentMessage {
 	if (!isRecord(value)) return false;
 	if (isShutdownMessage(value)) return true;
 	if (!isRunId(value.runId)) return false;
@@ -110,7 +168,7 @@ export class TuiRuntimeWorkerProtocol {
 		const run = this.runState.active;
 		const incomingRunId = messageRunId(message);
 		if (run && incomingRunId !== run.runId) return;
-		if (!isParentMessage(message) || message.type === "shutdown") {
+		if (!isRuntimeParentMessage(message) || message.type === "shutdown") {
 			if (run) this.failRun(run, new Error("TUI runtime worker received an invalid message."));
 			else if (isRunId(incomingRunId)) {
 				this.sendError(incomingRunId, new Error("TUI runtime worker received an invalid message."));

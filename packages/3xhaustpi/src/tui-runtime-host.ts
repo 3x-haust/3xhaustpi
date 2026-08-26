@@ -53,7 +53,9 @@ export class TuiRuntimeHost {
 			poison: (error) => this.poison(error),
 			recycle: () => this.recycleTransport(),
 			onSettled: (source) => {
-				if (this.active === source) this.active = undefined;
+				if (this.active !== source) return;
+				this.active = undefined;
+				this.recycleTransport();
 			},
 		});
 		this.active = run;

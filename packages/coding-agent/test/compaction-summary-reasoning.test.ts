@@ -164,4 +164,34 @@ describe("generateSummary reasoning options", () => {
 		});
 		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
+
+	it("starts history and split-turn summaries concurrently", async () => {
+		// Given: a split compaction whose first provider request is held open.
+		let releaseHistory: ((message: AssistantMessage) => void) | undefined;
+		const history = new Promise<AssistantMessage>((resolve) => {
+			releaseHistory = resolve;
+		});
+		completeSimpleMock.mockImplementationOnce(() => history).mockResolvedValueOnce(mockSummaryResponse);
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: messages,
+			turnPrefixMessages: messages,
+			isSplitTurn: true,
+			tokensBefore: 600_000,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 20_000, keepRecentTokens: 2_000 },
+		};
+
+		// When: compaction starts but the history response has not completed.
+		const pending = compact(preparation, createModel(false), "test-key");
+		await Promise.resolve();
+		await Promise.resolve();
+		const callsBeforeHistoryCompleted = completeSimpleMock.mock.calls.length;
+		if (!releaseHistory) throw new Error("History compaction did not start");
+		releaseHistory(mockSummaryResponse);
+		await pending;
+
+		// Then: the independent split-turn request was already dispatched.
+		expect(callsBeforeHistoryCompleted).toBe(2);
+	});
 });

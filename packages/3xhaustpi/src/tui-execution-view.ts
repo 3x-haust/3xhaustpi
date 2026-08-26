@@ -1,6 +1,10 @@
 import type { ExecutionNode } from "./execution-graph.ts";
 import type { TuiExecutionProjection } from "./state.ts";
-import { accent, ellipsizeCells, failure, muted, success, text } from "./tui-text.ts";
+import { accent, ellipsizeCells, failure, muted, sanitizeTerminalText, success, text } from "./tui-text.ts";
+
+function graphField(value: string): string {
+	return sanitizeTerminalText(value).replace(/\s+/gu, " ").trim();
+}
 
 function nodeSymbol(node: ExecutionNode): string {
 	switch (node.state) {
@@ -14,28 +18,32 @@ function nodeSymbol(node: ExecutionNode): string {
 }
 
 function nodeLabel(node: ExecutionNode): string {
-	return node.kind === "agent" ? `agent ${node.label}` : node.label;
+	const label = graphField(node.label);
+	return node.kind === "agent" ? `agent ${label}` : label;
 }
 
 function nodeDetail(node: ExecutionNode): string {
 	if (node.state === "running") return "";
-	return `  ${node.durationMs.toFixed(1)} ms · ${node.summary}`;
+	return `  ${node.durationMs.toFixed(1)} ms · ${graphField(node.summary)}`;
 }
 
 export function formatExecutionGraphLines(projection: TuiExecutionProjection, columns: number): string[] {
 	const width = Math.max(1, Math.floor(columns));
-	const active = projection.graph.activeNodeIds.length;
-	const done = projection.graph.nodes.filter((node) => node.state === "completed").length;
-	const failed = projection.graph.nodes.filter((node) => node.state === "failed").length;
+	const workNodes = projection.graph.nodes.filter((node) => node.kind !== "root");
+	const active = workNodes.filter((node) => node.state === "running").length;
+	const done = workNodes.filter((node) => node.state === "completed").length;
+	const failed = workNodes.filter((node) => node.state === "failed").length;
 	const counts = [
-		active > 0 ? `${active} active` : undefined,
-		done > 0 ? `${done} done` : undefined,
-		failed > 0 ? `${failed} failed` : undefined,
+		active > 0 ? `${active} active node${active === 1 ? "" : "s"}` : undefined,
+		done > 0 ? `${done} completed node${done === 1 ? "" : "s"}` : undefined,
+		failed > 0 ? `${failed} failed node${failed === 1 ? "" : "s"}` : undefined,
 	]
 		.filter((value) => value !== undefined)
 		.join(" · ");
 	const header = ellipsizeCells(
-		`${text("Work graph")} ${muted(`· ${projection.status}${counts ? ` · ${counts}` : ""} · ${projection.objective}`)}`,
+		`${text("Work graph")} ${muted(
+			`· ${projection.status}${counts ? ` · ${counts}` : ""} · ${graphField(projection.objective)}`,
+		)}`,
 		width,
 	);
 	const childrenByParent = new Map<string, ExecutionNode[]>();

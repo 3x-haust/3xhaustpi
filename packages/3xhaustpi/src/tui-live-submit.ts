@@ -1,19 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename } from "node:path";
+import { eligibleModelAccounts, resolveSessionAccount } from "./account-selection.ts";
 import { listAgentConversationSessions, loadAgentConversation } from "./agent-session-catalog.ts";
+import { collectProviderConnections } from "./connections.ts";
 import { createProviderRuntime } from "./provider-runtime.ts";
-import { formatHelpCommandLines, parseTuiCommand, resolveModelSelection } from "./tui-command-helpers.ts";
+import { parseTuiCommand, resolveModelSelection } from "./tui-command-helpers.ts";
 import { formatExecutionGraphLines } from "./tui-execution-view.ts";
+import { startAccountCommand, startAccountManager } from "./tui-live-account.ts";
 import type { TuiAutocompleteController } from "./tui-live-autocomplete.ts";
+import { handleTuiQuickCommand } from "./tui-live-command-dispatch.ts";
 import type { TuiDesktopController } from "./tui-live-desktop.ts";
 import {
 	handleMcpCommand,
 	handleSkillCommand,
-	startConnectionsCommand,
 	startResourcesCommand,
+	startSkillBrowser,
 } from "./tui-live-resources.ts";
 import { handleTuiSessionCommand } from "./tui-live-session-commands.ts";
-import type { TuiLiveCore } from "./tui-live-state.ts";
+import { startSettings } from "./tui-live-settings.ts";
+import { resetLiveContextTelemetry, type TuiLiveCore } from "./tui-live-state.ts";
 import type { TuiTaskController } from "./tui-live-tasks.ts";
 import type { TuiLiveView } from "./tui-live-view.ts";
 import type { TuiWorkspaceCommands } from "./tui-live-workspace.ts";
@@ -31,7 +36,7 @@ interface SubmitDependencies {
 
 export function installTuiSubmission(deps: SubmitDependencies): void {
 	const { core, view, tasks, workspace, desktop, autocomplete, requestExit } = deps;
-	const { state, database, editor } = core;
+	const { state, database, composer, editor } = core;
 	const refreshConversationSessions = async () => {
 		state.conversationSessions = await listAgentConversationSessions(state.projectRoot);
 		autocomplete.installAutocomplete();
@@ -40,11 +45,14 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 	editor.onSubmit = async (value) => {
 		const objective = value.trim();
 		if (!objective) return;
+		const displayImages = composer.displayImagesFor(objective);
+		const images = displayImages.map(({ data, mimeType }) => ({ data, mimeType }));
 		view.followTranscript();
 		editor.addToHistory(objective);
 		editor.setText("");
 		const parsedCommand = parseTuiCommand(objective);
 		if (parsedCommand) {
+			composer.clearAttachments();
 			const { name: command, argument } = parsedCommand;
 			if (command === "exit") {
 				view.appendText(muted("Exiting."));
@@ -53,8 +61,7 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 			}
 			if (command === "model") {
 				if (!argument) {
-					editor.setText("/model ");
-					editor.handleInput("\t");
+					startSettings(core, view, autocomplete, desktop, "model");
 					return;
 				}
 				const selection = resolveModelSelection(autocomplete.currentProviderModels(), argument);
@@ -63,6 +70,7 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 					return;
 				}
 				state.model = selection.model;
+				resetLiveContextTelemetry(state);
 				view.updateChrome(`model ${state.model}`);
 				autocomplete.installAutocomplete();
 				view.appendText(`${success("✓")} model ${text(state.model)}`);
@@ -79,6 +87,7 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 				if (!provider.getModels().some(({ id }) => id === state.model)) {
 					state.model = provider.getModels()[0]?.id ?? state.model;
 				}
+				resetLiveContextTelemetry(state);
 				autocomplete.installAutocomplete();
 				view.updateChrome(`provider ${state.provider}`);
 				return;
@@ -94,16 +103,18 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 				view.updateChrome(`thinking ${level}`);
 				return;
 			}
-			if (command === "help") {
-				view.appendText(formatHelpCommandLines(process.stdout.columns || 120).join("\n"));
-				return;
-			}
-			if (command === "accounts") {
-				startConnectionsCommand(argument, view);
+			if (await handleTuiQuickCommand(command, argument, { core, view, autocomplete, desktop })) return;
+			if (command === "account") {
+				if (argument) startAccountCommand(argument, core, view);
+				else startAccountManager(core, view);
 				return;
 			}
 			if (command === "resources") {
 				startResourcesCommand(core, view);
+				return;
+			}
+			if (command === "skills") {
+				startSkillBrowser(core, view);
 				return;
 			}
 			if (command === "skill") {
@@ -133,6 +144,12 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 					return;
 				}
 				state.projectRoot = project.path;
+				resetLiveContextTelemetry(state);
+				state.projectGoal = database.findTuiProjectGoal(state.projectRoot);
+				core.cacheWarm.reset(
+					core.input.warmCache !== undefined &&
+						database.findTuiProjectPreference(state.projectRoot, "cache-warm") === "eligible",
+				);
 				const head = database.readTuiConversationHead(state.projectRoot);
 				if (head.sessionId) state.agentSessionIds.set(state.projectRoot, head.sessionId);
 				else state.agentSessionIds.delete(state.projectRoot);
@@ -177,35 +194,56 @@ export function installTuiSubmission(deps: SubmitDependencies): void {
 					view.appendText(line);
 				return;
 			}
-			if (command === "clear") {
-				core.transcriptEntries.splice(0);
-				view.updateChrome();
-				return;
-			}
 			view.appendText(warning(`Unknown command: /${command}. Type /help.`));
 			return;
 		}
 		const conversation = database.readTuiConversationHead(state.projectRoot);
+		const accounts = (await collectProviderConnections()).flatMap(({ accounts }) => accounts);
+		const exclusions = database.listTuiAccountExclusions(state.projectRoot);
+		const pinnedAccountId = database.findTuiProviderAccount(state.projectRoot, state.provider);
+		const account =
+			eligibleModelAccounts(accounts, exclusions).find(
+				(candidate) => candidate.providerId === state.provider && candidate.id === pinnedAccountId,
+			) ??
+			resolveSessionAccount(
+				accounts,
+				exclusions,
+				state.provider,
+				conversation.sessionId ?? `${state.projectRoot}:${conversation.generation}`,
+			);
+		if (!account) {
+			editor.setText(objective);
+			view.appendText(warning(`No selected account for ${state.provider}. Open /account to connect or enable one.`));
+			return;
+		}
+		if (account.id !== pinnedAccountId) {
+			database.setTuiProviderAccount(state.projectRoot, state.provider, account.id);
+		}
 		const binding = {
 			version: 1 as const,
 			conversationGeneration: conversation.generation,
 			sessionId: conversation.sessionId,
 			provider: state.provider,
 			model: state.model,
+			accountId: account.id,
 			thinkingLevel: state.thinkingLevel,
 		};
+		const fingerprint = createHash("sha256")
+			.update(`${state.projectRoot}\0${binding.conversationGeneration}\0${binding.sessionId ?? ""}\0`)
+			.update(`${binding.provider}\0${binding.model}\0${binding.accountId}\0${objective}`)
+			.update("\0");
+		for (const image of images) fingerprint.update(image.mimeType).update("\0").update(image.data).update("\0");
 		const enqueued = database.enqueueTuiRequest({
 			requestId: `tui_${randomUUID()}`,
 			projectPath: state.projectRoot,
-			fingerprint: createHash("sha256")
-				.update(`${state.projectRoot}\0${binding.conversationGeneration}\0${binding.sessionId ?? ""}\0`)
-				.update(`${binding.provider}\0${binding.model}\0${objective}`)
-				.digest("hex"),
+			fingerprint: fingerprint.digest("hex"),
 			objective,
+			...(images.length ? { images } : {}),
 			binding,
 		});
+		composer.clearAttachments();
 		view.refreshQueue();
-		view.appendUser(objective, enqueued.inserted);
+		view.appendUser(objective, enqueued.inserted, displayImages);
 		if (!enqueued.inserted) view.appendText(warning(`already queued ${enqueued.request.position}  ${objective}`));
 		tasks.drainQueue();
 	};

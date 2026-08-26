@@ -488,6 +488,10 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
+## Operational Evidence
+- [Exact commands and outcomes, validation evidence, unresolved errors/root causes, and delegated child session lineage]
+- [Or "(none)" if no operational evidence exists]
+
 ## Next Steps
 1. [Ordered list of what should happen next]
 
@@ -527,6 +531,10 @@ Use this EXACT format:
 
 ## Key Decisions
 - **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Operational Evidence
+- [Preserve exact commands/outcomes, validation evidence, unresolved errors/root causes, and delegated child session lineage]
+- [Remove only evidence that is explicitly superseded and retain the replacement]
 
 ## Next Steps
 1. [Update based on current state]
@@ -843,43 +851,44 @@ export async function compact(
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
-		let historyUsage: Usage | undefined;
-		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummaryWithUsage(
-				messagesToSummarize,
+		const historyPromise =
+			messagesToSummarize.length > 0
+				? generateSummaryWithUsage(
+						messagesToSummarize,
+						model,
+						settings.reserveTokens,
+						apiKey,
+						headers,
+						signal,
+						customInstructions,
+						previousSummary,
+						thinkingLevel,
+						streamFn,
+						env,
+						retry,
+						callbacks,
+					)
+				: Promise.resolve(undefined);
+		const [historyResult, turnPrefixResult] = await Promise.all([
+			historyPromise,
+			generateTurnPrefixSummary(
+				turnPrefixMessages,
 				model,
 				settings.reserveTokens,
 				apiKey,
 				headers,
+				env,
 				signal,
-				customInstructions,
-				previousSummary,
 				thinkingLevel,
 				streamFn,
-				env,
 				retry,
 				callbacks,
-			);
-			historyText = historyResult.text;
-			historyUsage = historyResult.usage;
-		}
-		const turnPrefixResult = await generateTurnPrefixSummary(
-			turnPrefixMessages,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			env,
-			signal,
-			thinkingLevel,
-			streamFn,
-			retry,
-			callbacks,
-		);
+			),
+		]);
+		const historyText = historyResult?.text ?? "No prior history.";
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
-		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
+		summaryUsage = historyResult ? combineUsage(historyResult.usage, turnPrefixResult.usage) : turnPrefixResult.usage;
 	} else {
 		// Just generate history summary
 		const result = await generateSummaryWithUsage(

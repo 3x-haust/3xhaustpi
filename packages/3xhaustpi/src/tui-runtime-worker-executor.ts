@@ -28,16 +28,60 @@ export class TuiRuntimeWorkerExecutor {
 
 	async execute(request: TuiRuntimeRequest, run: ActiveWorkerRun): Promise<unknown> {
 		const hooks = this.createHooks(run);
-		const result =
-			request.mode === "run"
-				? await this.executeRun(request, hooks)
-				: await resumeCodingTask({
-						projectRoot: request.projectRoot,
-						approve: false,
-						...hooks,
-						resources: { enabled: true, allowProjectHooks: request.allowProjectHooks },
-						...(request.sessionId ? { sessionId: request.sessionId } : {}),
-					});
+		let result: unknown;
+		switch (request.mode) {
+			case "run":
+				result = await this.executeRun(request, hooks);
+				break;
+			case "resume":
+				result = await resumeCodingTask({
+					projectRoot: request.projectRoot,
+					approve: false,
+					...hooks,
+					resources: { enabled: true, allowProjectHooks: request.allowProjectHooks },
+					...(request.sessionId ? { sessionId: request.sessionId } : {}),
+				});
+				break;
+			case "side-question":
+				result = await this.agentRuntimeHost.runSideQuestion({
+					projectRoot: request.projectRoot,
+					question: request.question,
+					context: request.context,
+					provider: request.provider,
+					model: request.model,
+					...(request.accountId ? { accountId: request.accountId } : {}),
+					thinkingLevel: request.thinkingLevel,
+					signal: hooks.signal,
+				});
+				break;
+			case "compact":
+				result = await this.agentRuntimeHost.compactConversation({
+					projectRoot: request.projectRoot,
+					sessionId: request.sessionId,
+					...(request.instructions ? { instructions: request.instructions } : {}),
+					provider: request.provider,
+					model: request.model,
+					...(request.accountId ? { accountId: request.accountId } : {}),
+					thinkingLevel: request.thinkingLevel,
+					signal: hooks.signal,
+				});
+				break;
+			case "cache-warm":
+				result = await this.agentRuntimeHost.warmCache({
+					projectRoot: request.projectRoot,
+					sessionId: request.sessionId,
+					provider: request.provider,
+					model: request.model,
+					...(request.accountId ? { accountId: request.accountId } : {}),
+					thinkingLevel: request.thinkingLevel,
+					signal: hooks.signal,
+				});
+				break;
+			default: {
+				const unsupported: never = request;
+				throw new TypeError(`Unsupported TUI runtime request: ${String(unsupported)}`);
+			}
+		}
 		if (run.controller.signal.aborted) throw this.runState.cancellationError(run);
 		return result;
 	}
@@ -98,6 +142,8 @@ export class TuiRuntimeWorkerExecutor {
 			objective: request.objective,
 			...(request.provider ? { provider: request.provider } : {}),
 			...(request.model ? { model: request.model } : {}),
+			...(request.accountId ? { accountId: request.accountId } : {}),
+			...(request.images?.length ? { images: request.images } : {}),
 			...(request.sessionId ? { sessionId: request.sessionId } : {}),
 			...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 			signal: hooks.signal,

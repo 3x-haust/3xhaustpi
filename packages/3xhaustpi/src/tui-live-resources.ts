@@ -1,23 +1,46 @@
-import { collectConnections, renderConnections, useAsideAccount } from "./connections.ts";
 import { callMcpTool, listMcpTools } from "./mcp-client.ts";
 import { addMcpServer, loadMcpResources, renderResourceHub } from "./resource-hub.ts";
+import { createSkillTemplate, loadHarnessResources } from "./resource-loader.ts";
 import type { TuiLiveCore } from "./tui-live-state.ts";
 import type { TuiLiveView } from "./tui-live-view.ts";
-import { dim, failure, muted, success, text, warning } from "./tui-text.ts";
+import { SkillBrowserOverlay } from "./tui-skill-browser-overlay.ts";
+import { dim, failure, muted, sanitizeTerminalText, success, text, warning } from "./tui-text.ts";
 
-export function startConnectionsCommand(argument: string, view: TuiLiveView): void {
-	void (async () => {
-		const use = /^use\s+(u\d+)$/u.exec(argument);
-		if (use?.[1]) useAsideAccount(use[1]);
-		const inventory = await collectConnections();
-		for (const line of renderConnections(inventory).split("\n")) view.appendText(line || " ");
-		view.appendText(dim("Use /accounts use <id> to select the default Aside account."));
-	})().catch((cause) => view.appendText(failure(cause instanceof Error ? cause.message : String(cause))));
+export function startSkillBrowser(core: TuiLiveCore, view: TuiLiveView): void {
+	try {
+		const skills = loadHarnessResources({ projectRoot: core.state.projectRoot }).skills;
+		const columns = process.stdout.columns || 120;
+		const rows = process.stdout.rows || 36;
+		const overlayRows = () => Math.max(1, Math.floor((process.stdout.rows || 36) * 0.4));
+		if (columns < 40 || rows < 10 || overlayRows() < 6) {
+			view.appendText(text(`Installed skills · ${skills.length}`));
+			for (const skill of skills) {
+				view.appendText(
+					`${text(sanitizeTerminalText(skill.name))}  ${muted(
+						`${skill.scope} · ${sanitizeTerminalText(skill.description)}`,
+					)}`,
+				);
+			}
+			return;
+		}
+		let handle: ReturnType<TuiLiveCore["ui"]["showOverlay"]> | undefined;
+		const overlay = new SkillBrowserOverlay(skills, overlayRows, {
+			close: () => handle?.hide(),
+			invalidate: () => core.ui.requestRender(),
+		});
+		handle = core.ui.showOverlay(overlay, {
+			width: Math.max(36, Math.min(76, columns - 4)),
+			maxHeight: "40%",
+			anchor: "top-center",
+			margin: 2,
+		});
+	} catch (cause) {
+		view.appendText(failure(cause instanceof Error ? cause.message : String(cause)));
+	}
 }
 
 export function startResourcesCommand(core: TuiLiveCore, view: TuiLiveView): void {
-	void (async () => {
-		const { loadHarnessResources } = await import("./resource-loader.ts");
+	try {
 		const resources = loadHarnessResources({ projectRoot: core.state.projectRoot });
 		const output = renderResourceHub({
 			skills: resources.skills.map((skill) => ({
@@ -42,17 +65,22 @@ export function startResourcesCommand(core: TuiLiveCore, view: TuiLiveView): voi
 				"Add: /skill create <name>  ·  /mcp add <name> <command> [args...]  ·  /mcp tools <server>  ·  /mcp call <server> <tool> [json]",
 			),
 		);
-	})().catch((cause) => view.appendText(failure(cause instanceof Error ? cause.message : String(cause))));
+	} catch (cause) {
+		view.appendText(failure(cause instanceof Error ? cause.message : String(cause)));
+	}
 }
 
 export async function handleSkillCommand(argument: string, core: TuiLiveCore, view: TuiLiveView): Promise<void> {
+	if (!argument || argument === "list") {
+		startSkillBrowser(core, view);
+		return;
+	}
 	const match = /^create\s+([a-z0-9][a-z0-9._-]{0,63})$/u.exec(argument);
 	if (!match?.[1]) {
-		view.appendText(warning("Usage: /skill create <name>"));
+		view.appendText(warning("Usage: /skill [list | create <name>]"));
 		return;
 	}
 	try {
-		const { createSkillTemplate } = await import("./resource-loader.ts");
 		const created = createSkillTemplate({ projectRoot: core.state.projectRoot, name: match[1], scope: "project" });
 		view.appendText(`${success("✓")} Created ${text(created.path)}`);
 	} catch (cause) {

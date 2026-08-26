@@ -25,6 +25,7 @@ export const warning = (value: string) => tone(214, value);
 export const failure = (value: string) => tone(203, value);
 export const italic = (value: string) => style("3", value);
 export const emphasis = (value: string) => style("1;3", value);
+export const selection = (value: string) => (process.env.TERM === "dumb" ? value : `${ESC}7m${value}${ESC}0m`);
 
 export function grayscaleShimmer(value: string, frame: number): string {
 	if (!terminalStylesEnabled()) return value;

@@ -89,6 +89,14 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => "/tmp/agent",
 }));
 
+vi.mock("../../coding-agent/src/core/session-manager.ts", () => ({
+	SessionManager: {
+		create: mocks.createSessionManager,
+		list: mocks.listSessions,
+		open: mocks.openSessionManager,
+	},
+}));
+
 vi.mock("../src/agent-delegate-tool.ts", () => ({
 	createDelegateTool: (input: {
 		readonly delegate: (request: { readonly workId: string; readonly objective: string }) => Promise<string>;

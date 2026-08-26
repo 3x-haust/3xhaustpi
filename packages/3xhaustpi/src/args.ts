@@ -11,10 +11,16 @@ export type ThreeXhaustCommand =
 			readonly model?: string;
 			readonly project?: string;
 	  }
-	| { readonly kind: "auth-login"; readonly provider?: string }
 	| { readonly kind: "extension-list" }
 	| { readonly kind: "resource-list" }
-	| { readonly kind: "accounts-list" }
+	| { readonly kind: "account-list" }
+	| {
+			readonly kind: "account-add";
+			readonly provider?: string;
+			readonly authType?: "oauth" | "api_key";
+	  }
+	| { readonly kind: "account-use"; readonly selector: string }
+	| { readonly kind: "account-delete"; readonly selector: string }
 	| { readonly kind: "npm-login"; readonly account?: string }
 	| { readonly kind: "npm-publish"; readonly account?: string }
 	| { readonly kind: "skill-create"; readonly name: string }
@@ -58,7 +64,28 @@ export function parseCliArgs(args: readonly string[]): ThreeXhaustCommand {
 	if (args[0] === "doctor") return { kind: "doctor" };
 	if (args[0] === "models") return { kind: "models" };
 	if (args[0] === "update") return { kind: "update" };
-	if (args[0] === "accounts" && args.length === 1) return { kind: "accounts-list" };
+	if (args[0] === "account" && args.length === 1) return { kind: "account-list" };
+	if (args[0] === "account") {
+		if (args[1] === "add" && args.length <= 4) {
+			const authType =
+				args[3] === "oauth" ? "oauth" : args[3] === "api-key" || args[3] === "api_key" ? "api_key" : undefined;
+			if (args[3] && !authType) throw new CliArgumentError("account add auth method must be oauth or api-key");
+			return {
+				kind: "account-add",
+				...(args[2] ? { provider: args[2] } : {}),
+				...(authType ? { authType } : {}),
+			};
+		}
+		if (args[1] === "use" && args.length === 3 && args[2]) {
+			return { kind: "account-use", selector: args[2] };
+		}
+		if (args[1] === "delete" && args.length === 3 && args[2]) {
+			return { kind: "account-delete", selector: args[2] };
+		}
+		throw new CliArgumentError(
+			'account supports "account", "account add [provider] [oauth|api-key]", "account use <id>", or "account delete <id>"',
+		);
+	}
 	if (args[0] === "resource") {
 		if (args[1] !== "list" || args.length !== 2) {
 			throw new CliArgumentError('resource currently supports exactly "resource list"');
@@ -104,10 +131,7 @@ export function parseCliArgs(args: readonly string[]): ThreeXhaustCommand {
 		return { kind: "extension-list" };
 	}
 	if (args[0] === "auth") {
-		if (args[1] !== "login" || args.length > 3) {
-			throw new CliArgumentError('auth currently supports "auth login [provider]"');
-		}
-		return { kind: "auth-login", ...(args[2] ? { provider: args[2] } : {}) };
+		throw new CliArgumentError('Provider login moved to "account add [provider]"');
 	}
 	if (args[0] === "benchmark") {
 		let repetitions: number | undefined;

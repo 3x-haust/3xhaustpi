@@ -147,6 +147,7 @@ or transcript budget.
 | Surface | Wide/full | Compact | Minimal/degraded |
 | --- | --- | --- | --- |
 | title | product, project, model | product and project | product |
+| identity | product, active goal, context usage/limit/percent | product, goal/context as width permits | product |
 | user prompt | empty tint row, content, empty tint row, neutral separator row | empty tint row, content, empty tint row, neutral separator row | content row only |
 | thought | duration and work summary | duration | hide before answer |
 | answer | readable capped measure | terminal measure | terminal measure |
@@ -159,11 +160,15 @@ or transcript budget.
 ### Identity Rail
 
 - One product label only: no duplicated `3xhaustPi` project name.
-- Owns only product and workspace identity.
+- Owns product, project goal, and context-budget identity.
 - Anchors the final shell row below the context title and composer.
-- Full/compact: `(😺 3xhaustPi Native) project`
+- Full/compact: `(😺 3xhaustPi Native) Goal <active goal>` on the left and
+  `Ctx <used>/<limit> · <percent>` on the right. Goal text yields before the
+  context meter when width is constrained.
 - Minimal: `3xhaustPi`
 - Model and run state never repeat here.
+- Context percentage uses two decimals below 1%, one decimal otherwise, and
+  never reports unknown usage as zero.
 
 ### Transcript Feed
 
@@ -178,8 +183,9 @@ or transcript budget.
   below bright answer prose. Minimal output may collapse the leading row.
 - Prompt bottom padding remains tinted and is followed by one neutral separator
   before pending work or an answer.
-- Every repeated prompt preserves its tinted top padding; the preceding
-  assistant relinquishes its neutral trailing margin instead.
+- Every repeated prompt preserves its tinted top padding and one neutral
+  terminal-background row between the preceding assistant response and the
+  prompt surface.
 - Prompt, durable work, answer, and response telemetry bodies use the same
   one-row semantic boundary. Work rows never touch answer prose, and telemetry
   never touches the final answer body.
@@ -285,6 +291,12 @@ selects the next active sibling; it never leaves a stale target.
 
 - Always visually focused with a leading `>`.
 - Empty state is an unlabeled hardware cursor, matching a native shell prompt.
+- Pasted-image thumbnails render inside the composer shell with no filename,
+  format, or enlargement header. Each thumbnail is column-aligned immediately
+  above its matching `[imageN]` token; multiple visible tokens receive their
+  own preview while preserving ordinary text and cursor order.
+- `Ctrl+O` opens the image whose `[imageN]` token contains the composer cursor;
+  mouse hit regions cover only the thumbnail's actually rendered cells.
 - `/` opens command discovery; command and model tokens remain intact.
 - Matching full-width rules above and below the input create a stable
   double-rule shell. There is no decorative side rail.
@@ -304,6 +316,51 @@ selects the next active sibling; it never leaves a stale target.
 - Captures focus while open; `Escape` restores composer focus.
 - Maximum width is `min(76, terminal - 4)` and maximum height is 40% of terminal
   rows. At degraded dimensions it falls back to compact in-flow results.
+
+### Account Manager
+
+- `/account` is the only provider-account entry point. Login is expressed as
+  adding an account rather than a separate auth surface.
+- Bare `/account` opens a focused overlay. Up/Down move the reverse-video
+  selection, Enter opens or activates the selected action, and Escape backs out
+  one level before closing the overlay and restoring composer focus.
+- Codex OAuth accounts appear first, with `▶` for the active account and `○`
+  for saved alternatives. Each row shows a readable email when the credential
+  provides one and a shortened account ID for disambiguation.
+- Enter on a Codex account opens its action menu. Selecting an inactive account
+  activates it; deleting opens a second picker whose safe default is Cancel and
+  whose destructive choice remains bound to the displayed account ID even if
+  account ordering changes.
+- Add Codex account is a first-class picker row that opens browser OAuth. Aside
+  accounts are navigable rows and Enter selects one. Other-provider and npm
+  state remain a compact read-only summary so they do not compete with account
+  actions.
+- The overlay uses the shared picker primitive, stays within 76 columns and 40%
+  of terminal height, scrolls long account lists, and preserves complete command
+  tokens at compact widths. Below the supported picker floor, `/account` falls
+  back to bounded transcript output.
+- Explicit `/account add`, `/account use <number>`, and `/account delete
+  <number>` commands remain available for scripting and direct keyboard use.
+- Other provider credentials, Aside browser accounts, and npm publishing state
+  remain visible without becoming fake or disabled actions.
+- Account tokens never enter transcript content, model prompts, renderer state,
+  or application SQLite. Only non-secret account labels and identifiers render.
+
+### Skill Browser
+
+- `/skills` opens one read-only overlay containing the skills
+  currently installed for the active project after built-in, user, and project
+  precedence is resolved.
+- The list shows each skill name, scope, and description. Up/Down moves the
+  reverse-video selection, Enter opens the complete installed instructions,
+  and Escape returns to the list before closing the overlay.
+- Skill detail owns bounded internal scrolling with Up/Down, PageUp/PageDown,
+  Home, and End. The transcript, composer, context title, and identity rail
+  remain stable behind the overlay.
+- The overlay follows the shared picker width and 40% height limits. Below the
+  supported picker floor, the command falls back to a bounded transcript list.
+- Skill content is sanitized before terminal rendering. Viewing a skill never
+  edits, enables, disables, or injects it again.
 
 ### Response Metrics
 
@@ -335,18 +392,18 @@ selects the next active sibling; it never leaves a stale target.
 | cancelled | durable canceled/incomplete row | canceled until deliberate action | restored pending input | none | retry, edit, or new input |
 | failed | durable cause/incomplete row | retry reason/attempt or fatal state | enabled when safe | none | retry, inspect, or new input |
 | recoverable checkpoint | no pause fiction | recovery notice only when action is required | enabled for commands | none | automatic recovery or explicit repair |
-| provider unavailable | system/error row | explicit provider issue | enabled for commands | none | `/model`, `/accounts` |
-| context warning/critical | no duplicate prose | warning in activity only at critical | enabled | none | `/new`, `/clear` |
+| provider unavailable | system/error row | explicit provider issue | enabled for commands | none | `/model`, `/account` |
+| context warning/critical | no duplicate prose | warning in activity only at critical | enabled | none | `/compact`, `/new` |
 | no models/no matches | picker empty state | unchanged | picker owns input | none | edit query or `Esc` |
 | transcript detached | durable feed unchanged | `↓ N new · Alt+End latest` | enabled | none | transcript keys only when composer empty |
 
 An event has one primary surface. Durable conversation facts go to the
 transcript; measured response telemetry and ephemeral work go to activity.
 
-The transcript remains compact. `/agents [n]` exposes a durable read-only
-execution projection for the latest or selected operation, with real
-tool/subagent identities, hierarchy, state, measured duration, and failure
-summary. It never invents nodes from prose or animation state.
+The transcript remains compact. `/status` owns the durable read-only execution
+projection for the current operation, with real tool/subagent identities,
+hierarchy, state, measured duration, and failure summary. It never invents
+nodes from prose or animation state.
 
 ## 6. Motion & Interaction
 
@@ -442,10 +499,11 @@ recovery, internal queue state, or approval keys conflict with it.
 
 - Pi `SessionManager` is the user-conversation source of truth. Session list,
   resume, new, transcript hydration, and later fork/branch read the same source.
-- A project-scoped `AgentSessionRuntime` owns active switching so persisted
-  model/provider/thinking, cwd-bound resources/extensions, usage, and lifecycle
-  hooks restore coherently. Pointer-only one-shot reopen is called continuation,
-  not switching.
+- A worker-scoped `AgentSessionRuntime` owns active switching during one
+  operation. On settlement the worker is reaped; the next operation reopens the
+  durable Pi session so persisted model/provider/thinking, cwd-bound resources,
+  usage, and lifecycle hooks restore coherently without retaining a V8 isolate
+  while idle.
 - SQLite checkpoint/outbox state remains a separate execution-recovery ledger.
   Recovery cannot change the selected conversation.
 - `/resume` without an ID/name opens a project-scoped searchable session picker.
@@ -453,11 +511,17 @@ recovery, internal queue state, or approval keys conflict with it.
 - `/new` may allocate lazily, but the next accepted write must use a different
   conversation identity and the old transcript is no longer presented as
   current.
+- `/clear` is an undiscoverable compatibility alias for `/new`; visual redraw
+  belongs to `Ctrl+L` and never implies context deletion.
 - Native conversation IDs and legacy checkpoint/run IDs are different typed
   namespaces. Only native conversation events can mutate the active-session
   pointer.
 - A pending human input is in exactly one recoverable state: draft, queued,
   attached, completed, or canceled-and-restored.
+- While foreground work is active, Up on an empty composer atomically recalls
+  the newest queued input into the draft, including its image bindings. The
+  recalled queue row becomes durable `recalled` history and cannot execute;
+  older pending inputs retain FIFO order. No separate queue screen is added.
 - Every queued request binds immutable canonical project, conversation
   generation/session, provider, and model at admission. Reclaim never rebuilds
   routing from mutable UI state.
@@ -492,6 +556,40 @@ recovery, internal queue state, or approval keys conflict with it.
   completed partial output, and remain visible until deliberate action.
 - A linear transcript-friendly mode removes animation and decorative borders
   while preserving every state and action label. Keyboard help is discoverable.
+
+### Command Surface
+
+- Slash autocomplete and `/help` read one canonical task-oriented catalog:
+  `/new`, `/resume`, `/goal`, `/btw`, `/compact`, `/rewind`, `/review`, `/status`,
+  `/model`, `/project`, `/account`, `/skills`, `/settings`, `/help`, `/exit`.
+- Legacy aliases and internal primitives remain non-discoverable compatibility
+  routes only. Session selection is `/resume`; project selection is `/project`;
+  provider and reasoning selection live under `/model`; MCP, hooks, and
+  computer access live under `/settings`.
+- `/btw` runs an ephemeral in-memory, no-tools side session from a bounded
+  snapshot of the visible conversation. It never appends to or mutates the
+  durable parent conversation and may run while the parent is working.
+- `/compact [focus]` serializes through the active session owner, preserves the
+  conversation identity and full persisted transcript, and invalidates stale
+  context telemetry after lossy context summarization. A no-op response includes
+  the currently measured context usage, limit, and percentage.
+- `/goal <text>` sets one project-scoped durable active goal. `/goal` reads it,
+  `/goal done` marks it completed, and `/goal clear` removes it. Project switches
+  hydrate the selected project's goal; conversation switches do not leak or
+  clear project intent. Only an active goal appears in the identity rail.
+- `/review [focus]` captures bounded Git working-tree evidence, runs an
+  ephemeral no-tools review, and labels findings stale if the tree changes
+  before completion.
+- `/rewind` is conversation-only. It creates a durable branch before a selected
+  user turn, preserves the original conversation, and restores the selected
+  prompt for editing. It never claims to restore files, shell effects, manual
+  edits, or concurrent agent changes.
+- `/status` reports session identity, selected model/reasoning, effective phase,
+  active/pending work, and honestly sourced latest-turn telemetry. Unknown
+  values render as unavailable rather than zero.
+- Pure inspection overlays and `/btw` open without interrupting active work.
+  `/review` requires an idle tree so its captured evidence is stable.
+  Session-mutating operations reject while active or bound pending work exists.
 
 ### Critical Screen Specifications
 

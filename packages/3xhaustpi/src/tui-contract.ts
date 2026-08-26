@@ -1,4 +1,5 @@
 import type { AgentProviderEffectBoundaryRequest, AgentToolApprovalRequest } from "./agent-runtime.ts";
+import type { CacheWarmResult, CacheWarmTarget } from "./cache-warm-controller.ts";
 import type { CodingTaskEvent, CodingTaskPatchProposal } from "./coding-runtime.ts";
 import type {
 	DesktopAccessibilityObservation,
@@ -7,6 +8,7 @@ import type {
 	DesktopComputerAction,
 } from "./desktop-runtime.ts";
 import type { WorkspaceSnapshot } from "./state.ts";
+import type { TuiRequestImage } from "./tui-operation-types.ts";
 
 export interface TuiViewState {
 	readonly projectRoot: string;
@@ -15,6 +17,7 @@ export interface TuiViewState {
 	readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	readonly contextTokens?: number;
 	readonly contextLimit?: number;
+	readonly goal?: string;
 	readonly cacheHitRatio?: number;
 	readonly gitStatus?: "clean" | "dirty" | "unavailable";
 	readonly activeTasks?: number;
@@ -64,6 +67,45 @@ export interface TuiSigintTarget {
 	removeListener(event: "SIGINT", listener: () => void): unknown;
 }
 
+export interface TuiSideQuestionRequest {
+	readonly projectRoot: string;
+	readonly question: string;
+	readonly context: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly accountId?: string;
+	readonly thinkingLevel: NonNullable<TuiViewState["thinkingLevel"]>;
+	readonly signal: AbortSignal;
+}
+
+export interface TuiCompactConversationRequest {
+	readonly projectRoot: string;
+	readonly sessionId: string;
+	readonly instructions?: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly accountId?: string;
+	readonly thinkingLevel: NonNullable<TuiViewState["thinkingLevel"]>;
+	readonly signal: AbortSignal;
+}
+
+export interface TuiCompactionResult {
+	readonly tokensBefore: number;
+	readonly estimatedTokensAfter?: number;
+}
+
+export interface TuiWorkingTreeReviewRequest {
+	readonly projectRoot: string;
+	readonly focus?: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly accountId?: string;
+	readonly thinkingLevel: NonNullable<TuiViewState["thinkingLevel"]>;
+	readonly signal: AbortSignal;
+}
+
+export type TuiCacheWarmRequest = CacheWarmTarget & { readonly signal: AbortSignal };
+
 export interface RunTuiInput {
 	readonly projectRoot: string;
 	readonly statePath?: string;
@@ -73,6 +115,10 @@ export interface RunTuiInput {
 	readonly contextLimit?: number;
 	readonly providerConfigured?: boolean;
 	readonly desktopHost?: TuiDesktopHost;
+	readonly runSideQuestion?: (request: TuiSideQuestionRequest) => Promise<string>;
+	readonly compactConversation?: (request: TuiCompactConversationRequest) => Promise<TuiCompactionResult>;
+	readonly warmCache?: (request: TuiCacheWarmRequest) => Promise<CacheWarmResult>;
+	readonly reviewWorkingTree?: (request: TuiWorkingTreeReviewRequest) => Promise<string>;
 	readonly runTask: (
 		projectRoot: string,
 		objective: string,
@@ -86,6 +132,8 @@ export interface RunTuiInput {
 		selectedModel: {
 			readonly provider: string;
 			readonly model: string;
+			readonly accountId?: string;
+			readonly images?: readonly TuiRequestImage[];
 			readonly sessionId?: string;
 			readonly thinkingLevel?: TuiViewState["thinkingLevel"];
 		},

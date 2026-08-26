@@ -63,4 +63,20 @@ describe("compact conversation spacing", () => {
 			expect(lines[assistant + 1]?.trim(), `${columns}-column assistant trailing row`).toBe("");
 		}
 	});
+
+	it("keeps one neutral row between an answer and the next prompt", () => {
+		for (const columns of [56, 72, 80, 120]) {
+			const rendered = fitTranscriptCards(["3xhaustPi 이전 응답입니다.", "You 다음 질문입니다."], columns, 12);
+			const lines = rendered.map((line) => stripAnsi(line));
+			const assistant = lines.findIndex((line) => line.includes("이전 응답"));
+			const user = lines.findIndex((line) => line.includes("다음 질문"));
+
+			expect(user - assistant, `${columns}-column answer→prompt boundary`).toBe(3);
+			expect(rendered[assistant + 1], `${columns}-column neutral answer trailing row`).toBe("");
+			expect(lines[assistant + 2], `${columns}-column prompt leading padding`).toBe(" ".repeat(columns));
+			expect(rendered[assistant + 2], `${columns}-column tinted prompt leading padding`).toContain(
+				"\u001b[48;5;238m",
+			);
+		}
+	});
 });

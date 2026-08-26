@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
-import { mapTuiRequest } from "./tui-operation-helpers.ts";
+import { parseImagePayloads } from "./image-payload.ts";
+import { isoTimestamp, mapTuiRequest } from "./tui-operation-helpers.ts";
 import type { EnqueueTuiRequestInput, TuiRequest, TuiRequestRow } from "./tui-operation-types.ts";
 
 export interface TuiRequestHistoryItem {
@@ -18,13 +19,14 @@ export class TuiOperationQueue {
 	}
 
 	enqueue(input: EnqueueTuiRequestInput): { readonly request: TuiRequest; readonly inserted: boolean } {
+		const images = parseImagePayloads(input.images ?? []);
 		const now = new Date().toISOString();
 		this.#database.exec("BEGIN IMMEDIATE");
 		try {
 			const existing = this.#database
 				.prepare(
-					`SELECT request_id, canonical_path, objective, position, status, created_at,
-						binding_version, conversation_generation, session_id, provider, model, thinking_level
+					`SELECT request_id, canonical_path, objective, images_json, position, status, created_at,
+						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level
 					 FROM tui_request_queue
 					 WHERE canonical_path = ? AND fingerprint = ? AND status IN ('queued', 'running')`,
 				)
@@ -41,10 +43,10 @@ export class TuiOperationQueue {
 			this.#database
 				.prepare(
 					`INSERT INTO tui_request_queue(
-						request_id, canonical_path, position, fingerprint, objective,
-						binding_version, conversation_generation, session_id, provider, model, thinking_level,
+						request_id, canonical_path, position, fingerprint, objective, images_json,
+						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level,
 						status, created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
 				)
 				.run(
 					input.requestId,
@@ -52,11 +54,13 @@ export class TuiOperationQueue {
 					row.next_position,
 					input.fingerprint,
 					input.objective,
+					images.length ? JSON.stringify(images) : null,
 					input.binding?.version ?? null,
 					input.binding?.conversationGeneration ?? null,
 					input.binding?.sessionId ?? null,
 					input.binding?.provider ?? null,
 					input.binding?.model ?? null,
+					input.binding?.accountId ?? null,
 					input.binding?.thinkingLevel ?? null,
 					now,
 					now,
@@ -67,6 +71,7 @@ export class TuiOperationQueue {
 					id: input.requestId,
 					projectPath: input.projectPath,
 					objective: input.objective,
+					...(images.length ? { images } : {}),
 					position: row.next_position,
 					status: "queued",
 					createdAt: now,
@@ -83,13 +88,46 @@ export class TuiOperationQueue {
 	list(projectPath: string): readonly TuiRequest[] {
 		const rows = this.#database
 			.prepare(
-				`SELECT request_id, canonical_path, objective, position, status, created_at,
-					binding_version, conversation_generation, session_id, provider, model, thinking_level
+				`SELECT request_id, canonical_path, objective, images_json, position, status, created_at,
+					binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level
 				 FROM tui_request_queue
 				 WHERE canonical_path = ? AND status IN ('queued', 'running') ORDER BY position`,
 			)
 			.all(projectPath) as unknown as TuiRequestRow[];
 		return rows.map(mapTuiRequest);
+	}
+
+	recallNewest(projectPath: string, now?: string): TuiRequest | undefined {
+		const recalledAt = isoTimestamp(now);
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			const row = this.#database
+				.prepare(
+					`SELECT request_id, canonical_path, objective, images_json, position, status, created_at,
+						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level
+					 FROM tui_request_queue
+					 WHERE canonical_path = ? AND status = 'queued'
+					 ORDER BY position DESC LIMIT 1`,
+				)
+				.get(projectPath) as TuiRequestRow | undefined;
+			if (!row) {
+				this.#database.exec("COMMIT");
+				return undefined;
+			}
+			const updated = this.#database
+				.prepare(
+					`UPDATE tui_request_queue
+					 SET status = 'failed', outcome = 'recalled', updated_at = ?
+					 WHERE request_id = ? AND status = 'queued'`,
+				)
+				.run(recalledAt, row.request_id);
+			if (updated.changes !== 1) throw new Error("TUI pending request changed before recall");
+			this.#database.exec("COMMIT");
+			return mapTuiRequest(row);
+		} catch (error) {
+			this.#database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	listHistory(projectPath: string): readonly TuiRequestHistoryItem[] {

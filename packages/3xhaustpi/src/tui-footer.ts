@@ -1,10 +1,11 @@
+import { contextUsageLabel } from "./tui-context-meter.ts";
 import type { TuiViewState } from "./tui-contract.ts";
 import { cellWidth, dim, ellipsizeCells, muted, stripAnsi, text } from "./tui-text.ts";
 
 export type TuiFooterSegmentId = "model" | "context" | "tasks" | "provider";
 export const TUI_FOOTER_SEGMENT_PRIORITY: readonly { readonly id: TuiFooterSegmentId; readonly priority: number }[] = [
-	{ id: "model", priority: 1 },
-	{ id: "context", priority: 2 },
+	{ id: "context", priority: 1 },
+	{ id: "model", priority: 2 },
 	{ id: "provider", priority: 3 },
 	{ id: "tasks", priority: 4 },
 ] as const;
@@ -13,15 +14,7 @@ interface FooterSegmentRender {
 	readonly compact: string;
 	readonly ideal: string;
 }
-function compactTokens(value: number): string {
-	if (value < 1_000) return String(value);
-	const thousands = value / 1_000;
-	return `${thousands >= 100 || Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K`;
-}
 function footerSegmentRender(id: TuiFooterSegmentId, state: TuiViewState): FooterSegmentRender {
-	const used = state.contextTokens ?? 0;
-	const limit = state.contextLimit ?? 0;
-	const percent = limit > 0 ? `${((used / limit) * 100).toFixed(1)}%` : "ctx —";
 	const thinking = state.thinkingLevel ? `:${state.thinkingLevel}` : "";
 	if (id === "model") {
 		const model = `${state.model}${thinking}`;
@@ -30,8 +23,8 @@ function footerSegmentRender(id: TuiFooterSegmentId, state: TuiViewState): Foote
 	if (id === "context")
 		return {
 			id,
-			compact: muted(percent),
-			ideal: muted(limit > 0 ? `${compactTokens(used)}/${compactTokens(limit)} (${percent})` : "context —"),
+			compact: muted(contextUsageLabel(state.contextTokens, state.contextLimit, "meter") ?? "Ctx —"),
+			ideal: muted(contextUsageLabel(state.contextTokens, state.contextLimit, "ratio") ?? "context —"),
 		};
 	if (id === "tasks") {
 		const tasks = state.activeTasks ?? 0;

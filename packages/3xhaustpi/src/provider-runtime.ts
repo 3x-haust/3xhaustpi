@@ -1,5 +1,7 @@
 import type {
 	Api,
+	AuthInteraction,
+	AuthType,
 	Credential,
 	CredentialInfo,
 	CredentialStore,
@@ -10,6 +12,7 @@ import type {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { FileCredentialStore, SystemCredentialStore, systemCredentialStoreName } from "./credential-store.ts";
 import { ACTIVE_KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE, resolveAuthPath } from "./identity.ts";
+import { codexCredentialStorageId } from "./provider-accounts.ts";
 import { answerAuthPrompt, notifyAuth } from "./provider-auth-prompt.ts";
 import { sanitizeTerminalText } from "./terminal-sanitizer.ts";
 
@@ -25,10 +28,41 @@ export const DEFAULT_PROVIDER = "openai-codex";
 export const DEFAULT_MODEL = "gpt-5.6-terra";
 export const AUTH_PATH = resolveAuthPath();
 export const CREDENTIAL_BACKEND = process.env.X3HAUSTPI_CREDENTIAL_BACKEND === "file" ? "file" : "system";
+const MODEL_CONTEXT_WINDOWS = new Map<string, number | undefined>();
+
+export function modelContextWindow(provider: string, modelId: string): number | undefined {
+	const key = `${provider}\u0000${modelId}`;
+	if (MODEL_CONTEXT_WINDOWS.has(key)) return MODEL_CONTEXT_WINDOWS.get(key);
+	const contextWindow = builtinModels().getModel(provider, modelId)?.contextWindow;
+	const measured =
+		typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+			? contextWindow
+			: undefined;
+	MODEL_CONTEXT_WINDOWS.set(key, measured);
+	return measured;
+}
 
 export interface ProviderCredentialOverride {
 	readonly providerId: string;
 	readonly credential: Credential;
+}
+
+export interface ProviderAuthMethod {
+	readonly type: AuthType;
+	readonly label: string;
+	readonly interactive: boolean;
+}
+
+export interface ProviderStatus {
+	readonly id: string;
+	readonly name: string;
+	readonly modelCount: number;
+	readonly modelIds: readonly string[];
+	readonly authMethods: readonly ProviderAuthMethod[];
+	readonly configured: boolean;
+	readonly credentialType?: AuthType;
+	readonly source?: string;
+	readonly error?: string;
 }
 
 class OverlayCredentialStore implements CredentialStore {
@@ -74,6 +108,42 @@ class OverlayCredentialStore implements CredentialStore {
 	}
 }
 
+class ScopedCodexCredentialStore implements CredentialStore {
+	private readonly base: CredentialStore;
+	private readonly storageId: string;
+
+	constructor(base: CredentialStore, accountId: string) {
+		this.base = base;
+		this.storageId = codexCredentialStorageId(accountId);
+	}
+
+	read(providerId: string): Promise<Credential | undefined> {
+		return this.base.read(providerId === "openai-codex" ? this.storageId : providerId);
+	}
+
+	async list(): Promise<readonly CredentialInfo[]> {
+		const entries = await this.base.list();
+		const scoped = entries.find(({ providerId }) => providerId === this.storageId);
+		return [
+			...entries.filter(
+				({ providerId }) => providerId !== "openai-codex" && !providerId.startsWith("openai-codex.account."),
+			),
+			...(scoped ? [{ providerId: "openai-codex", type: scoped.type }] : []),
+		];
+	}
+
+	modify(
+		providerId: string,
+		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+	): Promise<Credential | undefined> {
+		return this.base.modify(providerId === "openai-codex" ? this.storageId : providerId, fn);
+	}
+
+	delete(providerId: string): Promise<void> {
+		return this.base.delete(providerId === "openai-codex" ? this.storageId : providerId);
+	}
+}
+
 function credentialFromWire(value: string): Credential {
 	if (!value.startsWith("{")) return { type: "api_key", key: value };
 	let parsed: unknown;
@@ -116,41 +186,99 @@ export function credentialStoreDescription(): string {
 		: `${systemCredentialStoreName()} · metadata ${AUTH_PATH}`;
 }
 
-export function createCredentialStore(): CredentialStore {
-	return CREDENTIAL_BACKEND === "file"
-		? new FileCredentialStore(AUTH_PATH)
-		: new SystemCredentialStore(AUTH_PATH, {
-				service: ACTIVE_KEYCHAIN_SERVICE,
-				legacyService: LEGACY_KEYCHAIN_SERVICE,
-			});
+export function scopedCredentialStore(base: CredentialStore, accountId: string | undefined): CredentialStore {
+	if (!accountId || accountId.startsWith("provider:")) return base;
+	if (!accountId.startsWith("openai-codex:") || accountId.length === "openai-codex:".length) {
+		throw new Error(`Invalid provider account ID: ${accountId}`);
+	}
+	return new ScopedCodexCredentialStore(base, accountId.slice("openai-codex:".length));
 }
 
-export function createProviderRuntime(override?: ProviderCredentialOverride): MutableModels {
-	const base = createCredentialStore();
+export function createCredentialStore(accountId?: string): CredentialStore {
+	const base =
+		CREDENTIAL_BACKEND === "file"
+			? new FileCredentialStore(AUTH_PATH)
+			: new SystemCredentialStore(AUTH_PATH, {
+					service: ACTIVE_KEYCHAIN_SERVICE,
+					legacyService: LEGACY_KEYCHAIN_SERVICE,
+				});
+	return scopedCredentialStore(base, accountId);
+}
+
+export function createProviderRuntime(override?: ProviderCredentialOverride, accountId?: string): MutableModels {
+	const base = createCredentialStore(accountId);
 	return builtinModels({ credentials: override ? new OverlayCredentialStore(base, override) : base });
 }
 
-export async function loginProvider(providerId = DEFAULT_PROVIDER): Promise<void> {
+function terminalAuthInteraction(): AuthInteraction {
+	return { prompt: answerAuthPrompt, notify: notifyAuth };
+}
+
+export async function loginProvider(
+	providerId = DEFAULT_PROVIDER,
+	authType?: AuthType,
+	interaction: AuthInteraction = terminalAuthInteraction(),
+): Promise<void> {
 	const models = createProviderRuntime();
 	const provider = models.getProvider(providerId);
 	if (!provider) throw new Error(`Unknown provider: ${providerId}`);
-	const type = provider.auth.oauth ? "oauth" : "api_key";
-	await models.login(providerId, type, { prompt: answerAuthPrompt, notify: notifyAuth });
+	const type = authType ?? (provider.auth.oauth ? "oauth" : "api_key");
+	const method = type === "oauth" ? provider.auth.oauth : provider.auth.apiKey;
+	if (!method) throw new Error(`${provider.name} does not support ${type === "oauth" ? "OAuth" : "API key"} login`);
+	if (type === "api_key" && !method.login) {
+		throw new Error(`${provider.name} uses ambient credentials and has no interactive API-key login`);
+	}
+	await models.login(providerId, type, interaction);
 	console.log(sanitizeTerminalText(`Credentials saved to ${credentialStoreDescription()}`));
 }
 
-export async function providerStatuses(
+export async function collectProviderStatuses(
 	models: Models = createProviderRuntime(),
-): Promise<readonly { readonly provider: string; readonly auth: string; readonly configured: boolean }[]> {
-	const providers = ["openai", "openai-codex", "anthropic", "google", "openrouter"];
+): Promise<readonly ProviderStatus[]> {
 	return Promise.all(
-		providers.map(async (provider) => ({
-			provider,
-			auth: models.getProvider(provider)?.auth.oauth ? "OAuth / subscription" : "API key",
-			configured: Boolean(await models.checkAuth(provider)),
-		})),
+		models.getProviders().map(async (provider): Promise<ProviderStatus> => {
+			const authMethods: ProviderAuthMethod[] = [
+				...(provider.auth.oauth
+					? [{ type: "oauth" as const, label: provider.auth.oauth.name, interactive: true }]
+					: []),
+				...(provider.auth.apiKey
+					? [
+							{
+								type: "api_key" as const,
+								label: provider.auth.apiKey.name,
+								interactive: provider.auth.apiKey.login !== undefined,
+							},
+						]
+					: []),
+			];
+			try {
+				const credential = await models.checkAuth(provider.id);
+				return {
+					id: provider.id,
+					name: provider.name,
+					modelCount: provider.getModels().length,
+					modelIds: provider.getModels().map(({ id }) => id),
+					authMethods,
+					configured: credential !== undefined,
+					...(credential?.type ? { credentialType: credential.type } : {}),
+					...(credential?.source ? { source: credential.source } : {}),
+				};
+			} catch (cause) {
+				return {
+					id: provider.id,
+					name: provider.name,
+					modelCount: provider.getModels().length,
+					modelIds: provider.getModels().map(({ id }) => id),
+					authMethods,
+					configured: false,
+					error: cause instanceof Error ? cause.message : String(cause),
+				};
+			}
+		}),
 	);
 }
+
+export const providerStatuses = collectProviderStatuses;
 
 export function resolveModel(models: Models, provider = DEFAULT_PROVIDER, modelId = DEFAULT_MODEL): Model<Api> {
 	const model = models.getModel(provider, modelId);

@@ -805,11 +805,14 @@ describe("openai-codex streaming", () => {
 		const encoder = new TextEncoder();
 		const sse = buildSSEPayload({ status: "completed" });
 		let requestedToolChoice: unknown;
+		let requestedMaxOutputTokens: unknown;
 
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (_input: string | URL, init?: RequestInit) => {
-				requestedToolChoice = decodeCodexRequestBody(init?.body)?.tool_choice;
+				const body = decodeCodexRequestBody(init?.body);
+				requestedToolChoice = body?.tool_choice;
+				requestedMaxOutputTokens = body?.max_output_tokens;
 				return new Response(
 					new ReadableStream<Uint8Array>({
 						start(controller) {
@@ -849,10 +852,11 @@ describe("openai-codex streaming", () => {
 					},
 				],
 			},
-			{ apiKey: token, transport: "sse", toolChoice: "required" },
+			{ apiKey: token, transport: "sse", toolChoice: "required", maxTokens: 16 },
 		).result();
 
 		expect(requestedToolChoice).toBe("required");
+		expect(requestedMaxOutputTokens).toBe(16);
 	});
 
 	it("sets Codex strict mode explicitly and honors constrained sampling", async () => {

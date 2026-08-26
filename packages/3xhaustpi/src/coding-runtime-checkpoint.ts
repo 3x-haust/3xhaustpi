@@ -1,5 +1,6 @@
 import { parseSemanticOutput } from "@3xhaust/semantic-contract";
 import type { DurableCodingTaskCheckpoint } from "./coding-runtime-contracts.ts";
+import { isImagePayloads } from "./image-payload.ts";
 import type { ResumeCheckpoint } from "./state.ts";
 
 export function parseDurableCodingTaskCheckpoint(
@@ -26,6 +27,7 @@ export function parseDurableCodingTaskCheckpoint(
 		typeof candidate.requestId !== "string" ||
 		typeof candidate.fingerprint !== "string" ||
 		typeof candidate.snapshotSha256 !== "string" ||
+		(candidate.images !== undefined && !isImagePayloads(candidate.images)) ||
 		!Number.isSafeInteger(candidate.generation)
 	) {
 		throw new Error("Durable coding checkpoint is invalid or unsupported");

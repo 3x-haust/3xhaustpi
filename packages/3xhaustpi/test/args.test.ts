@@ -7,7 +7,19 @@ describe("3xhaustpi CLI arguments", () => {
 		expect(parseCliArgs(["doctor"])).toEqual({ kind: "doctor" });
 		expect(parseCliArgs(["extension", "list"])).toEqual({ kind: "extension-list" });
 		expect(parseCliArgs(["resource", "list"])).toEqual({ kind: "resource-list" });
-		expect(parseCliArgs(["accounts"])).toEqual({ kind: "accounts-list" });
+		expect(parseCliArgs(["account"])).toEqual({ kind: "account-list" });
+		expect(parseCliArgs(["account", "add", "openai-codex"])).toEqual({
+			kind: "account-add",
+			provider: "openai-codex",
+		});
+		expect(parseCliArgs(["account", "use", "acct-a"])).toEqual({
+			kind: "account-use",
+			selector: "acct-a",
+		});
+		expect(parseCliArgs(["account", "delete", "acct-a"])).toEqual({
+			kind: "account-delete",
+			selector: "acct-a",
+		});
 		expect(parseCliArgs(["npm", "login", "work"])).toEqual({
 			kind: "npm-login",
 			account: "work",
@@ -19,10 +31,6 @@ describe("3xhaustpi CLI arguments", () => {
 		expect(parseCliArgs(["skill", "create", "release-helper"])).toEqual({
 			kind: "skill-create",
 			name: "release-helper",
-		});
-		expect(parseCliArgs(["auth", "login", "openai-codex"])).toEqual({
-			kind: "auth-login",
-			provider: "openai-codex",
 		});
 		expect(parseCliArgs(["mcp", "tools", "fixture"])).toEqual({ kind: "mcp-tools", server: "fixture" });
 		expect(parseCliArgs(["mcp", "call", "fixture", "echo", '{"text":"hello"}'])).toEqual({
@@ -60,6 +68,7 @@ describe("3xhaustpi CLI arguments", () => {
 	it("rejects unknown or ambiguous arguments", () => {
 		expect(() => parseCliArgs(["--unknown"])).toThrow(/Unknown option/u);
 		expect(() => parseCliArgs(["-p", "one", "two"])).toThrow(/either -p/u);
+		expect(() => parseCliArgs(["auth", "login", "openai-codex"])).toThrow(/account add/u);
 	});
 
 	it("bounds benchmark repetitions", () => {

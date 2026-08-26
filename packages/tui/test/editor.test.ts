@@ -3690,6 +3690,25 @@ describe("Editor component", () => {
 			assert.match(text, /\[paste #\d+ \+\d+ lines\]/);
 		});
 
+		it("expands an immediately repeated large paste instead of duplicating it", () => {
+			// Given: one large paste represented by the normal compact marker.
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const content = bigPaste("verbatim-");
+			editor.handleInput(`\x1b[200~${content}\x1b[201~`);
+			assert.match(editor.getText(), /\[paste #1 \+\d+ lines\]/);
+
+			// When: the terminal sends the exact same bracketed paste again.
+			editor.handleInput(`\x1b[200~${content}\x1b[201~`);
+
+			// Then: the marker becomes visible source text without a duplicate copy.
+			assert.equal(editor.getText(), content);
+			assert.equal(editor.getExpandedText(), content);
+
+			editor.handleInput("\x1b[45;5u");
+			assert.match(editor.getText(), /\[paste #1 \+\d+ lines\]/);
+			assert.equal(editor.getExpandedText(), content);
+		});
+
 		it("treats paste marker as single unit for right arrow", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			editor.handleInput("A");

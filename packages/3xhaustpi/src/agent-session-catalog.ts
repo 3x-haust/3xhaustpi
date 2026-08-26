@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agent";
+import { type SessionInfo, SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 import { openAgentSessionManager } from "./agent-runtime-session-lookup.ts";
 import type { ThreeXhaustState } from "./state.ts";
 import type { TuiViewState } from "./tui-contract.ts";
@@ -25,6 +25,20 @@ export interface AgentConversation {
 	readonly model: { readonly provider: string; readonly modelId: string } | null;
 	readonly thinkingLevel: NonNullable<TuiViewState["thinkingLevel"]>;
 	readonly messages: readonly AgentConversationMessage[];
+}
+
+export interface AgentConversationRewindPoint {
+	readonly entryId: string;
+	readonly prompt: string;
+	readonly turn: number;
+}
+
+export interface AgentConversationFork {
+	readonly selectedPrompt: string;
+	readonly sessionId: string | null;
+	readonly model: AgentConversation["model"];
+	readonly thinkingLevel: AgentConversation["thinkingLevel"];
+	readonly messages: AgentConversation["messages"];
 }
 
 function thinkingLevel(value: string): AgentConversation["thinkingLevel"] {
@@ -107,6 +121,57 @@ export async function loadAgentConversation(
 			const item = conversationMessage(message);
 			return item ? [item] : [];
 		}),
+	};
+}
+
+export async function listAgentConversationRewindPoints(
+	projectRoot: string,
+	sessionId: string,
+	sessionDir?: string,
+): Promise<readonly AgentConversationRewindPoint[]> {
+	const manager = await openAgentSessionManager(projectRoot, sessionId, sessionDir);
+	let turn = 0;
+	return manager.getBranch().flatMap((entry) => {
+		if (entry.type !== "message" || entry.message.role !== "user") return [];
+		const prompt = contentText(entry.message.content).trim();
+		if (!prompt) return [];
+		turn += 1;
+		return [{ entryId: entry.id, prompt, turn }];
+	});
+}
+
+export async function forkAgentConversationAtUserTurn(
+	projectRoot: string,
+	sessionId: string,
+	entryId: string,
+	sessionDir?: string,
+): Promise<AgentConversationFork> {
+	const manager = await openAgentSessionManager(projectRoot, sessionId, sessionDir);
+	const selected = manager.getEntries().find((entry) => entry.id === entryId);
+	if (!selected || selected.type !== "message" || selected.message.role !== "user") {
+		throw new Error("Conversation rewind point is unavailable");
+	}
+	const selectedPrompt = contentText(selected.message.content).trim();
+	if (!selectedPrompt) throw new Error("Conversation rewind point has no prompt");
+	if (selected.parentId) {
+		const forkedPath = manager.createBranchedSession(selected.parentId);
+		if (!forkedPath) throw new Error("Failed to create conversation branch");
+		const conversation = await loadAgentConversation(projectRoot, manager.getSessionId(), manager.getSessionDir());
+		return {
+			selectedPrompt,
+			sessionId: conversation.id,
+			model: conversation.model,
+			thinkingLevel: conversation.thinkingLevel,
+			messages: conversation.messages,
+		};
+	}
+	const original = await loadAgentConversation(projectRoot, sessionId, manager.getSessionDir());
+	return {
+		selectedPrompt,
+		sessionId: null,
+		model: original.model,
+		thinkingLevel: original.thinkingLevel,
+		messages: [],
 	};
 }
 

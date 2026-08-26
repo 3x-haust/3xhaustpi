@@ -1,5 +1,6 @@
 import type { AgentProviderEffectBoundaryRequest, AgentToolApprovalRequest } from "./agent-runtime.ts";
 import type { CodingTaskEvent, CodingTaskPatchProposal } from "./coding-runtime.ts";
+import type { TuiRequestImage } from "./tui-operation-types.ts";
 
 export interface TuiRuntimeHooks {
 	readonly onEvent: (event: CodingTaskEvent) => void;
@@ -16,6 +17,8 @@ export type TuiRuntimeRequest =
 			readonly objective: string;
 			readonly provider?: string;
 			readonly model?: string;
+			readonly accountId?: string;
+			readonly images?: readonly TuiRequestImage[];
 			readonly sessionId?: string;
 			readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 			readonly allowProjectHooks?: boolean;
@@ -25,6 +28,35 @@ export type TuiRuntimeRequest =
 			readonly projectRoot: string;
 			readonly sessionId?: string;
 			readonly allowProjectHooks?: boolean;
+	  }
+	| {
+			readonly mode: "side-question";
+			readonly projectRoot: string;
+			readonly question: string;
+			readonly context: string;
+			readonly provider: string;
+			readonly model: string;
+			readonly accountId?: string;
+			readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	  }
+	| {
+			readonly mode: "compact";
+			readonly projectRoot: string;
+			readonly sessionId: string;
+			readonly instructions?: string;
+			readonly provider: string;
+			readonly model: string;
+			readonly accountId?: string;
+			readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	  }
+	| {
+			readonly mode: "cache-warm";
+			readonly projectRoot: string;
+			readonly sessionId: string;
+			readonly provider: string;
+			readonly model: string;
+			readonly accountId?: string;
+			readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	  };
 
 export interface TuiRuntimeHostOptions {
@@ -58,6 +90,8 @@ export function createTuiRunRequest(input: {
 	readonly selectedModel: {
 		readonly provider: string;
 		readonly model: string;
+		readonly accountId?: string;
+		readonly images?: readonly TuiRequestImage[];
 		readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	};
 	readonly sessionId?: string;
@@ -69,6 +103,8 @@ export function createTuiRunRequest(input: {
 		objective: input.objective,
 		provider: input.selectedModel.provider,
 		model: input.selectedModel.model,
+		...(input.selectedModel.accountId ? { accountId: input.selectedModel.accountId } : {}),
+		...(input.selectedModel.images?.length ? { images: input.selectedModel.images } : {}),
 		...(input.selectedModel.thinkingLevel ? { thinkingLevel: input.selectedModel.thinkingLevel } : {}),
 		...(input.sessionId ? { sessionId: input.sessionId } : {}),
 		...(input.allowProjectHooks ? { allowProjectHooks: true } : {}),

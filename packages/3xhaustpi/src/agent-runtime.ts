@@ -12,6 +12,8 @@ export {
 	openAgentSessionManager,
 } from "./agent-runtime-session-lookup.ts";
 export type {
+	AgentCompactConversationRequest,
+	AgentEphemeralQuestionRequest,
 	AgentProviderEffectBoundaryRequest,
 	AgentTaskRequest,
 	AgentTaskResult,

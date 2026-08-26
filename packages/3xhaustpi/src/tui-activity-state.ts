@@ -20,10 +20,17 @@ export interface TuiResponseMetrics {
 }
 
 export function reportedContextTokens(
-	metrics: Pick<TuiResponseMetrics, "input" | "cacheRead" | "cacheWrite">,
+	metrics: Pick<TuiResponseMetrics, "input" | "output" | "cacheRead" | "cacheWrite">,
 ): number | undefined {
-	if (metrics.input === null) return undefined;
-	return metrics.input + (metrics.cacheRead ?? 0) + (metrics.cacheWrite ?? 0);
+	if (
+		metrics.input === null ||
+		metrics.output === null ||
+		metrics.cacheRead === null ||
+		metrics.cacheWrite === null ||
+		metrics.cacheWrite === undefined
+	)
+		return undefined;
+	return metrics.input + metrics.output + metrics.cacheRead + metrics.cacheWrite;
 }
 
 export function providerReportedCacheHitRatio(
@@ -89,7 +96,8 @@ function baseTuiActivityLine(state: TuiActivityState, columns: number): string {
 export function formatTuiActivityLine(state: TuiActivityState, columns = 120): string {
 	const line = baseTuiActivityLine(state, columns);
 	const detachedNew = state.detachedNew ?? 0;
-	return detachedNew > 0 ? `${line} ${dim(`· ↓ ${detachedNew} new · Alt+End latest`)}` : line;
+	const full = detachedNew > 0 ? `${line} ${dim(`· ↓ ${detachedNew} new · Alt+End latest`)}` : line;
+	return ellipsizeCells(full, Math.max(1, columns - 1));
 }
 
 export function retainTuiActivityDetail(current: string, next: string | undefined): string {

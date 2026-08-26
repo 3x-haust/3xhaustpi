@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a deterministic agent-loop tool-call benchmark for parallel and sequential execution, with execution and contract success rates, orphaned calls, throughput, p50/p95/p99 batch latency, and optional acceptance checks.
+
+### Changed
+
+- Changed compaction summaries to preserve operational evidence, including command outcomes, validation results, unresolved errors, and delegated session lineage.
+- Changed compaction transcript serialization to omit assistant reasoning, retain tool-call identity and result status, bound large arguments and results, and preserve both ends of truncated output.
+- Changed split-turn compaction to generate prior-history and turn-prefix summaries concurrently.
+
 ## [0.82.1] - 2026-07-25
 
 ## [0.82.0] - 2026-07-24

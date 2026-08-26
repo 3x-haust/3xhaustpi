@@ -113,7 +113,11 @@ function messageCard(value: string, columns: number): string[] {
 	return rows.map((line, index) => `${index === 0 ? prefix : continuation}${line}`);
 }
 
-export function projectTranscriptCards(entries: readonly string[], columns: number): string[][] {
+export function projectTranscriptCards(
+	entries: readonly string[],
+	columns: number,
+	extraRowsByEntry: ReadonlyMap<number, readonly string[]> = new Map(),
+): string[][] {
 	const templates = entries.map((entry) => formatTranscriptEntry(entry));
 	const hasChat = templates.some(({ role }) => role === "you" || role === "threeXhaust");
 	const cards: string[][] = [];
@@ -123,6 +127,15 @@ export function projectTranscriptCards(entries: readonly string[], columns: numb
 		const template = templates[index];
 		if (!template || (hasChat && template.role === "system")) continue;
 		const card = messageCard(entry, columns);
+		const extraRows = template.role === "you" ? extraRowsByEntry.get(index) : undefined;
+		if (extraRows && extraRows.length > 0) {
+			const trailingGap = card.at(-1) === "";
+			if (trailingGap) card.pop();
+			const insertionIndex =
+				stripAnsi(card.at(-1) ?? "").trim().length === 0 ? Math.max(0, card.length - 1) : card.length;
+			card.splice(insertionIndex, 0, ...extraRows);
+			if (trailingGap) card.push("");
+		}
 		if (template.role === "agent" || template.role === "tool") {
 			if (activeAssistantCard === undefined) {
 				pendingActivity.push(card);
@@ -178,8 +191,10 @@ export function projectTranscriptCards(entries: readonly string[], columns: numb
 			stripAnsi(previousGap).trim().length === 0 &&
 			stripAnsi(nextGap).trim().length === 0
 		) {
-			if (template.role === "you" || nextGap === "") previousCard.pop();
-			else renderedCard.shift();
+			if (template.role !== "you") {
+				if (nextGap === "") previousCard.pop();
+				else renderedCard.shift();
+			}
 		}
 		cards.push(renderedCard);
 		activeAssistantCard = template.role === "threeXhaust" ? cards.length - 1 : undefined;

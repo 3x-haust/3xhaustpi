@@ -2,10 +2,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CodingTaskEvent } from "./coding-runtime.ts";
-import { collectConnections, renderConnections } from "./connections.ts";
 import { resolveProjectDataDirectory, resolveUserDataDirectory } from "./identity.ts";
 import { PRODUCT_DISPLAY_NAME, PRODUCT_VERSION } from "./product-identity.ts";
-import { providerStatuses } from "./provider-runtime.ts";
+import { collectProviderStatuses, type ProviderStatus } from "./provider-runtime.ts";
 import { loadMcpResources, renderResourceHub } from "./resource-hub.ts";
 import { loadHarnessResources } from "./resource-loader.ts";
 import { sanitizeTerminalText } from "./tui-text.ts";
@@ -59,11 +58,14 @@ Usage:
   3xhaustpi --resume
 
 Commands:
-  auth login [provider]  Configure a provider connection
+  account                Show connected accounts
+  account add [provider] [oauth|api-key]
+                         Add an OAuth or API-key provider account
+  account use <id>       Select a saved Codex OAuth account
+  account delete <id>    Delete one saved Codex OAuth account
   models                 List supported providers and configuration state
   extension list         List discovered extension candidates
   resource list          Show Skills, MCP servers, and Hooks
-  accounts               Show provider, Aside, and npm accounts
   npm login [account]    Run plain npm login through Aside
   npm publish [account]  Review account and publish package
   skill create <name>    Create an editable project skill
@@ -87,17 +89,16 @@ Options:
   -v, --version          Show version`);
 }
 
-export async function providerRows(): Promise<
-	readonly { readonly provider: string; readonly auth: string; readonly configured: boolean }[]
-> {
-	return providerStatuses();
+export async function providerRows(): Promise<readonly ProviderStatus[]> {
+	return collectProviderStatuses();
 }
 
 export async function printModels(): Promise<void> {
-	console.log("Provider        Auth                         State");
+	console.log("Provider                  Models  Auth                 State");
 	for (const row of await providerRows()) {
+		const auth = row.authMethods.map(({ type }) => (type === "oauth" ? "OAuth" : "API key")).join(" + ");
 		console.log(
-			`${sanitizeTerminalText(row.provider).padEnd(15)} ${sanitizeTerminalText(row.auth).padEnd(28)} ${row.configured ? "configured" : "unconfigured"}`,
+			`${sanitizeTerminalText(row.name).padEnd(25)} ${String(row.modelCount).padStart(6)}  ${auth.padEnd(19)} ${row.configured ? "configured" : "unconfigured"}`,
 		);
 	}
 	console.log("\nDefault real-provider route: openai-codex/gpt-5.6-terra");
@@ -149,8 +150,4 @@ export function printResources(project: string): void {
 			}),
 		),
 	);
-}
-
-export async function printAccounts(): Promise<void> {
-	console.log(sanitizeTerminalText(renderConnections(await collectConnections())));
 }

@@ -123,6 +123,18 @@ The `beforeToolCall` hook runs after `tool_execution_start` and validated argume
 
 Tools can also return `terminate: true` to hint that the automatic follow-up LLM call should be skipped. The loop only stops early when every finalized tool result in that batch sets `terminate: true`. Mixed batches continue normally.
 
+### Tool-call execution benchmark
+
+The deterministic local benchmark measures schema validation, agent-loop
+dispatch, event emission, and ordered result persistence in both parallel and
+sequential modes. It reports execution and contract success rates, orphaned
+calls, throughput, and batch latency through p99. Provider latency and the
+downstream work performed by individual tools are intentionally excluded.
+
+```bash
+npm run benchmark:tools -- --check --batch-size 64 --warmups 5 --repetitions 30
+```
+
 Low-level loop callers can set `shouldStopAfterTurn` to stop gracefully after the current turn completes:
 
 ```typescript

@@ -5,6 +5,7 @@ import { formatTuiActivityLine, retainTuiActivityDetail } from "./tui-activity-s
 import { formatPatchApprovalTranscriptEntry } from "./tui-approval.ts";
 import type { TuiViewState } from "./tui-contract.ts";
 import { TuiHistoryOverlay } from "./tui-history-overlay.ts";
+import type { TuiDisplayImage } from "./tui-image-viewer.ts";
 import {
 	contextHeaderRail,
 	identityRail,
@@ -13,11 +14,10 @@ import {
 	TUI_SCROLL_KEYS,
 	transcriptViewportRows,
 } from "./tui-layout-frame.ts";
-import type { TuiLiveCore } from "./tui-live-state.ts";
+import { liveContextLimit, type TuiLiveCore } from "./tui-live-state.ts";
 import { FloorNotice, SupportedTerminalComponent } from "./tui-terminal-components.ts";
-import { accent, failure, muted, success, text } from "./tui-text.ts";
+import { accent, failure, muted, sanitizeTerminalText, success, text } from "./tui-text.ts";
 import { AssistantTranscriptFlow, formatSubmittedPromptTurn, formatVisibleTranscriptEntry } from "./tui-transcript.ts";
-
 export interface TuiLiveView {
 	readonly assistantFlow: AssistantTranscriptFlow;
 	readonly workAnimationTimer: ReturnType<typeof setInterval> | undefined;
@@ -26,7 +26,7 @@ export interface TuiLiveView {
 	updateHeader(): void;
 	updateChrome(detail?: string): void;
 	appendText(value: string): void;
-	appendUser(objective: string, inserted?: boolean): void;
+	appendUser(objective: string, inserted?: boolean, images?: readonly TuiDisplayImage[]): void;
 	appendPatch(proposal: CodingTaskPatchProposal): void;
 	replaceConversation(messages: readonly AgentConversationMessage[]): void;
 	followTranscript(): void;
@@ -45,7 +45,8 @@ export function createTuiLiveView(core: TuiLiveCore): TuiLiveView {
 		model: state.model,
 		thinkingLevel: state.thinkingLevel,
 		contextTokens: state.latestContextTokens,
-		contextLimit: core.input.contextLimit,
+		contextLimit: liveContextLimit(core),
+		...(state.projectGoal?.status === "active" ? { goal: state.projectGoal.text } : {}),
 		cacheHitRatio: state.latestCacheHitRatio,
 		providerConfigured: core.input.providerConfigured ?? false,
 		status: state.phase,
@@ -109,16 +110,20 @@ export function createTuiLiveView(core: TuiLiveCore): TuiLiveView {
 		if (state.scrollOffset.value > 0) state.detachedNewCount += 1;
 		core.transcriptEntries.push(formatVisibleTranscriptEntry(value));
 		core.ui.requestRender();
+		return core.transcriptEntries.length - 1;
 	};
-	const appendUser = (objective: string, inserted = true) => {
+	const appendUser = (objective: string, inserted = true, images: readonly TuiDisplayImage[] = []) => {
 		const turn = formatSubmittedPromptTurn(objective, inserted);
-		if (turn) appendText(turn);
+		if (!turn) return;
+		const entryIndex = appendText(turn);
+		core.transcript.attachImages(entryIndex, images);
 	};
 	const appendPatch = (proposal: CodingTaskPatchProposal) => {
 		appendText(formatPatchApprovalTranscriptEntry(proposal));
 	};
 	const replaceConversation = (messages: readonly AgentConversationMessage[]) => {
 		core.transcriptEntries.splice(0);
+		core.transcript.clearImages();
 		assistantFlow.reset();
 		for (const message of messages) {
 			appendText(message.role === "user" ? `You ${message.text}` : `${ASSISTANT_DISPLAY_NAME} ${message.text}`);
@@ -192,11 +197,11 @@ export function createTuiLiveView(core: TuiLiveCore): TuiLiveView {
 	core.ui.addChild(new SupportedTerminalComponent(core.transcript));
 	core.ui.addChild(new SupportedTerminalComponent(core.status, true));
 	core.ui.addChild(
-		new SupportedTerminalComponent(core.editor, false, (_width) => {
+		new SupportedTerminalComponent(core.composer, false, (_width) => {
 			const rows = process.stdout.rows || 36;
 			const overlayRows = Math.max(3, Math.floor(rows * 0.4));
 			const showScrollInfo = overlayRows >= 4;
-			core.editor.setMaxVisibleLines(Math.max(1, Math.min(6, rows - 7)));
+			core.composer.setMaxVisibleLines(Math.max(1, Math.min(6, rows - 7)));
 			core.editor.setAutocompleteMaxVisible(Math.max(1, overlayRows - (showScrollInfo ? 3 : 2)));
 			core.editor.setAutocompleteScrollInfoVisible(showScrollInfo);
 		}),
@@ -240,7 +245,17 @@ export function appendTaskCompletion(
 	durationMs: number,
 	summary: string,
 ): void {
-	view.appendText(
-		`${successValue ? success("✓") : failure("×")} ${text(label)}  ${muted(`${durationMs.toFixed(1)} ms · ${summary}`)}`,
-	);
+	view.appendText(formatTaskCompletionLine(successValue, label, durationMs, summary));
+}
+
+export function formatTaskCompletionLine(
+	successValue: boolean,
+	label: string,
+	durationMs: number,
+	summary: string,
+): string {
+	const oneLine = (value: string) => sanitizeTerminalText(value).replace(/\s+/gu, " ").trim();
+	return `${successValue ? success("✓") : failure("×")} ${text(oneLine(label))}  ${muted(
+		`${durationMs.toFixed(1)} ms · ${oneLine(summary)}`,
+	)}`;
 }

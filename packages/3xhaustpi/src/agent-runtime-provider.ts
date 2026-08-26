@@ -6,6 +6,16 @@ export function providerCacheAffinity(projectRoot: string, provider: string, mod
 	return `3xhaustpi_${digest}`;
 }
 
+export function providerAccountCacheAffinity(
+	projectRoot: string,
+	provider: string,
+	model: string,
+	accountId: string | undefined,
+): string {
+	const accountAffinity = accountId ? `_${createHash("sha256").update(accountId).digest("hex").slice(0, 12)}` : "";
+	return `${providerCacheAffinity(projectRoot, provider, model)}${accountAffinity}`;
+}
+
 export function cacheRoutingOptions(
 	cacheAffinity: string,
 	systemPrompt: string | undefined,

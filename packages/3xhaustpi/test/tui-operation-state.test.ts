@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ThreeXhaustState } from "../src/state.ts";
 
 const directories: string[] = [];
+const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nXQAAAAASUVORK5CYII=";
 
 afterEach(() => {
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -267,6 +268,61 @@ describe("durable TUI operation ownership", () => {
 				leaseMs: 60_000,
 			})?.id,
 		).toBe("operation_pending");
+		state.close();
+	});
+
+	it("recalls only the newest queued request and preserves FIFO order", () => {
+		// Given: one active request followed by two durable pending requests.
+		const { projectPath, statePath } = fixture();
+		const state = new ThreeXhaustState(statePath);
+		for (const [requestId, objective] of [
+			["operation_active", "active task"],
+			["operation_older", "older pending task"],
+			["operation_newest", "newest pending task [image3]"],
+		] as const) {
+			state.enqueueTuiRequest({
+				requestId,
+				projectPath,
+				fingerprint: requestId,
+				objective,
+				...(requestId === "operation_newest"
+					? { images: [{ data: ONE_PIXEL_PNG, mimeType: "image/png" as const }] }
+					: {}),
+			});
+		}
+		const active = state.claimNextTuiRequest(projectPath, {
+			ownerId: "host_a",
+			now: "2026-08-26T00:00:00.000Z",
+			leaseMs: 60_000,
+		});
+		if (!active) throw new Error("Expected active operation");
+
+		// When: the newest queued request is recalled for editing.
+		const recalled = state.recallNewestQueuedTuiRequest(projectPath, "2026-08-26T00:00:01.000Z");
+
+		// Then: it is durable history, cannot execute, and the older request remains next.
+		expect(recalled).toMatchObject({
+			id: "operation_newest",
+			objective: "newest pending task [image3]",
+			images: [{ data: ONE_PIXEL_PNG, mimeType: "image/png" }],
+		});
+		expect(state.listTuiRequestHistory(projectPath).find(({ id }) => id === recalled?.id)).toMatchObject({
+			status: "failed",
+			outcome: "recalled",
+		});
+		expect(state.listTuiRequests(projectPath).map(({ id }) => id)).toEqual(["operation_active", "operation_older"]);
+		state.completeTuiRequest(active.id, "completed", {
+			ownerId: active.ownerId,
+			leaseEpoch: active.leaseEpoch,
+			now: "2026-08-26T00:00:02.000Z",
+		});
+		expect(
+			state.claimNextTuiRequest(projectPath, {
+				ownerId: "host_b",
+				now: "2026-08-26T00:00:03.000Z",
+				leaseMs: 60_000,
+			})?.id,
+		).toBe("operation_older");
 		state.close();
 	});
 });

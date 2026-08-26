@@ -10,11 +10,13 @@ export function migrateTuiOperationSchema(database: DatabaseSync): void {
 				position INTEGER NOT NULL,
 				fingerprint TEXT NOT NULL,
 				objective TEXT NOT NULL,
+				images_json TEXT,
 				binding_version INTEGER,
 				conversation_generation INTEGER,
 				session_id TEXT,
 				provider TEXT,
 				model TEXT,
+				account_id TEXT,
 				thinking_level TEXT,
 				status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
 				created_at TEXT NOT NULL,
@@ -49,6 +51,8 @@ export function migrateTuiOperationSchema(database: DatabaseSync): void {
 			["session_id", "ALTER TABLE tui_request_queue ADD COLUMN session_id TEXT"],
 			["provider", "ALTER TABLE tui_request_queue ADD COLUMN provider TEXT"],
 			["model", "ALTER TABLE tui_request_queue ADD COLUMN model TEXT"],
+			["account_id", "ALTER TABLE tui_request_queue ADD COLUMN account_id TEXT"],
+			["images_json", "ALTER TABLE tui_request_queue ADD COLUMN images_json TEXT"],
 			["thinking_level", "ALTER TABLE tui_request_queue ADD COLUMN thinking_level TEXT"],
 		] as const;
 		for (const [column, statement] of migrations) {
@@ -77,6 +81,51 @@ export function migrateTuiOperationSchema(database: DatabaseSync): void {
 				quarantined_at TEXT NOT NULL,
 				PRIMARY KEY (canonical_path, generation, session_id)
 			) STRICT;
+			CREATE TABLE IF NOT EXISTS tui_session_account_exclusions (
+				canonical_path TEXT NOT NULL,
+				scope_key TEXT NOT NULL,
+				account_id TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (canonical_path, scope_key, account_id)
+			) STRICT;
+			CREATE TABLE IF NOT EXISTS tui_session_provider_accounts (
+				canonical_path TEXT NOT NULL,
+				scope_key TEXT NOT NULL,
+				provider_id TEXT NOT NULL,
+				account_id TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (canonical_path, scope_key, provider_id)
+			) STRICT;
+			CREATE TABLE IF NOT EXISTS tui_project_preferences (
+				canonical_path TEXT NOT NULL,
+				preference_key TEXT NOT NULL,
+				preference_value TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (canonical_path, preference_key)
+			) STRICT;
+			CREATE TABLE IF NOT EXISTS tui_project_goal (
+				canonical_path TEXT PRIMARY KEY,
+				goal_text TEXT NOT NULL CHECK (
+					length(goal_text) BETWEEN 1 AND 500
+					AND instr(goal_text, char(0)) = 0
+				),
+				status TEXT NOT NULL CHECK (status IN ('active', 'completed')),
+				updated_at TEXT NOT NULL
+			) STRICT;
+			CREATE TRIGGER IF NOT EXISTS tui_project_goal_text_insert
+				BEFORE INSERT ON tui_project_goal
+				WHEN length(NEW.goal_text) NOT BETWEEN 1 AND 500
+					OR instr(NEW.goal_text, char(0)) <> 0
+				BEGIN
+					SELECT RAISE(ABORT, 'invalid project goal text');
+				END;
+			CREATE TRIGGER IF NOT EXISTS tui_project_goal_text_update
+				BEFORE UPDATE OF goal_text ON tui_project_goal
+				WHEN length(NEW.goal_text) NOT BETWEEN 1 AND 500
+					OR instr(NEW.goal_text, char(0)) <> 0
+				BEGIN
+					SELECT RAISE(ABORT, 'invalid project goal text');
+				END;
 			INSERT OR IGNORE INTO tui_conversation_heads(canonical_path, generation, session_id, updated_at)
 				SELECT canonical_path, 0, session_id, updated_at FROM tui_agent_sessions;
 			CREATE TABLE IF NOT EXISTS tui_execution_events (

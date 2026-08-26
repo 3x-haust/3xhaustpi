@@ -9,11 +9,18 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { recoverApprovedFileTransactions } from "./agent-approved-file-transaction.ts";
 import { createApprovedAgentTools } from "./agent-approved-tools.ts";
+import { warmAgentPromptCache } from "./agent-cache-warm.ts";
 import { createDelegateTool } from "./agent-delegate-tool.ts";
 import { createDelegatedAgentEventProjection } from "./agent-delegation-events.ts";
 import { executeAgentTask } from "./agent-runtime-execution.ts";
+import { installProviderCacheRouting, providerAccountCacheAffinity } from "./agent-runtime-provider.ts";
 import { findAgentSessionPath, openAgentSessionManager } from "./agent-runtime-session-lookup.ts";
-import type { AgentTaskRequest, AgentTaskResult } from "./agent-runtime-types.ts";
+import type {
+	AgentCacheWarmResult,
+	AgentCompactConversationResult,
+	AgentTaskRequest,
+	AgentTaskResult,
+} from "./agent-runtime-types.ts";
 
 class AgentRuntimeStateError extends Error {
 	constructor(message: string) {
@@ -86,6 +93,7 @@ export class ProjectAgentRuntime {
 							projectRoot: this.options.projectRoot,
 							objective,
 							...(activeModel ? { provider: activeModel.provider, model: activeModel.id } : {}),
+							...(request.accountId ? { accountId: request.accountId } : {}),
 							thinkingLevel: "low",
 							delegationDepth: delegationDepth + 1,
 							signal: request.signal,
@@ -117,28 +125,96 @@ export class ProjectAgentRuntime {
 		return result;
 	}
 
+	compact(request: AgentTaskRequest, instructions?: string): Promise<AgentCompactConversationResult> {
+		const result = this.tail.then(() => this.compactExclusive(request, instructions));
+		this.tail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
+
+	warmCache(request: AgentTaskRequest): Promise<AgentCacheWarmResult> {
+		const result = this.tail.then(() => this.warmCacheExclusive(request));
+		this.tail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
+
+	private async selectRuntime(request: AgentTaskRequest): Promise<void> {
+		if (!this.runtime) {
+			const sessionManager = await openAgentSessionManager(this.options.projectRoot, request.sessionId);
+			this.runtime = await createAgentSessionRuntime(this.createRuntime, {
+				cwd: sessionManager.getCwd(),
+				agentDir: getAgentDir(),
+				sessionManager,
+			});
+		} else if (request.sessionId) {
+			const sessionPath = await findAgentSessionPath(this.options.projectRoot, request.sessionId);
+			const switched = await this.runtime.switchSession(sessionPath);
+			if (switched.cancelled) throw new AgentRuntimeStateError("Agent session switch was cancelled");
+		} else {
+			const switched = await this.runtime.newSession();
+			if (switched.cancelled) throw new AgentRuntimeStateError("Agent new session was cancelled");
+		}
+	}
+
 	private async runExclusive(request: AgentTaskRequest): Promise<AgentTaskResult> {
 		this.activeRequest = request;
 		try {
-			if (!this.runtime) {
-				const sessionManager = await openAgentSessionManager(this.options.projectRoot, request.sessionId);
-				this.runtime = await createAgentSessionRuntime(this.createRuntime, {
-					cwd: sessionManager.getCwd(),
-					agentDir: getAgentDir(),
-					sessionManager,
-				});
-			} else if (request.sessionId) {
-				const sessionPath = await findAgentSessionPath(this.options.projectRoot, request.sessionId);
-				const switched = await this.runtime.switchSession(sessionPath);
-				if (switched.cancelled) throw new AgentRuntimeStateError("Agent session switch was cancelled");
-			} else {
-				const switched = await this.runtime.newSession();
-				if (switched.cancelled) throw new AgentRuntimeStateError("Agent new session was cancelled");
-			}
+			await this.selectRuntime(request);
+			const runtime = this.runtime;
+			if (!runtime) throw new AgentRuntimeStateError("Agent runtime was not initialized");
 			return executeAgentTask(request, this.options.projectRoot, {
-				session: this.runtime.session,
+				session: runtime.session,
 				registerCacheAffinity: this.options.registerCacheAffinity,
 			});
+		} finally {
+			this.activeRequest = undefined;
+		}
+	}
+
+	private async compactExclusive(
+		request: AgentTaskRequest,
+		instructions?: string,
+	): Promise<AgentCompactConversationResult> {
+		if (!request.sessionId) throw new AgentRuntimeStateError("Conversation compaction requires a session");
+		this.activeRequest = request;
+		try {
+			await this.selectRuntime(request);
+			const runtime = this.runtime;
+			if (!runtime) throw new AgentRuntimeStateError("Agent runtime was not initialized");
+			const result = await runtime.session.compact(instructions);
+			return {
+				tokensBefore: result.tokensBefore,
+				...(result.estimatedTokensAfter !== undefined ? { estimatedTokensAfter: result.estimatedTokensAfter } : {}),
+			};
+		} finally {
+			this.activeRequest = undefined;
+		}
+	}
+
+	private async warmCacheExclusive(request: AgentTaskRequest): Promise<AgentCacheWarmResult> {
+		if (!request.sessionId) throw new AgentRuntimeStateError("Cache warming requires a session");
+		this.activeRequest = request;
+		try {
+			await this.selectRuntime(request);
+			const runtime = this.runtime;
+			if (!runtime) throw new AgentRuntimeStateError("Agent runtime was not initialized");
+			if (!request.signal) throw new AgentRuntimeStateError("Cache warming requires cancellation ownership");
+			const model = runtime.session.model;
+			if (!model) throw new AgentRuntimeStateError("Cache warming requires an active model");
+			const cacheAffinity = providerAccountCacheAffinity(
+				this.options.projectRoot,
+				model.provider,
+				model.id,
+				request.accountId,
+			);
+			this.options.registerCacheAffinity(cacheAffinity);
+			installProviderCacheRouting(runtime.session, cacheAffinity, undefined);
+			return warmAgentPromptCache(runtime.session, request.signal);
 		} finally {
 			this.activeRequest = undefined;
 		}

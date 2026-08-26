@@ -17,6 +17,7 @@ export interface CodingTaskInput {
 	readonly statePath?: string;
 	readonly provider?: string;
 	readonly model?: string;
+	readonly accountId?: string;
 	readonly credential?: string;
 	readonly sessionId?: string;
 	/** Use only non-executing diagnostics and never run validation scripts from the project. */
@@ -175,6 +176,7 @@ export interface DurableCodingTaskCheckpoint {
 	readonly approve: boolean;
 	readonly provider: string;
 	readonly model: string;
+	readonly accountId?: string;
 	readonly sessionId: string;
 	readonly requestId: string;
 	readonly fingerprint: string;

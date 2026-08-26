@@ -69,6 +69,7 @@ export function createTuiDesktopController(core: TuiLiveCore, view: TuiLiveView)
 		const reviewText = `Computer approval\nclick ${element.role} “${element.name}”\napplication ${state.desktopObservation.application.name}`;
 		state.approvalReviewText = reviewText;
 		view.closeHistory();
+		if (core.ui.hasOverlay()) core.ui.hideOverlay();
 		view.followTranscript();
 		view.appendText(warning(reviewText));
 		view.updateChrome("review Computer Use action");

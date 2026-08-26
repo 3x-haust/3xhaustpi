@@ -1,7 +1,8 @@
 import { matchesKey } from "@earendil-works/pi-tui";
+import { TUI_PRIMARY_COMMANDS, type TuiCommandGroup } from "./tui-command-catalog.ts";
 import type { TuiSigintTarget } from "./tui-contract.ts";
 import { isTuiTranscriptScrollInput } from "./tui-layout-frame.ts";
-import { cellWidth, dim, frameLine, stripAnsi, text } from "./tui-text.ts";
+import { cellWidth, dim, ellipsizeCells, frameLine, stripAnsi, text } from "./tui-text.ts";
 
 export function bindTuiSigint(target: TuiSigintTarget, requestExit: () => void): () => void {
 	target.on("SIGINT", requestExit);
@@ -55,8 +56,12 @@ export type TuiInputAction =
 	| "pass-approval-input"
 	| "open-history"
 	| "open-help"
+	| "recall-pending"
 	| "interrupt"
 	| "pass";
+export function shouldDeferTuiInputToImageViewer(viewerOpen: boolean, action: TuiInputAction): boolean {
+	return viewerOpen && action !== "interrupt";
+}
 export function resolveTuiInputAction(
 	value: string,
 	context: {
@@ -64,6 +69,8 @@ export function resolveTuiInputAction(
 		readonly approvalReviewable?: boolean;
 		readonly active: boolean;
 		readonly composerText: string;
+		readonly pendingCount?: number;
+		readonly overlayOpen?: boolean;
 	},
 ): TuiInputAction {
 	if (context.approvalPending) {
@@ -78,22 +85,20 @@ export function resolveTuiInputAction(
 		if (/^[^\u0000-\u001f\u007f]+$/u.test(value)) return "pass-approval-input";
 		return "consume-approval";
 	}
+	if (context.overlayOpen) return "pass";
 	if (isTuiCtrlC(value)) return resolveCtrlCAction(context.composerText);
+	if (context.active && !context.composerText && (context.pendingCount ?? 0) > 0 && matchesKey(value, "up"))
+		return "recall-pending";
 	if (matchesKey(value, "ctrl+t")) return "open-history";
 	if (!context.composerText && value === "?") return "open-help";
 	if (context.active && matchesKey(value, "escape")) return "interrupt";
 	return "pass";
 }
 
-const HELP_COMMAND_GROUPS = [
-	["/new", "/sessions", "/resume [session]", "/recover [checkpoint]", "/history", "/exit"],
-	["/model [id]", "/provider <id>", "/thinking <level>"],
-	["/projects", "/project <n>", "/chats", "/chat <session>", "/agents [n]"],
-	["/accounts", "/resources", "/clear"],
-	["/skill create <name>"],
-	["/mcp add <name> <command>", "/mcp tools <server>", "/mcp call <server> <tool> [json]"],
-	["/computer apps", "/computer observe <app>", "/computer click <element>"],
-] as const;
+const COMMAND_GROUP_ORDER: readonly TuiCommandGroup[] = ["conversation", "work", "environment", "system"];
+const HELP_COMMAND_GROUPS = COMMAND_GROUP_ORDER.map((group) =>
+	TUI_PRIMARY_COMMANDS.filter((command) => command.group === group).map(({ usage }) => usage),
+);
 export function formatHelpCommandLines(columns = 120): string[] {
 	const width = Math.max(1, columns - cellWidth("• "));
 	const lines = [text("Commands")];
@@ -108,5 +113,6 @@ export function formatHelpCommandLines(columns = 120): string[] {
 		}
 		if (line) lines.push(dim(line));
 	}
-	return lines.map((line) => frameLine(line, width));
+	lines.push(text("Keys"), dim("↑ edit pending while working"));
+	return lines.map((line) => frameLine(ellipsizeCells(line, width), width));
 }

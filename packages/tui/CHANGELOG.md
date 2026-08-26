@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed duplicate large bracketed paste events inserting the same content twice; an immediate repeat now expands the compact marker without adding another copy.
+
 ## [0.82.1] - 2026-07-25
 
 ## [0.82.0] - 2026-07-24

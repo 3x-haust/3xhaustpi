@@ -2,11 +2,12 @@ const ESCAPE = "\u001b";
 
 export function sanitizeTerminalText(value: string): string {
 	const normalized = value.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n").replace(/\t/gu, "    ");
-	let output = "";
+	const output: string[] = [];
 	let index = 0;
 	while (index < normalized.length) {
-		const character = Array.from(normalized.slice(index))[0];
-		if (!character) break;
+		const point = normalized.codePointAt(index);
+		if (point === undefined) break;
+		const character = String.fromCodePoint(point);
 		if (character === ESCAPE) {
 			const next = normalized[index + 1];
 			if (next === "[") {
@@ -30,8 +31,8 @@ export function sanitizeTerminalText(value: string): string {
 						index += 2;
 						break;
 					}
-					const part = Array.from(normalized.slice(index))[0];
-					index += part?.length ?? 1;
+					const part = normalized.codePointAt(index);
+					index += part !== undefined && part > 0xffff ? 2 : 1;
 				}
 				continue;
 			}
@@ -43,8 +44,8 @@ export function sanitizeTerminalText(value: string): string {
 			index += character.length;
 			continue;
 		}
-		output += character;
+		output.push(character);
 		index += character.length;
 	}
-	return output;
+	return output.join("");
 }

@@ -6,12 +6,18 @@ export interface TuiDispatchBinding {
 	readonly sessionId: string | null;
 	readonly provider: string;
 	readonly model: string;
+	readonly accountId?: string;
 	readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 }
 
 export interface TuiConversationHead {
 	readonly generation: number;
 	readonly sessionId: string | null;
+}
+
+export interface TuiRequestImage {
+	readonly data: string;
+	readonly mimeType: "image/png" | "image/jpeg" | "image/webp";
 }
 
 export interface CompareAndSwapTuiConversationHeadInput {
@@ -43,6 +49,7 @@ export interface TuiRequest {
 	readonly id: string;
 	readonly projectPath: string;
 	readonly objective: string;
+	readonly images?: readonly TuiRequestImage[];
 	readonly position: number;
 	readonly status: "queued" | "running";
 	readonly createdAt: string;
@@ -60,6 +67,7 @@ export interface EnqueueTuiRequestInput {
 	readonly projectPath: string;
 	readonly fingerprint: string;
 	readonly objective: string;
+	readonly images?: readonly TuiRequestImage[];
 	readonly binding?: TuiDispatchBinding;
 }
 
@@ -106,6 +114,7 @@ export interface TuiRequestRow {
 	readonly request_id: string;
 	readonly canonical_path: string;
 	readonly objective: string;
+	readonly images_json: string | null;
 	readonly position: number;
 	readonly status: TuiRequest["status"];
 	readonly created_at: string;
@@ -114,6 +123,7 @@ export interface TuiRequestRow {
 	readonly session_id: string | null;
 	readonly provider: string | null;
 	readonly model: string | null;
+	readonly account_id: string | null;
 	readonly thinking_level: string | null;
 }
 

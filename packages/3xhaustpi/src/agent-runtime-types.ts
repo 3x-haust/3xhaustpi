@@ -1,16 +1,58 @@
 import type { AgentToolApprovalRequest } from "./agent-approved-tools.ts";
-import type { CodingTaskEvent, CodingTaskPatchProposal, CodingTaskUsage } from "./coding-runtime.ts";
+import type { CacheWarmResult } from "./cache-warm-controller.ts";
+import type { CodingTaskEvent, CodingTaskImage, CodingTaskPatchProposal, CodingTaskUsage } from "./coding-runtime.ts";
 
 export interface AgentProviderEffectBoundaryRequest {
 	readonly effectId: string;
 	readonly kind: "provider";
 }
 
+export interface AgentEphemeralQuestionRequest {
+	readonly projectRoot: string;
+	readonly question: string;
+	readonly context: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly accountId?: string;
+	readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	readonly signal: AbortSignal;
+}
+
+export interface AgentCompactConversationRequest {
+	readonly projectRoot: string;
+	readonly sessionId: string;
+	readonly instructions?: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly accountId?: string;
+	readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	readonly signal: AbortSignal;
+}
+
+export interface AgentCompactConversationResult {
+	readonly tokensBefore: number;
+	readonly estimatedTokensAfter?: number;
+}
+
+export interface AgentCacheWarmRequest {
+	readonly projectRoot: string;
+	readonly sessionId: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly accountId?: string;
+	readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	readonly signal: AbortSignal;
+}
+
+export type AgentCacheWarmResult = CacheWarmResult;
+
 export interface AgentTaskRequest {
 	readonly projectRoot: string;
 	readonly objective: string;
 	readonly provider?: string;
 	readonly model?: string;
+	readonly accountId?: string;
+	readonly images?: readonly CodingTaskImage[];
 	readonly sessionId?: string;
 	readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	readonly signal?: AbortSignal;

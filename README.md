@@ -29,16 +29,28 @@ Node/Python이 없는 환경은 아래의 플랫폼별 native archive를 사용�
 archive에는 실행 runtime, Node, Python, runtime manifest와 대상 플랫폼의 OS
 credential-store 모듈이 포함됩니다.
 
-## 2. 첫 provider 로그인
+## 2. 계정 추가와 관리
 
 OpenAI Codex OAuth:
 
 ```bash
-3xhaustpi auth login openai-codex
+3xhaustpi account add
 ```
 
 로그인 URL을 기본 브라우저에 열고 grant가 끝나면 credential을 macOS
 Keychain, Windows Credential Manager 또는 Linux Secret Service에 저장합니다.
+추가한 Codex OAuth 계정은 각각 보존되며 다음 명령으로 목록, 전환, 삭제합니다.
+
+```bash
+3xhaustpi account
+3xhaustpi account use 2
+3xhaustpi account delete 2
+```
+
+대화형 TUI에서 `/account`를 열면 화살표로 계정과 동작을 이동하고 Enter로
+선택할 수 있습니다. 활성 계정은 `▶`, 저장된 다른 계정은 `○`로 표시되며,
+삭제 화면은 Cancel이 기본 선택입니다. `/account add`, `/account use <number>`,
+`/account delete <number>` 직접 명령도 유지됩니다.
 `~/.3xhaust/auth.json`에는 provider/type/storage metadata만 mode `0600`으로
 남습니다. 기존 secret-bearing JSON은 OS store write/readback 검증 후
 metadata-only 형식으로 자동 마이그레이션합니다. API-key provider와 사용
@@ -99,18 +111,16 @@ timeout, revision, permission은 host가 결정합니다. provider가 raw tool c
 SQLite에는 project/session/request queue/checkpoint/outbox/observation/
 approval/patch journal/cache 상태를 저장합니다.
 
-- `/projects`, `/project <number>`, `/sessions`, `/resume [session]`으로
-  project와 저장된 Pi conversation을 검색하고 전환합니다. `/chats`와
-  `/chat <session>`은 같은 native session surface의 alias입니다.
+- `/project`와 `/resume`으로 project와 저장된 Pi conversation을 검색하고
+  전환합니다.
 - `/new`는 새 conversation generation을 시작합니다.
-- `/recover [checkpoint]`만 legacy durable checkpoint를 명시적으로 복구합니다.
 - TUI 입력은 실행 전에 SQLite queue에 먼저 저장됩니다.
 - 실행 중 follow-up은 FIFO로 처리되고, TUI process가 종료되어도 다음 실행에서
   대기 요청을 복원합니다.
 - request fingerprint와 ID로 중복 실행을 차단합니다.
 - line-range context는 다음 요청에 bounded context로 붙습니다.
-- process crash 뒤 CLI의 `--resume` 또는 TUI의 `/recover`가 해당 project의
-  durable checkpoint를 claim해 재개합니다.
+- process crash 뒤 execution recovery는 해당 project의 durable checkpoint를
+  자동으로 안전하게 claim하거나 명시적인 repair 상태를 표시합니다.
 - 상태 조회나 화면 refresh는 실행 상태를 변경하지 않습니다. interrupted
   recovery는 resume 경계에서만 명시적으로 수행합니다.
 - provider가 요청을 받았는지 불명확하면 `indeterminate`로 남기고 자동
@@ -150,16 +160,36 @@ SQLite에는 기록하지 않습니다.
 
 TUI는 black/charcoal 기반의 event-driven ANSI UI입니다. polling loop와
 idle redraw는 없고, 작업 중 grayscale shimmer만 120 ms animation timer를
-사용합니다. coding runtime worker는 첫 작업 때 올라와 정상적인 연속 turn
-사이에서 재사용되며, 취소·종료 때 process tree 전체를 정리합니다.
+사용합니다. coding runtime worker는 작업마다 필요할 때 올라오고 완료·실패·
+취소 때 process tree 전체를 정리합니다. durable Pi session은 다음 turn에서
+다시 열리므로 idle 상태에 V8 worker를 남기지 않습니다.
+하단 identity rail은 측정된 context token/limit/percent를 항상 표시합니다.
+1% 미만은 두 자리 정밀도를 유지하며, `/compact`가 too-small no-op이면 같은
+context budget을 결과에 포함합니다. `/goal <text>`는 project-scoped intent를
+저장하고 footer와 `/status`에 표시합니다. `/goal done`은 완료,
+`/goal clear`는 제거입니다.
+`/settings`의 Cache warming은 project별 opt-in입니다. 활성화하면 eligible
+conversation의 prompt cache를 provider TTL 전에 최대 16 output token의
+비변경 요청으로 갱신하고, `/status`에 iteration, 다음 wake 시각, provider
+usage 기반 예상 절감액을 표시합니다. project/session 전환과 foreground 작업은
+예약 또는 진행 중인 wake를 즉시 취소합니다.
+`Ctrl+V`로 이미지를 붙이면 composer의 각 `[imageN]` token 바로 위에
+metadata-free bounded thumbnail이 보이고, 입력·chat transcript에는
+`[image1]` placeholder가 그대로 남습니다.
+긴 텍스트는 첫 `Cmd+V`에서 `[paste #N …]`으로 축약되고 같은 내용을 바로
+한 번 더 `Cmd+V`하면 중복 삽입 없이 원문이 composer에 펼쳐집니다.
+resized image payload는 텍스트와 분리해 durable queue와 native agent
+runtime으로 전달합니다.
 
-외부 앱 Computer Use도 같은 Pi TUI에서 실행할 수 있습니다.
+Compaction serializer는 private reasoning과 대형 edit/write body를 digest로
+줄이면서 exact path, command, tool call ID, error head/tail을 보존합니다.
+로컬 속도·품질 gate는 provider 호출 없이 실행됩니다.
 
-```text
-/computer
-/computer observe <app number>
-/computer click <element number>
+```bash
+npm run benchmark:compaction --workspace=@earendil-works/pi-coding-agent -- --check
 ```
+
+외부 앱 Computer Use도 `/settings`의 Integrations에서 실행할 수 있습니다.
 
 앱과 accessibility role/name을 먼저 관찰하고, semantic click은 `y/n`
 검토를 통과해야 실행됩니다. TUI 명령에는 좌표 입력이 없습니다.
@@ -209,6 +239,10 @@ action은 아직 미검증입니다. 증거는
 `../3xhaustdesktop/artifacts/native-linux-x64-atspi-computer-use.json`입니다.
 
 ## 8. 실제 benchmark
+
+현재 coding-agent TUI 기능·UX·성능 비교와 구현 격차는
+[`docs/tui-competitive-comparison-2026-08-26.md`](docs/tui-competitive-comparison-2026-08-26.md)에
+근거·한계·우선순위와 함께 기록합니다.
 
 실제 provider paired benchmark:
 
@@ -260,12 +294,28 @@ tool success 100%, capability cache 99%, output mismatch 0이었습니다. provi
 - runtime-worker 분리 전 TUI 5-run median 94.55/94.55 MiB 대비 평균 RSS
   38.23% 감소
 
+2026-08-26 per-operation worker reap 변경은 동일 Node 24, esbuild 설정,
+`80x24` PTY event gate와 invalid-model no-provider workload로 기존/candidate
+bundle을 각각 5회 비교했습니다.
+
+- idle parent RSS median: 216.80 MiB -> 129.86 MiB, 40.10% 감소
+- child-appearance aggregate RSS median: 272.06 MiB -> 188.59 MiB, 30.68% 감소
+- post-result aggregate RSS median: 460.30 MiB -> 135.61 MiB, 70.54% 감소
+- candidate는 5회 모두 result 뒤 child RSS 0 KiB
+- before/candidate bundle SHA-256:
+  `5fbe793929a49ef464ab4491c0d4df2d7f276647669ec88b15f64ef3a7fec795` /
+  `75a380655b8406cdbc8ffc145a440f469be775c809a7847860a83adcb4abd6fd`
+
+aggregate RSS는 parent/child의 합으로 shared physical page를 중복 계산할 수
+있으며, provider-backed 정상 workload의 peak가 아니라 deterministic
+invalid-model lifecycle 측정입니다.
+
 Electron actual-provider E2E는 OAuth account route, MCP/Skill/Memory context,
 patch proposal/approval, utility process `SIGKILL`, resume, diagnostics와 FIFO
 follow-up을 한 흐름에서 검증했습니다. 최신 실행은 provider call 3회, tool
 call 3/3 성공, tool duration 368.6 ms였습니다. 집계 증거는
 `../3xhaustdesktop/artifacts/performance-comparison.json`, TUI kill/restart 캡처는
-`../3xhaustdesktop/artifacts/g042-tui-durable-queue.png`, project/chat 전환 캡처는
+`../3xhaustdesktop/artifacts/g042-tui-durable-queue.png`, project/conversation 전환 캡처는
 `../3xhaustdesktop/artifacts/g043-tui-project-chat-navigation.png`입니다. TUI worker를
 통한 실제 `openai-codex/gpt-5.6-terra` 조사 작업 transcript는
 `../3xhaustdesktop/artifacts/tui-worker-real-llm.txt`에 보존했습니다.
@@ -311,8 +361,9 @@ local `dist`와 byte-identical한지 검증했습니다. 이 빌드는 bundled N
 Node/Python, macOS Keychain, 기존 OAuth, 실제 provider 작업, 15개 GUI
 application Computer Use를 검증한 기록입니다.
 
-같은 darwin-arm64 archive의 실제 Pi TUI에서 `/computer`를 입력해 현재
-실행 중인 15개 GUI application을 accessibility host로 조회했습니다. 증거는
+같은 darwin-arm64 archive의 실제 Pi TUI에서 `/settings`의 Computer
+integration을 열어 현재 실행 중인 15개 GUI application을 accessibility
+host로 조회했습니다. 증거는
 `../3xhaustdesktop/artifacts/native-tui-computer-use.txt`입니다.
 
 ## 11. troubleshooting
@@ -325,7 +376,7 @@ application Computer Use를 검증한 기록입니다.
 
 자주 확인할 항목:
 
-- `provider credential unavailable`: `3xhaustpi auth login <provider>` 실행
+- `provider credential unavailable`: `3xhaustpi account add [provider]` 실행
 - `No durable checkpoint`: 재개 가능한 crashed/paused session이 없음
 - `Project revision changed`: 최신 revision에서 proposal을 다시 생성
 - `cooldown`: `Retry-After` 또는 bounded cooldown 동안 다른 account를 사용

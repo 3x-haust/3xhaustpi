@@ -1287,6 +1287,8 @@ export class Editor implements Component, Focusable {
 		// Check if this is a large paste (> 10 lines or > 1000 characters)
 		const totalChars = filteredText.length;
 		if (pastedLines.length > 10 || totalChars > 1000) {
+			if (this.expandRepeatedPaste(filteredText)) return;
+
 			// Store the paste and insert a marker
 			this.pasteCounter++;
 			const pasteId = this.pasteCounter;
@@ -1309,6 +1311,26 @@ export class Editor implements Component, Focusable {
 
 		// Multi-line paste - use direct state manipulation
 		this.insertTextAtCursorInternal(filteredText);
+	}
+
+	private expandRepeatedPaste(pastedText: string): boolean {
+		if (this.pasteCounter === 0 || this.pastes.get(this.pasteCounter) !== pastedText) return false;
+
+		const line = this.state.lines[this.state.cursorLine] || "";
+		const beforeCursor = line.slice(0, this.state.cursorCol);
+		const markerStart = beforeCursor.lastIndexOf("[paste #");
+		if (markerStart < 0) return false;
+
+		const marker = beforeCursor.slice(markerStart);
+		const markerMatch = PASTE_MARKER_SINGLE.exec(marker);
+		if (!markerMatch || Number(markerMatch[1]) !== this.pasteCounter) return false;
+
+		this.state.lines[this.state.cursorLine] = beforeCursor.slice(0, markerStart) + line.slice(this.state.cursorCol);
+		this.setCursorCol(markerStart);
+		this.pastes.delete(this.pasteCounter);
+		this.pasteCounter--;
+		this.insertTextAtCursorInternal(pastedText);
+		return true;
 	}
 
 	private addNewLine(): void {

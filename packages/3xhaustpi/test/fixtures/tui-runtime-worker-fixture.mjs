@@ -10,6 +10,19 @@ let ignoredAbortRunId;
 
 process.on("message", (message) => {
 	if (message?.type === "start") {
+		if (
+			message.request?.mode === "side-question" ||
+			message.request?.mode === "compact" ||
+			message.request?.mode === "cache-warm"
+		) {
+			process.send?.({
+				type: "result",
+				runId: message.runId,
+				available: true,
+				result: message.request,
+			});
+			return;
+		}
 		if (message.request?.objective === "wait") return;
 		if (message.request?.objective === "invalid-message") {
 			process.send?.({ type: "invalid", runId: message.runId });

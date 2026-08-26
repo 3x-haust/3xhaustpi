@@ -471,6 +471,10 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
+## Operational Evidence
+- [Exact commands and outcomes, validation evidence, unresolved errors/root causes, and delegated child session lineage]
+- [Or "(none)" if no operational evidence exists]
+
 ## Next Steps
 1. [Ordered list of what should happen next]
 
@@ -510,6 +514,10 @@ Use this EXACT format:
 
 ## Key Decisions
 - **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Operational Evidence
+- [Preserve exact commands/outcomes, validation evidence, unresolved errors/root causes, and delegated child session lineage]
+- [Remove only evidence that is explicitly superseded and retain the replacement]
 
 ## Next Steps
 1. [Update based on current state]
@@ -760,39 +768,40 @@ export async function compact(
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
-		let historyUsage: Usage | undefined;
-		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummaryWithUsage(
-				messagesToSummarize,
+		const historyPromise =
+			messagesToSummarize.length > 0
+				? generateSummaryWithUsage(
+						messagesToSummarize,
+						models,
+						model,
+						settings.reserveTokens,
+						signal,
+						customInstructions,
+						previousSummary,
+						thinkingLevel,
+						retry,
+						callbacks,
+					)
+				: Promise.resolve(undefined);
+		const [historyResult, turnPrefixResult] = await Promise.all([
+			historyPromise,
+			generateTurnPrefixSummary(
+				turnPrefixMessages,
 				models,
 				model,
 				settings.reserveTokens,
 				signal,
-				customInstructions,
-				previousSummary,
 				thinkingLevel,
 				retry,
 				callbacks,
-			);
-			if (!historyResult.ok) return err(historyResult.error);
-			historyText = historyResult.value.text;
-			historyUsage = historyResult.value.usage;
-		}
-		const turnPrefixResult = await generateTurnPrefixSummary(
-			turnPrefixMessages,
-			models,
-			model,
-			settings.reserveTokens,
-			signal,
-			thinkingLevel,
-			retry,
-			callbacks,
-		);
+			),
+		]);
+		if (historyResult && !historyResult.ok) return err(historyResult.error);
 		if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
+		const historyText = historyResult?.ok ? historyResult.value.text : "No prior history.";
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.text}`;
-		summaryUsage = historyUsage
-			? combineUsage(historyUsage, turnPrefixResult.value.usage)
+		summaryUsage = historyResult?.ok
+			? combineUsage(historyResult.value.usage, turnPrefixResult.value.usage)
 			: turnPrefixResult.value.usage;
 	} else {
 		const summaryResult = await generateSummaryWithUsage(

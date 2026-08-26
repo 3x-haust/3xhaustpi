@@ -28,6 +28,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => "/tmp/3xhaustpi-agent-runtime-events",
 }));
 
+vi.mock("../../coding-agent/src/core/session-manager.ts", () => ({
+	SessionManager: { create: mocks.createSessionManager },
+}));
+
 vi.mock("../src/provider-runtime.ts", () => ({
 	createCredentialStore: mocks.createCredentialStore,
 }));

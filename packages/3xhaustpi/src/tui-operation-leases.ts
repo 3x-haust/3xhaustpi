@@ -58,9 +58,9 @@ export class TuiOperationLeaseStore {
 			}
 			const row = this.#database
 				.prepare(
-					`SELECT request_id, canonical_path, objective, position, status, created_at, lease_epoch,
+					`SELECT request_id, canonical_path, objective, images_json, position, status, created_at, lease_epoch,
 						execution_sequence, execution_snapshot, binding_version, conversation_generation,
-						session_id, provider, model, thinking_level
+						session_id, provider, model, account_id, thinking_level
 					 FROM tui_request_queue
 					 WHERE canonical_path = ? AND status = 'queued'
 ${options?.requestId ? "AND request_id = ?" : ""}

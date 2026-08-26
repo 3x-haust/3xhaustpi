@@ -71,7 +71,12 @@ describe("TUI runtime worker boundary", () => {
 			createTuiRunRequest({
 				projectRoot: "/tmp/project",
 				objective: "inspect",
-				selectedModel: { provider: "openai-codex", model: "gpt-5.6-luna" },
+				selectedModel: {
+					provider: "openai-codex",
+					model: "gpt-5.6-luna",
+					accountId: "openai-codex:acct-alpha",
+					images: [{ data: "ZmFrZQ==", mimeType: "image/png" }],
+				},
 				sessionId: "session_continuation",
 				allowProjectHooks: true,
 			}),
@@ -81,6 +86,8 @@ describe("TUI runtime worker boundary", () => {
 			objective: "inspect",
 			provider: "openai-codex",
 			model: "gpt-5.6-luna",
+			accountId: "openai-codex:acct-alpha",
+			images: [{ data: "ZmFrZQ==", mimeType: "image/png" }],
 			sessionId: "session_continuation",
 			allowProjectHooks: true,
 		});
@@ -217,7 +224,7 @@ describe("TUI runtime worker boundary", () => {
 		expect(() => process.kill(workerPid, 0)).toThrow();
 	}, 1_000);
 
-	it("reuses one warm worker across sequential TUI turns", async () => {
+	it("reaps each completed worker before a sequential TUI turn", async () => {
 		const host = new TuiRuntimeHost({ workerPath });
 		const commonHooks = hooks();
 		try {
@@ -225,10 +232,86 @@ describe("TUI runtime worker boundary", () => {
 			const second = await host.run(request("persistent-second"), commonHooks);
 
 			expect(first).toMatchObject({ starts: 1 });
-			expect(second).toMatchObject({ starts: 2 });
-			expect((first as { readonly pid: number }).pid).toBe((second as { readonly pid: number }).pid);
+			expect(second).toMatchObject({ starts: 1 });
+			expect((first as { readonly pid: number }).pid).not.toBe((second as { readonly pid: number }).pid);
 		} finally {
 			await host.close();
+		}
+	});
+
+	it("routes side questions and compaction through the worker boundary", async () => {
+		const host = new TuiRuntimeHost({ workerPath });
+		try {
+			await expect(
+				host.run(
+					{
+						mode: "side-question",
+						projectRoot: "/tmp/project",
+						question: "What changed?",
+						context: "fixture context",
+						provider: "openai-codex",
+						model: "gpt-5.6-terra",
+						thinkingLevel: "medium",
+					},
+					hooks(),
+				),
+			).resolves.toMatchObject({ mode: "side-question", question: "What changed?" });
+			await expect(
+				host.run(
+					{
+						mode: "compact",
+						projectRoot: "/tmp/project",
+						sessionId: "session_fixture",
+						instructions: "Keep decisions",
+						provider: "openai-codex",
+						model: "gpt-5.6-terra",
+						thinkingLevel: "medium",
+					},
+					hooks(),
+				),
+			).resolves.toMatchObject({ mode: "compact", sessionId: "session_fixture" });
+			await expect(
+				host.run(
+					{
+						mode: "cache-warm",
+						projectRoot: "/tmp/project",
+						sessionId: "session_fixture",
+						provider: "openai-codex",
+						model: "gpt-5.6-terra",
+						thinkingLevel: "medium",
+					},
+					hooks(),
+				),
+			).resolves.toMatchObject({ mode: "cache-warm", sessionId: "session_fixture" });
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("runs a side question while the primary runtime remains active", async () => {
+		const taskHost = new TuiRuntimeHost({ workerPath });
+		const quickHost = new TuiRuntimeHost({ workerPath });
+		const controller = new AbortController();
+		const activeTask = taskHost.run(request("wait"), hooks({ signal: controller.signal }));
+		try {
+			await expect(
+				quickHost.run(
+					{
+						mode: "side-question",
+						projectRoot: "/tmp/project",
+						question: "What changed?",
+						context: "fixture context",
+						provider: "openai-codex",
+						model: "gpt-5.6-terra",
+						thinkingLevel: "medium",
+					},
+					hooks(),
+				),
+			).resolves.toMatchObject({ mode: "side-question" });
+		} finally {
+			controller.abort();
+			await expect(activeTask).rejects.toThrow(/cancelled/u);
+			await Promise.all([taskHost.close(), quickHost.close()]);
 		}
 	});
 

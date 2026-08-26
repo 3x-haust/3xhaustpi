@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ExecutionEvent } from "./execution-graph.ts";
 import { resolveStatePath } from "./identity.ts";
+import { StateGoalStore, type TuiProjectGoal } from "./state-goal-store.ts";
 import { StateJournalStore } from "./state-journal-store.ts";
 import { StateResumeStore } from "./state-resume-store.ts";
 import { StateRunStore } from "./state-run-store.ts";
@@ -28,6 +29,7 @@ import type {
 	TuiRequestCompletionStatus,
 } from "./tui-operation-types.ts";
 
+export type { TuiProjectGoal, TuiProjectGoalStatus } from "./state-goal-store.ts";
 export type { BeginRunInput, ExplicitResumeClaim, ResumeCheckpoint, WorkspaceSnapshot } from "./state-types.ts";
 export type {
 	ClaimedTuiRequest,
@@ -49,6 +51,7 @@ export class ThreeXhaustState {
 	readonly #journal: StateJournalStore;
 	readonly #workspace: StateWorkspaceStore;
 	readonly #tuiOperations: TuiOperationStore;
+	readonly #goals: StateGoalStore;
 
 	constructor(path = resolveStatePath()) {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -58,6 +61,7 @@ export class ThreeXhaustState {
 		);
 		migrateStateSchema(this.#database);
 		this.#tuiOperations = new TuiOperationStore(this.#database);
+		this.#goals = new StateGoalStore(this.#database);
 		this.#runs = new StateRunStore(this.#database);
 		this.#resume = new StateResumeStore(this.#database);
 		this.#journal = new StateJournalStore(this.#database);
@@ -74,12 +78,40 @@ export class ThreeXhaustState {
 		this.#tuiOperations.recoverInterrupted(projectPath, now);
 	}
 
+	findTuiProjectPreference(projectPath: string, key: string): string | undefined {
+		return this.#tuiOperations.findProjectPreference(projectPath, key);
+	}
+
+	setTuiProjectPreference(projectPath: string, key: string, value: string | undefined): void {
+		this.#tuiOperations.setProjectPreference(projectPath, key, value);
+	}
+
+	findTuiProjectGoal(projectPath: string): TuiProjectGoal | undefined {
+		return this.#goals.find(projectPath);
+	}
+
+	setTuiProjectGoal(projectPath: string, text: string, now?: string): TuiProjectGoal {
+		return this.#goals.set(projectPath, text, now);
+	}
+
+	completeTuiProjectGoal(projectPath: string, now?: string): TuiProjectGoal | undefined {
+		return this.#goals.complete(projectPath, now);
+	}
+
+	clearTuiProjectGoal(projectPath: string): void {
+		this.#goals.clear(projectPath);
+	}
+
 	enqueueTuiRequest(input: EnqueueTuiRequestInput): { readonly request: TuiRequest; readonly inserted: boolean } {
 		return this.#tuiOperations.enqueue(input);
 	}
 
 	listTuiRequests(projectPath: string): readonly TuiRequest[] {
 		return this.#tuiOperations.list(projectPath);
+	}
+
+	recallNewestQueuedTuiRequest(projectPath: string, now?: string): TuiRequest | undefined {
+		return this.#tuiOperations.recallNewest(projectPath, now);
 	}
 
 	claimNextTuiRequest(projectPath: string, options?: ClaimTuiRequestOptions): ClaimedTuiRequest | undefined {
@@ -96,6 +128,22 @@ export class ThreeXhaustState {
 
 	listTuiRequestHistory(projectPath: string) {
 		return this.#tuiOperations.listHistory(projectPath);
+	}
+
+	listTuiAccountExclusions(projectPath: string): readonly string[] {
+		return this.#tuiOperations.listAccountExclusions(projectPath);
+	}
+
+	setTuiAccountsEnabled(projectPath: string, accountIds: readonly string[], enabled: boolean): void {
+		this.#tuiOperations.setAccountsEnabled(projectPath, accountIds, enabled);
+	}
+
+	findTuiProviderAccount(projectPath: string, providerId: string): string | undefined {
+		return this.#tuiOperations.findProviderAccount(projectPath, providerId);
+	}
+
+	setTuiProviderAccount(projectPath: string, providerId: string, accountId: string): void {
+		this.#tuiOperations.setProviderAccount(projectPath, providerId, accountId);
 	}
 
 	recordTuiExecutionEvent(requestId: string, input: RecordTuiExecutionEventInput, event: ExecutionEvent): void {

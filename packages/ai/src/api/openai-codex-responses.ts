@@ -109,6 +109,7 @@ interface RequestBody {
 	text?: { verbosity?: string };
 	include?: string[];
 	prompt_cache_key?: string;
+	max_output_tokens?: number;
 	[key: string]: unknown;
 }
 
@@ -572,6 +573,10 @@ function buildRequestBody(
 
 	if (options?.serviceTier !== undefined) {
 		body.service_tier = options.serviceTier;
+	}
+
+	if (options?.maxTokens !== undefined) {
+		body.max_output_tokens = Math.max(1, Math.floor(options.maxTokens));
 	}
 
 	if (toolPlacement.immediate.length > 0) {

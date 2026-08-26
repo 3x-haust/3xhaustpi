@@ -9,6 +9,7 @@ import { PRODUCT_DISPLAY_NAME } from "./product-identity.ts";
 import { sanitizeTerminalText } from "./terminal-sanitizer.ts";
 import { runTui } from "./tui.ts";
 import { formatToolApprovalReview } from "./tui-approval.ts";
+import { collectWorkingTreeReviewEvidence } from "./working-tree-review.ts";
 
 type RunCommand = Extract<ThreeXhaustCommand, { readonly kind: "run" }>;
 
@@ -61,6 +62,22 @@ async function runInteractive(command: RunCommand, project: string): Promise<voi
 			thinkingLevel: "medium",
 			...(command.provider ? { provider: command.provider } : {}),
 			...(command.model ? { model: command.model } : {}),
+			compactConversation: (request) => runtimeHost.compactConversation(request),
+			reviewWorkingTree: async (request) => {
+				const before = await collectWorkingTreeReviewEvidence(request.projectRoot);
+				const answer = await runtimeHost.runSideQuestion({
+					...request,
+					question: request.focus
+						? `Review the working-tree evidence, focusing on: ${request.focus}`
+						: "Review the working-tree evidence for defects, regressions, and missing tests.",
+					context: before.text,
+				});
+				const after = await collectWorkingTreeReviewEvidence(request.projectRoot);
+				return before.revision === after.revision
+					? answer
+					: `Working tree changed during review; findings may be stale.\n\n${answer}`;
+			},
+			runSideQuestion: (request) => runtimeHost.runSideQuestion(request),
 			runTask: async (projectRoot, objective, hooks, selectedModel) => {
 				let effectAcknowledged = false;
 				try {
@@ -71,6 +88,8 @@ async function runInteractive(command: RunCommand, project: string): Promise<voi
 						signal: hooks.signal,
 						provider: selectedModel.provider,
 						model: selectedModel.model,
+						...(selectedModel.accountId ? { accountId: selectedModel.accountId } : {}),
+						...(selectedModel.images?.length ? { images: selectedModel.images } : {}),
 						...(selectedModel.sessionId ? { sessionId: selectedModel.sessionId } : {}),
 						thinkingLevel: "medium",
 						requestToolApproval: hooks.requestToolApproval,
@@ -95,6 +114,8 @@ async function runInteractive(command: RunCommand, project: string): Promise<voi
 						resources: { enabled: true, allowProjectHooks: command.allowProjectHooks },
 						provider: selectedModel.provider,
 						model: selectedModel.model,
+						...(selectedModel.accountId ? { accountId: selectedModel.accountId } : {}),
+						...(selectedModel.images?.length ? { images: selectedModel.images } : {}),
 					});
 				}
 			},

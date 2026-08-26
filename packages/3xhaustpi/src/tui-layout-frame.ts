@@ -1,9 +1,12 @@
 import { homedir } from "node:os";
 import { basename } from "node:path";
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, Image } from "@earendil-works/pi-tui";
 import { PRODUCT_DISPLAY_NAME, PRODUCT_MACHINE_NAME } from "./product-identity.ts";
 import { formatTuiActivityLine } from "./tui-activity-state.ts";
+import { contextUsageLabel } from "./tui-context-meter.ts";
 import type { TuiDensityMode, TuiLayoutContract, TuiViewState } from "./tui-contract.ts";
+import { formatImagePreviewLabel, type TuiDisplayImage } from "./tui-image-viewer.ts";
+import { parseTuiMouseInput } from "./tui-mouse.ts";
 import {
 	accent,
 	cellWidth,
@@ -64,12 +67,6 @@ export function layoutTuiFrame(
 	};
 }
 
-function compactTokens(value: number): string {
-	if (value < 1_000) return String(value);
-	const thousands = value / 1_000;
-	return `${thousands >= 100 || Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K`;
-}
-
 function compactPath(value: string): string {
 	const home = homedir();
 	return sanitizeTerminalText(value.startsWith(home) ? `~${value.slice(home.length)}` : value);
@@ -86,28 +83,26 @@ export function contextHeaderRail(state: TuiViewState, layout: TuiLayoutContract
 		cellWidth(path) <= pathBudget
 			? path
 			: `…/${ellipsizeCells(sanitizeTerminalText(basename(state.projectRoot)), Math.max(1, pathBudget - 2))}`;
-	const left: string[] = [muted(compactedPath)];
-	const used = state.contextTokens;
-	const limit = state.contextLimit ?? 0;
-	if (used !== undefined && limit > 0)
-		left.push(text(`${compactTokens(used)}/${compactTokens(limit)} (${((used / limit) * 100).toFixed(1)}%)`));
-	else if (limit > 0) left.push(muted(`0/${compactTokens(limit)} (0.0%)`));
-	let body = "";
-	for (const extra of [left.slice(1), []]) {
-		body = [left[0], ...extra].join(`  ${dim("•")} `);
-		if (cellWidth(stripAnsi(body)) + cellWidth(stripAnsi(right)) + 2 <= layout.columns) break;
-	}
+	const body = muted(compactedPath);
 	const gap = Math.max(2, layout.columns - cellWidth(stripAnsi(body)) - cellWidth(stripAnsi(right)));
 	return frameLine(`${body}${" ".repeat(gap)}${right}`, layout.columns);
 }
 
 export function identityRail(state: TuiViewState, layout: TuiLayoutContract): string {
-	if (layout.mode === "degraded" || layout.mode === "minimal")
-		return frameLine(text(PRODUCT_DISPLAY_NAME), layout.columns);
+	if (layout.columns < 40) return frameLine(text(PRODUCT_DISPLAY_NAME), layout.columns);
 	const project = sanitizeTerminalText(basename(state.projectRoot));
-	const parts = [`(${accent("😺")} ${text(`${PRODUCT_DISPLAY_NAME} Native`)})`];
-	if (project !== PRODUCT_MACHINE_NAME) parts.push(dim(project));
-	return frameLine(parts.join(" "), layout.columns);
+	const brand = `(${accent("😺")} ${text(`${PRODUCT_DISPLAY_NAME} Native`)})`;
+	const fallback = project === PRODUCT_MACHINE_NAME ? "" : dim(project);
+	const goal = state.goal
+		? `${dim("Goal")} ${text(sanitizeTerminalText(state.goal).replace(/\s+/gu, " ").trim())}`
+		: fallback;
+	const context = contextUsageLabel(state.contextTokens, state.contextLimit, "meter");
+	if (!context) return frameLine([brand, goal].filter(Boolean).join(" "), layout.columns);
+	const right = muted(context);
+	const leftBudget = Math.max(1, layout.columns - cellWidth(stripAnsi(right)) - 2);
+	const left = ellipsizeCells([brand, goal].filter(Boolean).join(" "), leftBudget);
+	const gap = Math.max(2, layout.columns - cellWidth(stripAnsi(left)) - cellWidth(stripAnsi(right)));
+	return frameLine(`${left}${" ".repeat(gap)}${right}`, layout.columns);
 }
 
 function composerRail(state: TuiViewState, layout: TuiLayoutContract): readonly string[] {
@@ -136,10 +131,14 @@ export function isTuiTranscriptScrollInput(data: string, composerText: string): 
 }
 
 export class TranscriptViewport implements Component {
+	onOpenImage?: (image: TuiDisplayImage) => void;
 	private readonly entries: readonly string[];
 	private readonly rowsProvider: () => number;
 	private readonly reservedRowsProvider: () => number;
 	private readonly offsetProvider: () => number;
+	private readonly images = new Map<number, TranscriptImage[]>();
+	private readonly imageRows = new Map<number, number[]>();
+	private nextImageId = 1;
 
 	constructor(
 		entries: readonly string[],
@@ -152,22 +151,96 @@ export class TranscriptViewport implements Component {
 		this.reservedRowsProvider = reservedRowsProvider;
 		this.offsetProvider = offsetProvider;
 	}
+
+	attachImages(entryIndex: number, images: readonly TuiDisplayImage[]): void {
+		if (images.length === 0) return;
+		this.images.set(
+			entryIndex,
+			images.map((image) => ({
+				id: this.nextImageId++,
+				image,
+				preview: new Image(
+					image.data,
+					image.mimeType,
+					{ fallbackColor: muted },
+					{ filename: image.filename, maxWidthCells: 18, maxHeightCells: 4 },
+				),
+			})),
+		);
+	}
+
+	clearImages(): void {
+		this.images.clear();
+		this.imageRows.clear();
+	}
+
+	handleMouseInput(data: string): boolean {
+		const mouse = parseTuiMouseInput(data);
+		if (mouse?.button !== "left" || mouse.kind !== "press") return false;
+		const target = [...this.imageRows].find(([, rows]) => rows.includes(mouse.row));
+		if (!target) return false;
+		const images = [...this.images.values()].flat();
+		const attachment = images.find(({ id }) => id === target[0]);
+		if (!attachment) return false;
+		this.onOpenImage?.(attachment.image);
+		return true;
+	}
+
 	render(width: number): string[] {
 		const columns = Math.max(1, width);
 		const budget = transcriptViewportRows(this.rowsProvider(), this.reservedRowsProvider(), columns);
 		const offset = Math.max(0, Math.floor(this.offsetProvider()));
+		const imageRowsByEntry = new Map<number, readonly string[]>();
+		for (const [entryIndex, images] of this.images) {
+			imageRowsByEntry.set(
+				entryIndex,
+				images.flatMap(({ id, image, preview }) => {
+					const format = image.mimeType.slice("image/".length).toUpperCase();
+					const label = formatImagePreviewLabel(image.token, format, image.filename, columns - 2);
+					const marker = transcriptImageMarker(id);
+					return [muted(label), ...preview.render(Math.max(1, columns - 2))].map((line) => `${marker}  ${line}`);
+				}),
+			);
+		}
 		let visibleLines: string[];
-		if (offset === 0) visibleLines = fitTranscriptCards(this.entries, columns, budget);
+		if (offset === 0) visibleLines = fitTranscriptCards(this.entries, columns, budget, imageRowsByEntry);
 		else {
-			const extended = fitTranscriptCards(this.entries, columns, budget + offset);
+			const extended = fitTranscriptCards(this.entries, columns, budget + offset, imageRowsByEntry);
 			const end = Math.max(0, extended.length - offset);
 			visibleLines = extended.slice(Math.max(0, end - budget), end);
 		}
-		return [...Array.from({ length: Math.max(0, budget - visibleLines.length) }, () => ""), ...visibleLines].map(
-			(line) => frameLine(line, columns),
-		);
+		this.imageRows.clear();
+		const padded = [...Array.from({ length: Math.max(0, budget - visibleLines.length) }, () => ""), ...visibleLines];
+		return padded.map((line, index) => {
+			const ids = [...line.matchAll(TRANSCRIPT_IMAGE_MARKER_PATTERN)].map((match) =>
+				Number.parseInt(match[1] ?? "", 10),
+			);
+			for (const id of ids) {
+				const rows = this.imageRows.get(id) ?? [];
+				rows.push(index + 1);
+				this.imageRows.set(id, rows);
+			}
+			return frameLine(line.replace(TRANSCRIPT_IMAGE_MARKER_PATTERN, ""), columns);
+		});
 	}
-	invalidate(): void {}
+
+	invalidate(): void {
+		for (const images of this.images.values()) {
+			for (const { preview } of images) preview.invalidate();
+		}
+	}
+}
+
+interface TranscriptImage {
+	readonly id: number;
+	readonly image: TuiDisplayImage;
+	readonly preview: Image;
+}
+
+const TRANSCRIPT_IMAGE_MARKER_PATTERN = /\u0000image:(\d+)\u0000/gu;
+
+function transcriptImageMarker(id: number): string {
+	return `\u0000image:${id}\u0000`;
 }
 
 export function renderTuiFrame(

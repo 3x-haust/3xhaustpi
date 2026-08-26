@@ -1,9 +1,14 @@
 import { muted, stripAnsi } from "./tui-text.ts";
 import { projectTranscriptCards } from "./tui-transcript-cards.ts";
 
-export function fitTranscriptCards(entries: readonly string[], columns: number, budget: number): string[] {
+export function fitTranscriptCards(
+	entries: readonly string[],
+	columns: number,
+	budget: number,
+	extraRowsByEntry: ReadonlyMap<number, readonly string[]> = new Map(),
+): string[] {
 	const visibleCards: string[][] = [];
-	const cards = projectTranscriptCards(entries, columns);
+	const cards = projectTranscriptCards(entries, columns, extraRowsByEntry);
 	let remaining = Math.max(0, budget);
 	for (let index = cards.length - 1; index >= 0 && remaining > 0; index -= 1) {
 		const card = cards[index];

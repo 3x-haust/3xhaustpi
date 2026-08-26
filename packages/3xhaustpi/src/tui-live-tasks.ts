@@ -27,6 +27,7 @@ export function createTuiTaskController(
 		state.activeCapabilities = [];
 		state.activeWork.clear();
 		state.activeOperation = request;
+		core.cacheWarm.suspend();
 		view.assistantFlow.reset();
 		const controller = new AbortController();
 		state.activeController = controller;
@@ -72,12 +73,18 @@ export function createTuiTaskController(
 			let sessionId = request?.binding?.sessionId ?? undefined;
 			if (!sessionId && conversationHead && conversationHead.generation === request?.binding?.conversationGeneration)
 				sessionId = conversationHead.sessionId ?? undefined;
+			const selectedProvider = request?.binding?.provider ?? state.provider;
+			const selectedModel = request?.binding?.model ?? state.model;
+			const selectedAccountId = request?.binding?.accountId;
+			const selectedThinkingLevel = request?.binding?.thinkingLevel ?? state.thinkingLevel;
 			const result = resume
 				? await input.resumeTask(state.projectRoot, resumeSessionId || undefined, hooks)
 				: await input.runTask(state.projectRoot, request?.objective ?? "", hooks, {
-						provider: request?.binding?.provider ?? state.provider,
-						model: request?.binding?.model ?? state.model,
-						thinkingLevel: request?.binding?.thinkingLevel ?? state.thinkingLevel,
+						provider: selectedProvider,
+						model: selectedModel,
+						...(selectedAccountId ? { accountId: selectedAccountId } : {}),
+						...(request?.images?.length ? { images: request.images } : {}),
+						thinkingLevel: selectedThinkingLevel,
 						...(sessionId ? { sessionId } : {}),
 					});
 			clearLeaseRenewal();
@@ -103,6 +110,17 @@ export function createTuiTaskController(
 				state.workspace.patches[0]?.id !== previousPatchId && state.workspace.patches[0]?.state === "applied";
 			state.phase = applied ? "success" : "ready";
 			if (applied) view.appendText(success("✓ Patch applied and diagnostics passed"));
+			const completedSessionId = state.agentSessionIds.get(state.projectRoot) ?? sessionId ?? resumeSessionId;
+			if (completedSessionId && (state.latestContextTokens ?? 0) >= 4_096) {
+				core.cacheWarm.setTarget({
+					projectRoot: state.projectRoot,
+					sessionId: completedSessionId,
+					provider: selectedProvider,
+					model: selectedModel,
+					...(selectedAccountId ? { accountId: selectedAccountId } : {}),
+					thinkingLevel: selectedThinkingLevel,
+				});
+			}
 		} catch (error) {
 			clearLeaseRenewal();
 			if (error instanceof TuiRuntimeHostPoisonedError) state.runtimePoisoned = true;
@@ -139,6 +157,7 @@ export function createTuiTaskController(
 			state.activeWork.clear();
 			view.refreshQueue();
 			view.updateChrome("");
+			core.cacheWarm.resume();
 		}
 	};
 	const drainQueue = () => {

@@ -2,9 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a local compaction benchmark that measures continuation-critical context retention, stale-data leakage, token reduction, and serialization latency.
+
+### Changed
+
+- Changed split-turn compaction to generate history and turn-prefix summaries concurrently.
+- Changed compaction summaries to preserve operational evidence, including commands, validation outcomes, unresolved root causes, and delegated session lineage.
+
 ### Fixed
 
 - Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
+- Fixed compaction serialization to preserve tool identities, operational arguments, failure status, and both ends of truncated output while omitting assistant reasoning and replacing oversized payloads with stable digests.
 
 ## [0.82.1] - 2026-07-25
 

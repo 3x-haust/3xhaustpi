@@ -1,7 +1,13 @@
 import { quarantineInvalidAgentConversationHead } from "./agent-session-catalog.ts";
 import { approvalFitsTerminal } from "./tui-approval.ts";
-import { bindTuiSigint, formatHelpCommandLines, resolveTuiInputAction } from "./tui-command-helpers.ts";
+import {
+	bindTuiSigint,
+	formatHelpCommandLines,
+	resolveTuiInputAction,
+	shouldDeferTuiInputToImageViewer,
+} from "./tui-command-helpers.ts";
 import type { RunTuiInput } from "./tui-contract.ts";
+import { TuiImageViewer } from "./tui-image-viewer.ts";
 import { createTuiAutocompleteController } from "./tui-live-autocomplete.ts";
 import { createTuiDesktopController } from "./tui-live-desktop.ts";
 import { createTuiTaskEvents } from "./tui-live-events.ts";
@@ -10,14 +16,20 @@ import { installTuiSubmission } from "./tui-live-submit.ts";
 import { createTuiTaskController } from "./tui-live-tasks.ts";
 import { createTuiLiveView } from "./tui-live-view.ts";
 import { createTuiWorkspaceCommands } from "./tui-live-workspace.ts";
-import { success, warning } from "./tui-text.ts";
+import { enableTuiMouseTracking, parseTuiMouseInput } from "./tui-mouse.ts";
+import { muted, success, warning } from "./tui-text.ts";
 
 export async function runTui(input: RunTuiInput): Promise<void> {
 	const core = createTuiLiveCore(input);
 	const { state } = core;
+	const imageViewer = new TuiImageViewer(core.ui);
 	const quarantinedSessionId = await quarantineInvalidAgentConversationHead(state.projectRoot, core.database);
 	if (quarantinedSessionId) state.agentSessionIds.delete(state.projectRoot);
 	const view = createTuiLiveView(core);
+	core.composer.onError = (error) => view.appendText(warning(`Could not attach clipboard image: ${error.message}`));
+	core.composer.onOpenImage = (image) => imageViewer.open(image);
+	core.transcript.onOpenImage = (image) => imageViewer.open(image);
+	core.composer.onRenderRequested = () => core.ui.requestRender();
 	if (quarantinedSessionId) {
 		view.appendText(warning(`Ignored invalid saved session ${quarantinedSessionId}.`));
 	}
@@ -26,7 +38,9 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 	const workspace = createTuiWorkspaceCommands(core, view);
 	const desktop = createTuiDesktopController(core, view);
 	const autocomplete = createTuiAutocompleteController(core, workspace);
+	let disableMouseTracking: (() => void) | undefined;
 	const requestExit = () => {
+		disableMouseTracking?.();
 		state.active = false;
 		state.activeController?.abort();
 		state.desktopController?.abort();
@@ -45,6 +59,7 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 	autocomplete.installAutocomplete();
 	installTuiSubmission({ core, view, tasks, workspace, desktop, autocomplete, requestExit });
 	core.ui.addInputListener((value) => {
+		const imageViewerOpen = imageViewer.isOpen();
 		const action = resolveTuiInputAction(value, {
 			approvalPending: state.approvalResolve !== undefined,
 			approvalReviewable: approvalFitsTerminal(
@@ -54,11 +69,23 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 			),
 			active: state.activeController !== undefined || state.desktopController !== undefined,
 			composerText: core.editor.getText(),
+			pendingCount: state.queuedRequests.length,
+			overlayOpen: core.ui.hasOverlay(),
 		});
+		if (shouldDeferTuiInputToImageViewer(imageViewerOpen, action)) return undefined;
+		if (imageViewerOpen) imageViewer.close();
+		const mouse = parseTuiMouseInput(value);
+		if (mouse) {
+			if (!core.ui.hasOverlay() && !core.composer.handleMouseInput(value)) {
+				core.transcript.handleMouseInput(value);
+			}
+			return { consume: true };
+		}
 		if (action === "pass") return undefined;
 		if (action === "pass-approval-input") return undefined;
 		if (action === "clear-input") {
 			core.editor.setText("");
+			core.composer.clearAttachments();
 			view.updateChrome();
 			return { consume: true };
 		}
@@ -68,6 +95,16 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 		}
 		if (action === "open-help") {
 			view.appendText(formatHelpCommandLines(process.stdout.columns || 120).join("\n"));
+			return { consume: true };
+		}
+		if (action === "recall-pending") {
+			const recalled = core.database.recallNewestQueuedTuiRequest(state.projectRoot);
+			if (recalled) {
+				core.composer.restoreDraft(recalled.objective, recalled.images ?? []);
+				view.followTranscript();
+				view.appendText(muted("Recalled newest pending input for editing."));
+			}
+			view.refreshQueue();
 			return { consume: true };
 		}
 		if (action === "exit") {
@@ -106,11 +143,15 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 	const unbindSigint = bindTuiSigint(process, requestExit);
 	try {
 		core.ui.start();
+		disableMouseTracking = enableTuiMouseTracking(core.ui.terminal);
 		tasks.drainQueue();
 		await core.closed;
 	} finally {
+		disableMouseTracking?.();
+		imageViewer.close();
 		unbindSigint();
 		if (view.workAnimationTimer) clearInterval(view.workAnimationTimer);
+		await core.cacheWarm.close();
 		core.database.close();
 	}
 }

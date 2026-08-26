@@ -1,13 +1,13 @@
 import type { ThreeXhaustCommand } from "./args.ts";
+import { runAccountCommand } from "./cli-account.ts";
 import { runBenchmarkCommand } from "./cli-benchmark.ts";
 import { printDoctorStatus } from "./cli-doctor.ts";
 import { runNpmCommand, runUpdateCommand } from "./cli-maintenance.ts";
-import { printAccounts, printExtensions, printHelp, printModels, printResources } from "./cli-output.ts";
+import { printExtensions, printHelp, printModels, printResources } from "./cli-output.ts";
 import { canonicalProject } from "./cli-project.ts";
 import { runResourceCommand } from "./cli-resource-commands.ts";
 import { runCommand } from "./cli-run.ts";
 import { PRODUCT_VERSION } from "./product-identity.ts";
-import { loginProvider } from "./provider-runtime.ts";
 
 export async function executeCliCommand(command: ThreeXhaustCommand): Promise<void> {
 	if (command.kind === "help") return printHelp();
@@ -16,7 +16,14 @@ export async function executeCliCommand(command: ThreeXhaustCommand): Promise<vo
 	if (command.kind === "models") return printModels();
 	if (command.kind === "extension-list") return printExtensions(project);
 	if (command.kind === "resource-list") return printResources(project);
-	if (command.kind === "accounts-list") return printAccounts();
+	if (
+		command.kind === "account-list" ||
+		command.kind === "account-add" ||
+		command.kind === "account-use" ||
+		command.kind === "account-delete"
+	) {
+		return runAccountCommand(command);
+	}
 	if (
 		command.kind === "skill-create" ||
 		command.kind === "mcp-add" ||
@@ -31,6 +38,5 @@ export async function executeCliCommand(command: ThreeXhaustCommand): Promise<vo
 	if (command.kind === "benchmark") return runBenchmarkCommand(command);
 	if (command.kind === "doctor") return printDoctorStatus(project);
 	if (command.kind === "update") return runUpdateCommand();
-	if (command.kind === "auth-login") return loginProvider(command.provider);
 	return runCommand(command, project);
 }

@@ -4,7 +4,7 @@ import {
 	resolveAgentConversationSession,
 } from "./agent-session-catalog.ts";
 import type { TuiAutocompleteController } from "./tui-live-autocomplete.ts";
-import type { TuiLiveCore } from "./tui-live-state.ts";
+import { resetLiveContextTelemetry, type TuiLiveCore } from "./tui-live-state.ts";
 import type { TuiTaskController } from "./tui-live-tasks.ts";
 import type { TuiLiveView } from "./tui-live-view.ts";
 import { dim, success, text, warning } from "./tui-text.ts";
@@ -19,7 +19,7 @@ export async function handleTuiSessionCommand(
 		readonly autocomplete: TuiAutocompleteController;
 	},
 ): Promise<boolean> {
-	if (!["sessions", "chats", "chat", "resume", "new", "recover"].includes(command)) return false;
+	if (!["sessions", "chats", "chat", "resume", "new", "clear", "recover"].includes(command)) return false;
 	const { core, view, tasks, autocomplete } = deps;
 	const { state, database, editor } = core;
 	const refresh = async () => {
@@ -68,6 +68,8 @@ export async function handleTuiSessionCommand(
 			});
 		}
 		state.agentSessionIds.set(state.projectRoot, session.id);
+		resetLiveContextTelemetry(state);
+		core.cacheWarm.setTarget(undefined);
 		if (conversation.model) {
 			state.provider = conversation.model.provider;
 			state.model = conversation.model.modelId;
@@ -77,7 +79,7 @@ export async function handleTuiSessionCommand(
 		view.updateChrome();
 		return true;
 	}
-	if (command === "new") {
+	if (command === "new" || command === "clear") {
 		if (state.activeExecution || state.queuedRequests.length > 0) {
 			view.appendText(warning("Finish active and pending work before starting a new session."));
 			return true;
@@ -88,6 +90,8 @@ export async function handleTuiSessionCommand(
 			sessionId: null,
 		});
 		state.agentSessionIds.delete(state.projectRoot);
+		resetLiveContextTelemetry(state);
+		core.cacheWarm.setTarget(undefined);
 		view.replaceConversation([]);
 		view.appendText(success("● New session"));
 		return true;

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { parseImagePayloads } from "./image-payload.ts";
 import type {
 	RunningTuiRequestRow,
 	TuiDispatchBinding,
@@ -22,6 +23,7 @@ export function mapTuiRequest(row: TuiRequestRow): TuiRequest {
 					sessionId: row.session_id,
 					provider: row.provider,
 					model: row.model,
+					...(row.account_id ? { accountId: row.account_id } : {}),
 					...(row.thinking_level
 						? { thinkingLevel: row.thinking_level as TuiDispatchBinding["thinkingLevel"] }
 						: {}),
@@ -31,6 +33,7 @@ export function mapTuiRequest(row: TuiRequestRow): TuiRequest {
 		id: row.request_id,
 		projectPath: row.canonical_path,
 		objective: row.objective,
+		images: parseImagePayloads(row.images_json ? JSON.parse(row.images_json) : []),
 		position: row.position,
 		status: row.status,
 		createdAt: row.created_at,

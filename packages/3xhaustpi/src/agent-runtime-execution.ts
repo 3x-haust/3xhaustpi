@@ -1,6 +1,6 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { createAgentEventProjection } from "./agent-runtime-events.ts";
-import { installProviderCacheRouting, providerCacheAffinity } from "./agent-runtime-provider.ts";
+import { installProviderCacheRouting, providerAccountCacheAffinity } from "./agent-runtime-provider.ts";
 import type { AgentTaskRequest, AgentTaskResult } from "./agent-runtime-types.ts";
 
 class AgentSessionModelError extends Error {
@@ -24,7 +24,7 @@ export async function executeAgentTask(
 	const model = session.model;
 	if (!model) throw new AgentSessionModelError();
 	const sessionId = session.sessionManager.getSessionId();
-	const cacheAffinity = providerCacheAffinity(projectRoot, model.provider, model.id);
+	const cacheAffinity = providerAccountCacheAffinity(projectRoot, model.provider, model.id, request.accountId);
 	context.registerCacheAffinity(cacheAffinity);
 	context.registerCacheAffinity(`${cacheAffinity}_compaction`);
 	let unsubscribe: (() => void) | undefined;
@@ -52,7 +52,11 @@ export async function executeAgentTask(
 		if (request.signal?.aborted) {
 			throw request.signal.reason instanceof Error ? request.signal.reason : new Error("Agent task cancelled");
 		}
-		await session.prompt(request.objective);
+		await session.prompt(request.objective, {
+			...(request.images?.length
+				? { images: request.images.map((image) => ({ type: "image" as const, ...image })) }
+				: {}),
+		});
 		const aborted = request.signal?.aborted ?? false;
 		const usage = projection.usage();
 		request.onEvent({
