@@ -16,7 +16,10 @@ database.exec("BEGIN IMMEDIATE");
 process.on("message", (message) => {
 	if (message !== "parent-attempt") return;
 	database.exec("COMMIT");
-	process.send("child-released", () => process.exit(0));
+	process.send("child-released");
+});
+process.on("message", (message) => {
+	if (message === "parent-ack") process.exit(0);
 });
 process.send("child-ready");
 `;
@@ -104,7 +107,9 @@ describe("ThreeXhaustState concurrent writers", () => {
 				leaseEpoch: claim.leaseEpoch,
 				now: "2026-08-23T00:00:01.000Z",
 			});
-			await Promise.all([released, exited]);
+			await released;
+			child.send("parent-ack");
+			await exited;
 
 			expect(state.listTuiRequests("/tmp/3xhaustpi-contention")).not.toContainEqual(
 				expect.objectContaining({ id: "req_contention" }),

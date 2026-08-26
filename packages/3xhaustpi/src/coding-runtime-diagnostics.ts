@@ -18,7 +18,7 @@ export function runDiagnostics(projectRoot: string, strict: boolean): Diagnostic
 		};
 		if (packageJson.scripts?.test) {
 			command = "npm test";
-			executable = "npm";
+			executable = process.platform === "win32" ? "npm.cmd" : "npm";
 			args = ["test"];
 		}
 	}
