@@ -126,6 +126,7 @@ export function applyPreparedFiles(projectRoot: string, files: readonly Prepared
 			path: (relativePath) => patchPath(root, relativePath),
 			verify: (path) => verifyPatchPath(root, path),
 			ensureParent: (path) => ensurePatchParent(root, path),
+			platform: process.platform,
 		},
 		write,
 	);

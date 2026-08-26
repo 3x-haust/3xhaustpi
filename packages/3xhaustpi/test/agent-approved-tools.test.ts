@@ -267,7 +267,7 @@ describe("host-owned native mutation tools", () => {
 		expect(readFileSync(path, "utf8")).toBe("replacement");
 	});
 
-	it("honors the process umask for a newly approved target", async () => {
+	it.runIf(process.platform !== "win32")("honors the process umask for a newly approved target", async () => {
 		const projectRoot = projectFixture();
 		const path = join(projectRoot, "private.txt");
 		const previousUmask = process.umask(0o077);
