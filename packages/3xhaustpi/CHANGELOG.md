@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed manual release recovery to check out the requested source ref before verifying and creating GitHub release assets.
+- Fixed manual release recovery to verify the requested tag/source/version and safely replace assets on reruns.
 
 ## [0.1.10] - 2026-08-26
 

@@ -23,7 +23,8 @@ jobs:
     permissions:
       contents: read
     env:
-      SOURCE_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +44,13 @@ jobs:
         with:
           node-version: 22.23.1
           cache: npm
+      - name: Verify release source and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./packages/3xhaustpi/package.json').version")"
+          test "${RELEASE_TAG}" = "3xhaustpi-v${version}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${RELEASE_TAG}^{commit}")"
       - run: npm ci
       - run: npm run build --workspace=@3xhaust/semantic-contract
       - run: npm run build --workspace=3xhaustpi
@@ -61,7 +69,7 @@ jobs:
       contents: write
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      SOURCE_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,7 +94,12 @@ jobs:
       - name: Attach archives to tagged GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${RELEASE_TAG}" artifacts/native/* --generate-notes --verify-tag
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" artifacts/native/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" artifacts/native/* --generate-notes --verify-tag
+          fi
 
   publish-npm:
     needs: package
@@ -96,7 +109,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      SOURCE_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
