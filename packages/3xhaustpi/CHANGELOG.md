@@ -5,7 +5,8 @@
 ### Fixed
 
 - Fixed manual release recovery to verify the requested tag/source/version and safely replace assets on reruns.
-- Fixed project snapshots and semantic searches to use coding-agent's managed ripgrep binary instead of assuming `rg` is on `PATH`.
+- Fixed project snapshots and semantic searches to prefer coding-agent's managed ripgrep binary with a bounded Node fallback.
+- Fixed approved file writes on Windows hosts where directory `fsync` reports `EPERM`.
 
 ## [0.1.10] - 2026-08-26
 

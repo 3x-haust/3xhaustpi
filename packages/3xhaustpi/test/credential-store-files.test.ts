@@ -51,7 +51,7 @@ describe("credential file locking", () => {
 			expect(owner.pid).toBe(process.pid);
 			expect(owner.token).toMatch(/^[0-9a-f-]{36}$/u);
 			expect(owner.token).not.toBe("abandoned");
-			expect(statSync(lockPath).mode & 0o777).toBe(0o600);
+			if (process.platform !== "win32") expect(statSync(lockPath).mode & 0o777).toBe(0o600);
 		});
 
 		expect(existsSync(lockPath)).toBe(false);

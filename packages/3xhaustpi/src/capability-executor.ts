@@ -1,6 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { getToolPath } from "@earendil-works/pi-coding-agent/tools-manager";
 import type { CapabilityInvocation } from "../../core/src/index.ts";
+import { searchProjectFiles } from "./project-files.ts";
 
 export interface CapabilityExecution {
 	readonly status: "succeeded" | "failed" | "timed-out";
@@ -45,39 +44,21 @@ export function executeReadCapability(invocation: CapabilityInvocation, projectR
 	]);
 	const cached = readCache.get(cacheKey);
 	if (cached) return { ...cached, cacheHit: true };
-	const ripgrepPath = getToolPath("rg");
-	if (!ripgrepPath) {
-		return { status: "failed", summary: "Search requires ripgrep", matchCount: 0, outputHashInput: "" };
-	}
-	const result = spawnSync(
-		ripgrepPath,
-		["-n", "--fixed-strings", "--glob", "!node_modules/**", queryOf(invocation), "."],
-		{
-			cwd: projectRoot,
-			encoding: "utf8",
-			timeout: invocation.timeoutMs,
-			maxBuffer: 1_048_576,
-		},
-	);
-	if (result.error && "code" in result.error && result.error.code === "ETIMEDOUT") {
+	const result = searchProjectFiles(projectRoot, queryOf(invocation), invocation.timeoutMs);
+	if (result.status === "timed-out") {
 		return { status: "timed-out", summary: "Search timed out", matchCount: 0, outputHashInput: "" };
 	}
-	const lines = (result.stdout ?? "")
-		.trim()
-		.split("\n")
-		.filter(Boolean)
-		.sort((left, right) => left.localeCompare(right, "en"))
-		.slice(0, 200);
+	const lines = [...result.lines].sort((left, right) => left.localeCompare(right, "en")).slice(0, 200);
 	const output = lines.join("\n");
 	const matchCount = lines.length;
-	const searchCompleted = result.status === 0 || result.status === 1;
+	const searchCompleted = result.status === "completed";
 	const execution: CapabilityExecution = {
 		status: searchCompleted ? "succeeded" : "failed",
 		summary: searchCompleted
 			? matchCount > 0
 				? `Found ${matchCount} exact matches`
 				: "Search completed with no exact matches"
-			: `Search failed with exit code ${result.status ?? "unknown"}`,
+			: `Search failed with exit code ${result.exitCode ?? "unknown"}`,
 		matchCount,
 		outputHashInput: output,
 		executor: "typescript",

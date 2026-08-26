@@ -137,7 +137,7 @@ export async function beginApprovedFileTransaction(
 	const directoryHandle = await open(directory, constants.O_RDONLY);
 	try {
 		await directoryHandle.sync().catch((error: unknown) => {
-			if (!["EINVAL", "ENOTSUP", "EBADF"].includes(errorCode(error) ?? "")) throw error;
+			if (!["EINVAL", "ENOTSUP", "EBADF", "EPERM"].includes(errorCode(error) ?? "")) throw error;
 		});
 	} finally {
 		await directoryHandle.close();

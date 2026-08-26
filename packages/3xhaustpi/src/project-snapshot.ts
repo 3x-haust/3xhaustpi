@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { DocumentId } from "@3xhaust/semantic-contract";
-import { getToolPath } from "@earendil-works/pi-coding-agent/tools-manager";
 import { ACTIVE_DATA_DIRECTORY, resolveProjectDataDirectory } from "./identity.ts";
+import { listProjectFilePaths } from "./project-files.ts";
 
 const TEXT_EXTENSIONS = new Set([
 	".c",
@@ -100,25 +100,8 @@ function listSkillFiles(projectRoot: string): readonly string[] {
 }
 
 function listProjectFiles(projectRoot: string): readonly string[] {
-	const ripgrepPath = getToolPath("rg");
-	if (!ripgrepPath) throw new Error("Project file listing requires ripgrep");
-	const result = spawnSync(
-		ripgrepPath,
-		["--files", "-g", "!node_modules/**", "-g", "!.git/**", "-g", "!artifacts/**"],
-		{
-			cwd: projectRoot,
-			encoding: "utf8",
-			timeout: 10_000,
-			maxBuffer: 4_194_304,
-		},
-	);
-	if (result.status !== 0 && result.status !== 1)
-		throw new Error(result.stderr?.trim() || "Project file listing failed");
 	return [
-		...(result.stdout ?? "")
-			.split("\n")
-			.map((path) => path.trim())
-			.filter((path) => path.length > 0 && TEXT_EXTENSIONS.has(extname(path).toLowerCase())),
+		...listProjectFilePaths(projectRoot).filter((path) => TEXT_EXTENSIONS.has(extname(path).toLowerCase())),
 		...listSkillFiles(projectRoot),
 	].sort();
 }

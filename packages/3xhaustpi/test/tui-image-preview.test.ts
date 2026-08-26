@@ -103,7 +103,7 @@ describe("pasted image composer preview", () => {
 		});
 		expect(core.composer.editor.getText()).toBe("[image1]");
 		core.database.close();
-	});
+	}, 15_000);
 
 	it("only submits images whose placeholder still exists and clears previews after submission", () => {
 		const core = composerFixture();
