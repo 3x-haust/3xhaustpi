@@ -61,7 +61,12 @@ jobs:
       contents: write
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: 3xhaustpi-*
