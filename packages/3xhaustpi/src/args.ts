@@ -13,6 +13,7 @@ export type ThreeXhaustCommand =
 	  }
 	| { readonly kind: "extension-list" }
 	| { readonly kind: "resource-list" }
+	| { readonly kind: "system-prompt-init" }
 	| { readonly kind: "account-list" }
 	| {
 			readonly kind: "account-add";
@@ -89,6 +90,12 @@ export function parseCliArgs(args: readonly string[]): ThreeXhaustCommand {
 			throw new CliArgumentError('resource currently supports exactly "resource list"');
 		}
 		return { kind: "resource-list" };
+	}
+	if (args[0] === "system-prompt") {
+		if (args[1] !== "init" || args.length !== 2) {
+			throw new CliArgumentError('system-prompt currently supports exactly "system-prompt init"');
+		}
+		return { kind: "system-prompt-init" };
 	}
 	if (args[0] === "skill") {
 		if (args[1] !== "create" || args.length !== 3) {

@@ -24,6 +24,7 @@ describe("3xhaustpi CLI arguments", () => {
 			kind: "skill-create",
 			name: "release-helper",
 		});
+		expect(parseCliArgs(["system-prompt", "init"])).toEqual({ kind: "system-prompt-init" });
 		expect(parseCliArgs(["mcp", "tools", "fixture"])).toEqual({ kind: "mcp-tools", server: "fixture" });
 		expect(parseCliArgs(["mcp", "call", "fixture", "echo", '{"text":"hello"}'])).toEqual({
 			kind: "mcp-call",

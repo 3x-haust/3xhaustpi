@@ -66,6 +66,7 @@ Commands:
   models                 List supported providers and configuration state
   extension list         List discovered extension candidates
   resource list          Show Skills, MCP servers, and Hooks
+  system-prompt init     Copy the bundled default to ~/.3xhaust/system-prompt.md
   skill create <name>    Create an editable project skill
   mcp add <n> <cmd>      Add a project MCP server
   mcp tools <server>     List tools from a configured MCP server
