@@ -22,7 +22,7 @@ export function loadHarnessResources(options: HarnessResourceOptions): HarnessRe
 	const builtinRoot = options.builtinRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "../resources");
 	const userRoot = options.userRoot ?? resolveUserDataDirectory();
 	const projectRoot = resolveProjectDataDirectory(options.projectRoot);
-	const globalSystemPrompt = loadGlobalSystemPrompt(userRoot);
+	const globalSystemPrompt = loadGlobalSystemPrompt(userRoot, builtinRoot);
 	const roots = [
 		{ root: builtinRoot, scope: "builtin" as const },
 		{ root: userRoot, scope: "user" as const },

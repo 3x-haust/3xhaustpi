@@ -5,6 +5,7 @@ export type HookEvent = CodingTaskEvent["type"];
 
 export interface GlobalSystemPromptResource {
 	readonly instructions: string;
+	readonly scope: "builtin" | "user";
 	readonly sourcePath: string;
 	readonly sha256: string;
 }

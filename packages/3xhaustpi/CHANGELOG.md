@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-28
+
+### Added
+
+- Added an English bundled global system prompt with enterprise architecture, fast risk-based CI, dedicated branch/worktree isolation, and post-merge branch/worktree cleanup policy.
+- Added `3xhaustpi system-prompt init` to copy the bundled default into the user data directory for editing.
+
+### Changed
+
+- Missing or whitespace-only user prompts now fall back to the bundled default, while a valid `~/.3xhaust/system-prompt.md` remains the highest-priority global policy.
+
+### Fixed
+
+- Prevented initialization and package updates from overwriting any existing user global prompt.
+
 ## [0.2.0] - 2026-08-28
 
 ### Breaking Changes

@@ -1,9 +1,21 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { GlobalSystemPromptResource } from "./resource-loader-contracts.ts";
 
 export const MAX_GLOBAL_SYSTEM_PROMPT_BYTES = 16_384;
+const DEFAULT_BUILTIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../resources");
 
 export class GlobalSystemPromptError extends Error {
 	readonly sourcePath: string;
@@ -19,9 +31,10 @@ function sha256(bytes: Uint8Array): string {
 	return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-export function loadGlobalSystemPrompt(userRoot: string): GlobalSystemPromptResource | undefined {
-	const sourcePath = join(userRoot, "system-prompt.md");
-
+function loadPromptFile(
+	sourcePath: string,
+	scope: GlobalSystemPromptResource["scope"],
+): GlobalSystemPromptResource | undefined {
 	let descriptor: number | undefined;
 	try {
 		let pathStats: ReturnType<typeof lstatSync>;
@@ -68,11 +81,44 @@ export function loadGlobalSystemPrompt(userRoot: string): GlobalSystemPromptReso
 			throw new GlobalSystemPromptError(sourcePath, "must not contain NUL");
 		}
 		if (instructions.trim().length === 0) return undefined;
-		return { instructions, sourcePath, sha256: sha256(bytes) };
+		return { instructions, scope, sourcePath, sha256: sha256(bytes) };
 	} catch (error) {
 		if (error instanceof GlobalSystemPromptError) throw error;
 		throw new GlobalSystemPromptError(sourcePath, "could not be read", { cause: error });
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
 	}
+}
+
+export function loadGlobalSystemPrompt(
+	userRoot: string,
+	builtinRoot = DEFAULT_BUILTIN_ROOT,
+): GlobalSystemPromptResource | undefined {
+	return (
+		loadPromptFile(join(userRoot, "system-prompt.md"), "user") ??
+		loadPromptFile(join(builtinRoot, "default-system-prompt.md"), "builtin")
+	);
+}
+
+export function initializeGlobalSystemPrompt(
+	userRoot: string,
+	builtinRoot = DEFAULT_BUILTIN_ROOT,
+): GlobalSystemPromptResource {
+	const bundledPath = join(builtinRoot, "default-system-prompt.md");
+	const bundled = loadPromptFile(bundledPath, "builtin");
+	if (!bundled) throw new GlobalSystemPromptError(bundledPath, "is missing or blank");
+	const sourcePath = join(userRoot, "system-prompt.md");
+	mkdirSync(userRoot, { recursive: true, mode: 0o700 });
+	try {
+		writeFileSync(sourcePath, bundled.instructions, { encoding: "utf8", flag: "wx", mode: 0o600 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+			throw new GlobalSystemPromptError(sourcePath, "already exists and will not be overwritten");
+		}
+		rmSync(sourcePath, { force: true });
+		throw new GlobalSystemPromptError(sourcePath, "could not be initialized", { cause: error });
+	}
+	const initialized = loadPromptFile(sourcePath, "user");
+	if (!initialized) throw new GlobalSystemPromptError(sourcePath, "could not be initialized");
+	return initialized;
 }

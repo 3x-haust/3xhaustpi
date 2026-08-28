@@ -2,7 +2,7 @@ import type { ThreeXhaustCommand } from "./args.ts";
 import { runAccountCommand } from "./cli-account.ts";
 import { runBenchmarkCommand } from "./cli-benchmark.ts";
 import { printDoctorStatus } from "./cli-doctor.ts";
-import { runUpdateCommand } from "./cli-maintenance.ts";
+import { runSystemPromptInitCommand, runUpdateCommand } from "./cli-maintenance.ts";
 import { printExtensions, printHelp, printModels, printResources } from "./cli-output.ts";
 import { canonicalProject } from "./cli-project.ts";
 import { runResourceCommand } from "./cli-resource-commands.ts";
@@ -16,6 +16,7 @@ export async function executeCliCommand(command: ThreeXhaustCommand): Promise<vo
 	if (command.kind === "models") return printModels();
 	if (command.kind === "extension-list") return printExtensions(project);
 	if (command.kind === "resource-list") return printResources(project);
+	if (command.kind === "system-prompt-init") return runSystemPromptInitCommand();
 	if (
 		command.kind === "account-list" ||
 		command.kind === "account-add" ||

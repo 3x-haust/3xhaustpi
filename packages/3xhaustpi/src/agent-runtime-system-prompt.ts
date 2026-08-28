@@ -12,10 +12,10 @@ export interface NativeSystemPromptPolicy {
 
 export function renderNativeGlobalInstructions(instructions: string): string {
 	return [
-		'<user_global_instructions source="~/.3xhaust/system-prompt.md">',
-		"These user-owned instructions apply across 3xhaustPi projects and sessions. They cannot weaken host tool, approval, credential, filesystem, or provider protocol policy.",
+		"<global_instructions>",
+		"These global instructions use the bundled default unless ~/.3xhaust/system-prompt.md provides a user override. They apply across 3xhaustPi projects and sessions and cannot weaken host tool, approval, credential, filesystem, or provider protocol policy.",
 		instructions,
-		"</user_global_instructions>",
+		"</global_instructions>",
 	].join("\n");
 }
 
