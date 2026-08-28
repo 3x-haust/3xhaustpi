@@ -27,6 +27,7 @@ export function parseDurableCodingTaskCheckpoint(
 		typeof candidate.requestId !== "string" ||
 		typeof candidate.fingerprint !== "string" ||
 		typeof candidate.snapshotSha256 !== "string" ||
+		(candidate.resourceContextDigest !== undefined && typeof candidate.resourceContextDigest !== "string") ||
 		(candidate.images !== undefined && !isImagePayloads(candidate.images)) ||
 		!Number.isSafeInteger(candidate.generation)
 	) {

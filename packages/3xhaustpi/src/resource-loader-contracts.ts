@@ -3,6 +3,12 @@ import type { CodingTaskEvent } from "./coding-runtime.ts";
 export type ResourceScope = "builtin" | "user" | "project";
 export type HookEvent = CodingTaskEvent["type"];
 
+export interface GlobalSystemPromptResource {
+	readonly instructions: string;
+	readonly sourcePath: string;
+	readonly sha256: string;
+}
+
 export interface SkillResource {
 	readonly id: string;
 	readonly name: string;
@@ -39,9 +45,11 @@ export interface HarnessResourceOptions {
 }
 
 export interface HarnessResources {
+	readonly globalSystemPrompt?: GlobalSystemPromptResource;
 	readonly skills: readonly SkillResource[];
 	readonly hooks: readonly ObserverHook[];
 	readonly entries: readonly ResourceEntry[];
 	readonly skillContext: string;
+	readonly resourceContextDigest: string;
 	readonly digest: string;
 }

@@ -181,6 +181,7 @@ export interface DurableCodingTaskCheckpoint {
 	readonly requestId: string;
 	readonly fingerprint: string;
 	readonly snapshotSha256: string;
+	readonly resourceContextDigest?: string;
 	readonly snapshotRevision?: string;
 	readonly documents?: readonly ProjectDocument[];
 	readonly generation: number;

@@ -18,6 +18,44 @@ method from Pi. Accounts are grouped by provider and start checked for each
 conversation; session-local exclusions never switch the process-global Codex
 credential.
 
+## Global instructions and release governance
+
+3xhaustPi loads one optional user-global instruction file for every project and
+new or resumed session:
+
+```text
+~/.3xhaust/system-prompt.md
+```
+
+The file must be a non-symlink regular file containing strict UTF-8 without NUL
+and may be at most 16,384 bytes. Missing and whitespace-only files preserve the
+existing prompt exactly. Malformed or oversized files fail visibly rather than
+being truncated or ignored. Project-local files with the same name are not
+loaded.
+
+Global instructions are placed in the actual provider system/developer context
+for both the native CLI/TUI runtime and semantic fallback. The native base
+prompt remains first; project `SYSTEM.md`, project context, and tool output
+cannot replace the global section. The prompt guides model behavior but does
+not grant tools, weaken approvals, or replace host capability enforcement.
+Edits take effect on the next session or explicit resource reload and
+intentionally change provider cache affinity.
+
+The bundled `release-governance` skill replaces local npm login/publish
+guidance. For npmjs repositories with supported and configured Trusted
+Publishing, it requires the reviewed CI OIDC workflow, protected release
+authorization, immutable source/artifact binding, provenance, registry
+verification, and consumer smoke testing. If that contract is unavailable,
+the agent stops for explicit approval instead of falling back to a local
+publish or long-lived npm write token.
+
+Native coding-agent skills use metadata-first loading. The semantic fallback's
+3xhaustPi resource loader still eagerly injects bounded winning skill bodies;
+it does not yet implement the complete Agent Skills activation and
+progressive-disclosure lifecycle. See
+[`docs/research/global-system-prompt-governance.md`](../../docs/research/global-system-prompt-governance.md)
+for the cited design, limitations, and follow-up work.
+
 This package build is `3xhaustpi@0.1.10`. It has passed local `npm pack`, isolated global
 install, real-provider coding, crash-resume, and a five-case, 50-pair
 real-provider benchmark with 98% semantic-only and 100% direct-tool

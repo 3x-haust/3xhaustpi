@@ -29,6 +29,7 @@ export interface SemanticLoopOptions {
 	readonly model: ReturnType<typeof resolveModel>;
 	readonly emit: (event: CodingTaskEvent) => void;
 	readonly stableContext: string;
+	readonly globalInstructions?: string;
 	readonly providerSessionId: string;
 	readonly signal?: AbortSignal;
 	readonly recordEffectBoundary?: (effect: { readonly effectId: string; readonly kind: "provider" }) => Promise<void>;
@@ -79,6 +80,8 @@ export async function runSemanticLoop(options: SemanticLoopOptions): Promise<Sem
 		cacheRetention: "long",
 		cacheUsageSupport: { read: "reported", write: "reported" },
 		stableContext: options.stableContext,
+		...(options.globalInstructions ? { globalInstructions: options.globalInstructions } : {}),
+		...(options.globalInstructions ? { globalInstructions: options.globalInstructions } : {}),
 		maxTokens: 2_048,
 	});
 	let latestUsage: CodingTaskUsage = { input: null, output: null, cacheRead: null };

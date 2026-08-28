@@ -64,7 +64,14 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 				...(input.resources.userRoot ? { userRoot: input.resources.userRoot } : {}),
 				...(input.resources.builtinRoot ? { builtinRoot: input.resources.builtinRoot } : {}),
 			})
-		: { skills: [], hooks: [], entries: [], skillContext: "", digest: "sha256:disabled" };
+		: {
+				skills: [],
+				hooks: [],
+				entries: [],
+				skillContext: "",
+				resourceContextDigest: "sha256:disabled",
+				digest: "sha256:disabled",
+			};
 	let hookChain = Promise.resolve<unknown>(undefined);
 	const emit = (event: CodingTaskEvent): void => {
 		input.onEvent?.(event);
@@ -86,10 +93,25 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 		evidence;
 	const projectId = parseProjectId(`prj_${digest(projectRoot).slice(0, 24)}`);
 	const sessionId = recovered?.sessionId ?? input.sessionId ?? `session_${randomUUID()}`;
-	const providerSessionId = providerCacheSessionId(projectRoot, provider, modelId, objective);
+	const providerSessionId = providerCacheSessionId(
+		projectRoot,
+		provider,
+		modelId,
+		objective,
+		input.resources?.enabled ? resources.resourceContextDigest : undefined,
+	);
 	const requestId = recovered?.requestId ?? `req_${randomUUID()}`;
 	const fingerprint = recovered?.fingerprint ?? digest(`${projectRoot}\0${objective}`);
 	const generation = recovered?.generation ?? 1;
+	if (
+		recovered?.resourceContextDigest !== undefined &&
+		recovered.resourceContextDigest !== resources.resourceContextDigest &&
+		["provider-settled", "followup-ready", "followup-settled"].includes(recovered.phase)
+	) {
+		throw new Error(
+			"Global system prompt or resolved skills changed after semantic reasoning; start a new coding task",
+		);
+	}
 	const state = new ThreeXhaustState(input.statePath);
 	const pythonConcurrency = configuredPythonConcurrency();
 	const pythonPool = pythonConcurrency ? new PythonReadPool(pythonConcurrency) : undefined;
@@ -106,6 +128,7 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 		requestId,
 		fingerprint,
 		snapshotSha256,
+		resourceContextDigest: resources.resourceContextDigest,
 		snapshotRevision,
 		documents: durableDocuments,
 		generation,
@@ -136,6 +159,7 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 			model,
 			emit,
 			stableContext,
+			...(resources.globalSystemPrompt ? { globalInstructions: resources.globalSystemPrompt.instructions } : {}),
 			providerSessionId,
 			...(input.signal ? { signal: input.signal } : {}),
 			...(input.recordEffectBoundary ? { recordEffectBoundary: input.recordEffectBoundary } : {}),

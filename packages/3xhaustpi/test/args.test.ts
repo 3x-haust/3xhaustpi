@@ -20,14 +20,6 @@ describe("3xhaustpi CLI arguments", () => {
 			kind: "account-delete",
 			selector: "acct-a",
 		});
-		expect(parseCliArgs(["npm", "login", "work"])).toEqual({
-			kind: "npm-login",
-			account: "work",
-		});
-		expect(parseCliArgs(["npm", "publish", "work"])).toEqual({
-			kind: "npm-publish",
-			account: "work",
-		});
 		expect(parseCliArgs(["skill", "create", "release-helper"])).toEqual({
 			kind: "skill-create",
 			name: "release-helper",
@@ -69,6 +61,8 @@ describe("3xhaustpi CLI arguments", () => {
 		expect(() => parseCliArgs(["--unknown"])).toThrow(/Unknown option/u);
 		expect(() => parseCliArgs(["-p", "one", "two"])).toThrow(/either -p/u);
 		expect(() => parseCliArgs(["auth", "login", "openai-codex"])).toThrow(/account add/u);
+		expect(() => parseCliArgs(["npm", "login"])).toThrow(/Trusted Publishing/u);
+		expect(() => parseCliArgs(["npm", "publish"])).toThrow(/Trusted Publishing/u);
 	});
 
 	it("bounds benchmark repetitions", () => {

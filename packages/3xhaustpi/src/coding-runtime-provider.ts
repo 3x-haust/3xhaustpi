@@ -146,8 +146,15 @@ export function configuredPythonConcurrency(environment: NodeJS.ProcessEnv = pro
 	return value;
 }
 
-export function providerCacheSessionId(projectRoot: string, provider: string, model: string, objective = ""): string {
-	return `3xhaustpi-semantic-${digest(`${X3HAUST_SEMANTIC_STABLE_PREFIX}\0${projectRoot}\0${provider}\0${model}\0${objective}`).slice(0, 24)}`;
+export function providerCacheSessionId(
+	projectRoot: string,
+	provider: string,
+	model: string,
+	objective = "",
+	resourceContextDigest?: string,
+): string {
+	const resourcePrefix = resourceContextDigest ? `\0resource-context:${resourceContextDigest}` : "";
+	return `3xhaustpi-semantic-${digest(`${X3HAUST_SEMANTIC_STABLE_PREFIX}${resourcePrefix}\0${projectRoot}\0${provider}\0${model}\0${objective}`).slice(0, 24)}`;
 }
 
 export function semanticOperationTurnIds(

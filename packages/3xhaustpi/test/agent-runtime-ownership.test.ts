@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type RuntimeSessionManager = {
@@ -65,6 +68,7 @@ const mocks = vi.hoisted(() => ({
 	delegateObjective: new Map<"objective", string>().get("objective"),
 	listSessions: vi.fn(),
 	openSessionManager: vi.fn(),
+	runEphemeralQuestion: vi.fn(),
 	runtimes: [] as RuntimeMock[],
 }));
 
@@ -110,6 +114,10 @@ vi.mock("../src/provider-runtime.ts", () => ({
 	createCredentialStore: mocks.createCredentialStore,
 }));
 
+vi.mock("../src/agent-ephemeral.ts", () => ({
+	runEphemeralQuestion: mocks.runEphemeralQuestion,
+}));
+
 import { AgentRuntimeHost } from "../src/agent-runtime.ts";
 import { ProjectAgentRuntime } from "../src/agent-runtime-project.ts";
 import type { AgentTaskRequest, AgentTaskResult } from "../src/agent-runtime-types.ts";
@@ -124,6 +132,17 @@ describe("project-scoped agent session runtime ownership", () => {
 		mocks.createSessionManager.mockReturnValue(createManager("session_initial"));
 		mocks.listSessions.mockResolvedValue([{ id: "session_persisted", path: "/sessions/session_persisted.jsonl" }]);
 		mocks.openSessionManager.mockReturnValue(createManager("session_persisted"));
+		mocks.runEphemeralQuestion.mockImplementation(
+			async (
+				_runtime: unknown,
+				_request: unknown,
+				_userRoot: string,
+				registerCacheAffinity: (affinity: string) => void,
+			) => {
+				registerCacheAffinity("side-question-affinity");
+				return "side answer";
+			},
+		);
 		mocks.createAgentSessionServices.mockImplementation(async ({ cwd }) => ({
 			cwd,
 			modelRuntime: {
@@ -285,6 +304,26 @@ describe("project-scoped agent session runtime ownership", () => {
 		expect(mocks.runtimes[1]?.dispose).toHaveBeenCalledOnce();
 	});
 
+	it("owns side-question cache affinity until host cleanup", async () => {
+		const host = new AgentRuntimeHost({ userRoot: "/tmp/user" });
+		const controller = new AbortController();
+		expect(
+			await host.runSideQuestion({
+				projectRoot: "/tmp/project",
+				question: "What changed?",
+				context: "Bounded context",
+				provider: "openai-codex",
+				model: "gpt-5.6-terra",
+				thinkingLevel: "low",
+				signal: controller.signal,
+			}),
+		).toBe("side answer");
+
+		await host.close();
+
+		expect(mocks.cleanupSessionResources).toHaveBeenCalledWith("side-question-affinity");
+	});
+
 	it("propagates the root cancellation signal into delegated children", async () => {
 		const controller = new AbortController();
 		const runChild = vi.fn(
@@ -311,5 +350,37 @@ describe("project-scoped agent session runtime ownership", () => {
 
 		expect(runChild).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
 		await runtime.dispose();
+	});
+
+	it("moves project SYSTEM below one user-global native policy", async () => {
+		const root = mkdtempSync(join(tmpdir(), "3xhaustpi-native-policy-"));
+		const userRoot = join(root, "user");
+		const projectRoot = join(root, "project");
+		mkdirSync(userRoot, { recursive: true });
+		writeFileSync(join(userRoot, "system-prompt.md"), "GLOBAL_POLICY_SENTINEL");
+		const runtime = new ProjectAgentRuntime({
+			projectRoot,
+			userRoot,
+			modelRuntime: mocks.createModelRuntime(),
+			runChild: async () => ({
+				sessionId: "session_child",
+				outcome: "completed",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			registerCacheAffinity: () => {},
+		});
+		try {
+			await runtime.run({ projectRoot, objective: "inspect", onEvent: () => {} });
+			const serviceOptions = mocks.createAgentSessionServices.mock.calls.at(-1)?.[0];
+			const resourceOptions = serviceOptions?.resourceLoaderOptions;
+			expect(resourceOptions?.systemPromptOverride?.("PROJECT_SYSTEM_SENTINEL")).toBeUndefined();
+			const appended = resourceOptions?.appendSystemPromptOverride?.(["PROJECT_APPEND_SENTINEL"]) ?? [];
+			const combined = appended.join("\n\n");
+			expect(combined.indexOf("GLOBAL_POLICY_SENTINEL")).toBeLessThan(combined.indexOf("PROJECT_SYSTEM_SENTINEL"));
+			expect(combined.indexOf("PROJECT_SYSTEM_SENTINEL")).toBeLessThan(combined.indexOf("PROJECT_APPEND_SENTINEL"));
+		} finally {
+			await runtime.dispose();
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

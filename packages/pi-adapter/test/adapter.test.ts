@@ -105,6 +105,31 @@ describe("3xhaustpi Pi semantic adapter", () => {
 		});
 	});
 
+	it("keeps user-global instructions in the provider system slot", async () => {
+		const handle = fauxProvider();
+		const contexts: Context[] = [];
+		const globalInstructions = "GLOBAL_POLICY_SENTINEL: use protected branches.";
+		const complete: PiComplete = async (_model, context) => {
+			contexts.push(structuredClone(context));
+			return message(JSON.stringify(validOutput));
+		};
+		const adapter = createThreeXhaustPiAdapter({ complete });
+		const session = adapter.open({
+			...binding(handle.getModel()),
+			globalInstructions,
+			stableContext: "PROJECT_EVIDENCE_SENTINEL",
+		});
+
+		await session.submit(turn, new AbortController().signal);
+
+		expect(contexts).toHaveLength(1);
+		expect(contexts[0]?.systemPrompt?.split(globalInstructions)).toHaveLength(2);
+		const firstMessage = contexts[0]?.messages[0];
+		expect(firstMessage?.role).toBe("user");
+		expect(JSON.stringify(firstMessage)).not.toContain(globalInstructions);
+		expect(JSON.stringify(firstMessage)).toContain("PROJECT_EVIDENCE_SENTINEL");
+	});
+
 	it("compacts an exact inspect target without changing its semantic fields", () => {
 		const context = createSemanticContext(
 			parseSemanticTurnRequest({

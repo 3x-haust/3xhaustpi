@@ -2,7 +2,7 @@ import type { ThreeXhaustCommand } from "./args.ts";
 import { runAccountCommand } from "./cli-account.ts";
 import { runBenchmarkCommand } from "./cli-benchmark.ts";
 import { printDoctorStatus } from "./cli-doctor.ts";
-import { runNpmCommand, runUpdateCommand } from "./cli-maintenance.ts";
+import { runUpdateCommand } from "./cli-maintenance.ts";
 import { printExtensions, printHelp, printModels, printResources } from "./cli-output.ts";
 import { canonicalProject } from "./cli-project.ts";
 import { runResourceCommand } from "./cli-resource-commands.ts";
@@ -31,9 +31,6 @@ export async function executeCliCommand(command: ThreeXhaustCommand): Promise<vo
 		command.kind === "mcp-call"
 	) {
 		return runResourceCommand(command, project);
-	}
-	if (command.kind === "npm-login" || command.kind === "npm-publish") {
-		return runNpmCommand(command, project);
 	}
 	if (command.kind === "benchmark") return runBenchmarkCommand(command);
 	if (command.kind === "doctor") return printDoctorStatus(project);

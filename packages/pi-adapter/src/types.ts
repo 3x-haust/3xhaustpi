@@ -24,6 +24,8 @@ export interface PiSemanticConnectionBinding {
 	};
 	/** Bounded, relevant, byte-stable project evidence placed before the per-turn delta. */
 	readonly stableContext?: string;
+	/** User-global behavioral instructions placed in the provider system/developer slot. */
+	readonly globalInstructions?: string;
 	readonly maxTokens?: number;
 	readonly reasoning?: ThinkingLevel;
 }
