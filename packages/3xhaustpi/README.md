@@ -20,18 +20,25 @@ credential.
 
 ## Global instructions and release governance
 
-3xhaustPi loads one optional user-global instruction file for every project and
-new or resumed session:
+3xhaustPi ships one English global instruction default for every project and
+new or resumed session. An editable user file overrides the bundled default:
 
 ```text
+bundled resources/default-system-prompt.md
+                ↓ overridden by
 ~/.3xhaust/system-prompt.md
 ```
 
-The file must be a non-symlink regular file containing strict UTF-8 without NUL
-and may be at most 16,384 bytes. Missing and whitespace-only files preserve the
-existing prompt exactly. Malformed or oversized files fail visibly rather than
-being truncated or ignored. Project-local files with the same name are not
-loaded.
+Run `3xhaustpi system-prompt init` to copy the current bundled default into the
+user path for editing. Initialization is create-only: it refuses to overwrite
+any existing file, directory, or symlink, and package installation or updates
+never write to the user path automatically.
+
+Both bundled and user files must be non-symlink regular files containing strict
+UTF-8 without NUL and may be at most 16,384 bytes. A missing or whitespace-only
+user file falls back to the bundled default. A malformed or oversized user file
+fails visibly rather than being truncated, ignored, or replaced. Project-local
+files with the same name are not loaded.
 
 Global instructions are placed in the actual provider system/developer context
 for both the native CLI/TUI runtime and semantic fallback. The native base
@@ -56,7 +63,7 @@ progressive-disclosure lifecycle. See
 [`docs/research/global-system-prompt-governance.md`](../../docs/research/global-system-prompt-governance.md)
 for the cited design, limitations, and follow-up work.
 
-This package build is `3xhaustpi@0.1.10`. It has passed local `npm pack`, isolated global
+This package build is `3xhaustpi@0.2.1`. It has passed local `npm pack`, isolated global
 install, real-provider coding, crash-resume, and a five-case, 50-pair
 real-provider benchmark with 98% semantic-only and 100% direct-tool
 provider-reported warm cache-hit requests. Capability success and model-output
