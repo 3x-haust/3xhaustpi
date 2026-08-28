@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added one bounded `~/.3xhaust/system-prompt.md` across native and semantic sessions, with strict file validation, provider-slot isolation, cache identity, and stale semantic-resume protection.
+- Added a cited global-prompt and release-governance design report.
+
+### Changed
+
+- Replaced local npm login/publish guidance with a bounded `release-governance` built-in for protected PR/CI flows and npmjs Trusted Publishing.
+- Removed local npm login/publish CLI commands so package releases cannot bypass the reviewed Trusted Publishing workflow.
+- Changed native project `SYSTEM.md` handling only when a global prompt exists so the native base and user-global policy cannot be replaced.
+
 ### Fixed
 
 - Fixed manual release recovery to verify the requested tag/source/version and safely replace assets on reruns.
