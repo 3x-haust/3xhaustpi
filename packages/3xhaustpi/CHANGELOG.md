@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-28
+
+### Changed
+
+- Upgraded published Pi AI and coding-agent runtime dependencies from 0.82.1 to 0.84.3 while retaining the compatible TUI contract.
+
+### Fixed
+
+- Removed high-severity `undici` and `brace-expansion` advisories from clean consumer installations.
+
 ## [0.2.1] - 2026-08-28
 
 ### Added

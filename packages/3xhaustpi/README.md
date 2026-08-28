@@ -63,7 +63,7 @@ progressive-disclosure lifecycle. See
 [`docs/research/global-system-prompt-governance.md`](../../docs/research/global-system-prompt-governance.md)
 for the cited design, limitations, and follow-up work.
 
-This package build is `3xhaustpi@0.2.1`. It has passed local `npm pack`, isolated global
+This package build is `3xhaustpi@0.2.2`. It has passed local `npm pack`, isolated global
 install, real-provider coding, crash-resume, and a five-case, 50-pair
 real-provider benchmark with 98% semantic-only and 100% direct-tool
 provider-reported warm cache-hit requests. Capability success and model-output

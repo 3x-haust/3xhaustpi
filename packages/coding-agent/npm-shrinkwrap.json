@@ -1772,7 +1772,8 @@
 			},
 			"engines": {
 				"node": ">=10.0.0"
-			}
+			},
+			"peer": true
 		},
 		"node_modules/xml-naming": {
 			"version": "0.1.0",
