@@ -161,7 +161,14 @@ class ThreeXhaustPiSemanticSession implements PiSemanticModelSession {
 		};
 		const first = await this.#complete(
 			this.#binding.model,
-			createSemanticContext(turn, undefined, this.#binding.stableContext, undefined, images),
+			createSemanticContext(
+				turn,
+				undefined,
+				this.#binding.stableContext,
+				undefined,
+				images,
+				this.#binding.globalInstructions,
+			),
 			options,
 		);
 		usages.push(first.usage);
@@ -183,7 +190,14 @@ class ThreeXhaustPiSemanticSession implements PiSemanticModelSession {
 				.join("");
 			finalMessage = await this.#complete(
 				this.#binding.model,
-				createSemanticContext(turn, invalidText, this.#binding.stableContext, repairReason, images),
+				createSemanticContext(
+					turn,
+					invalidText,
+					this.#binding.stableContext,
+					repairReason,
+					images,
+					this.#binding.globalInstructions,
+				),
 				{
 					...options,
 					sessionId: semanticProviderSessionId(this.#binding.sessionId, phase, true),

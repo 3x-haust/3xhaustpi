@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { runProviderTurn, semanticUsage } from "../src/coding-runtime-provider.ts";
+import { providerCacheSessionId, runProviderTurn, semanticUsage } from "../src/coding-runtime-provider.ts";
 
 describe("provider turn cancellation", () => {
+	it("namespaces semantic cache sessions by prompt resources", () => {
+		const first = providerCacheSessionId("/project", "openai", "gpt", "inspect", "sha256:policy-a");
+		expect(providerCacheSessionId("/project", "openai", "gpt", "inspect", "sha256:policy-a")).toBe(first);
+		expect(providerCacheSessionId("/project", "openai", "gpt", "inspect", "sha256:policy-b")).not.toBe(first);
+		expect(providerCacheSessionId("/project", "openai", "gpt", "inspect")).not.toBe(first);
+	});
+
 	it("preserves measured cache-write usage", () => {
 		const measured = (value: number) => ({ status: "measured" as const, value, source: "provider-usage" as const });
 

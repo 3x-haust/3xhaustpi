@@ -276,6 +276,41 @@ describe("standalone runtime foundations", () => {
 		expect(readFileSync(join(project, "target.txt"), "utf8")).toBe("before\n");
 	});
 
+	it("blocks settled semantic continuation after prompt resources change", async () => {
+		const project = temporaryDirectory();
+		const stateDirectory = temporaryDirectory();
+		const userRoot = temporaryDirectory();
+		const statePath = join(stateDirectory, "state.sqlite");
+		writeFileSync(join(project, "target.txt"), "before\n");
+		writeFileSync(join(userRoot, "system-prompt.md"), "CURRENT_GLOBAL_POLICY");
+		const checkpoint = approvedPatchCheckpoint({
+			project,
+			statePath,
+			relativePath: "target.txt",
+			before: "before\n",
+			after: "after\n",
+			phase: "provider-settled",
+		});
+		const staleCheckpoint = {
+			...checkpoint,
+			payload: JSON.stringify({
+				...(JSON.parse(checkpoint.payload) as object),
+				resourceContextDigest: "sha256:stale-policy",
+			}),
+		};
+
+		await expect(
+			runCodingTask({
+				projectRoot: project,
+				objective: "",
+				approve: false,
+				statePath,
+				resumeCheckpoint: staleCheckpoint,
+				resources: { enabled: true, userRoot },
+			}),
+		).rejects.toThrow(/changed after semantic reasoning/u);
+	});
+
 	it("does not apply a patch after cancellation resolves pending approval", async () => {
 		const project = temporaryDirectory();
 		const stateDirectory = temporaryDirectory();

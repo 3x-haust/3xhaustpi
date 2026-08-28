@@ -53,6 +53,131 @@ describe("3xhaustpi harness resources", () => {
 		expect(resources.digest).toMatch(/^sha256:/u);
 	});
 
+	it("ships one bounded release-governance built-in skill", () => {
+		const root = temporaryDirectory();
+		const resources = loadHarnessResources({
+			...options(root),
+			builtinRoot: join(import.meta.dirname, "..", "resources"),
+		});
+		const releaseSkill = resources.skills.find(({ id }) => id === "release-governance");
+
+		expect(releaseSkill).toMatchObject({
+			id: "release-governance",
+			name: "release-governance",
+			scope: "builtin",
+			sourcePath: join(import.meta.dirname, "..", "resources", "skills", "release-governance", "SKILL.md"),
+		});
+		expect(Buffer.byteLength(releaseSkill?.instructions ?? "", "utf8")).toBeLessThanOrEqual(4_096);
+		expect(resources.skills.some(({ id }) => id === "npm-release")).toBe(false);
+	});
+
+	it("loads one user-global system prompt across project roots", () => {
+		const root = temporaryDirectory();
+		const input = options(root);
+		const instructions = "GLOBAL_POLICY_SENTINEL: prefer the smallest maintainable change.";
+		mkdirSync(input.userRoot!, { recursive: true });
+		writeFileSync(join(input.userRoot!, "system-prompt.md"), instructions);
+
+		const first = loadHarnessResources(input);
+		const second = loadHarnessResources({
+			...input,
+			projectRoot: join(root, "another-project"),
+		});
+
+		expect(first.globalSystemPrompt).toMatchObject({
+			instructions,
+			sourcePath: join(input.userRoot!, "system-prompt.md"),
+			sha256: expect.stringMatching(/^sha256:/u),
+		});
+		expect(second.globalSystemPrompt).toEqual(first.globalSystemPrompt);
+		expect(first.resourceContextDigest).toBe(second.resourceContextDigest);
+	});
+
+	it("treats missing and whitespace-only global prompts as the same absence", () => {
+		const root = temporaryDirectory();
+		const input = options(root);
+		mkdirSync(input.userRoot!, { recursive: true });
+		const missing = loadHarnessResources(input);
+		writeFileSync(join(input.userRoot!, "system-prompt.md"), " \r\n\t");
+		const blank = loadHarnessResources(input);
+
+		expect(missing.globalSystemPrompt).toBeUndefined();
+		expect(blank.globalSystemPrompt).toBeUndefined();
+		expect(blank.resourceContextDigest).toBe(missing.resourceContextDigest);
+	});
+
+	it("bounds accepted global prompts by raw UTF-8 bytes without truncation", () => {
+		const root = temporaryDirectory();
+		const input = options(root);
+		const path = join(input.userRoot!, "system-prompt.md");
+		mkdirSync(input.userRoot!, { recursive: true });
+		writeFileSync(path, "a".repeat(16_384));
+
+		expect(loadHarnessResources(input).globalSystemPrompt?.instructions).toHaveLength(16_384);
+
+		writeFileSync(path, "a".repeat(16_385));
+		expect(() => loadHarnessResources(input)).toThrow(/16,384 bytes/u);
+
+		writeFileSync(path, "한".repeat(5_462));
+		expect(() => loadHarnessResources(input)).toThrow(/16,384 bytes/u);
+	});
+
+	it("rejects malformed or unsafe global prompt files", () => {
+		const cases: Array<{
+			readonly name: string;
+			readonly prepare: (path: string, root: string) => void;
+			readonly message: RegExp;
+		}> = [
+			{
+				name: "invalid UTF-8",
+				prepare: (path) => writeFileSync(path, Buffer.from([0xc3, 0x28])),
+				message: /UTF-8/u,
+			},
+			{
+				name: "NUL",
+				prepare: (path) => writeFileSync(path, "before\u0000after"),
+				message: /NUL/u,
+			},
+			{
+				name: "directory",
+				prepare: (path) => mkdirSync(path),
+				message: /regular file/u,
+			},
+			{
+				name: "symbolic link",
+				prepare: (path, root) => {
+					const outside = join(root, "outside-system-prompt.md");
+					writeFileSync(outside, "outside");
+					symlinkSync(outside, path);
+				},
+				message: /symbolic link/u,
+			},
+			{
+				name: "broken symbolic link",
+				prepare: (path, root) => symlinkSync(join(root, "missing-system-prompt.md"), path),
+				message: /symbolic link/u,
+			},
+		];
+
+		for (const testCase of cases) {
+			const root = temporaryDirectory();
+			const input = options(root);
+			const path = join(input.userRoot!, "system-prompt.md");
+			mkdirSync(input.userRoot!, { recursive: true });
+			testCase.prepare(path, root);
+			expect(() => loadHarnessResources(input), testCase.name).toThrow(testCase.message);
+		}
+	});
+
+	it("ignores project-local global prompt namesakes", () => {
+		const root = temporaryDirectory();
+		const input = options(root);
+		mkdirSync(join(input.projectRoot, ".3xhaust"), { recursive: true });
+		writeFileSync(join(input.projectRoot, ".3xhaust", "system-prompt.md"), "PROJECT_OVERRIDE_SENTINEL");
+
+		expect(loadHarnessResources(input).globalSystemPrompt).toBeUndefined();
+	});
+
 	it("loads observer hooks but keeps project hooks disabled without opt-in", () => {
 		const root = temporaryDirectory();
 		const input = options(root);

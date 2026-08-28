@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createAgentSession, type ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	createAgentSessionFromServices,
+	createAgentSessionServices,
+	type ModelRuntime,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
+import { installProviderCacheRouting, providerAccountCacheAffinity } from "./agent-runtime-provider.ts";
+import { createNativeSystemPromptPolicy } from "./agent-runtime-system-prompt.ts";
 import type { AgentEphemeralQuestionRequest } from "./agent-runtime-types.ts";
 
 function messageText(message: AgentMessage): string {
@@ -10,20 +17,35 @@ function messageText(message: AgentMessage): string {
 export async function runEphemeralQuestion(
 	modelRuntime: Promise<ModelRuntime>,
 	request: AgentEphemeralQuestionRequest,
+	userRoot: string,
+	registerCacheAffinity: (affinity: string) => void,
 ): Promise<string> {
 	const runtime = await modelRuntime;
 	const model = (await runtime.getAvailable(request.provider)).find(({ id }) => id === request.model);
 	if (!model) throw new Error(`Side-question model is unavailable: ${request.provider}/${request.model}`);
 	const manager = SessionManager.inMemory(request.projectRoot);
-	const { session } = await createAgentSession({
+	const policy = createNativeSystemPromptPolicy(userRoot);
+	const services = await createAgentSessionServices({
 		cwd: request.projectRoot,
 		modelRuntime: runtime,
+		resourceLoaderOptions: policy.resourceLoaderOptions,
+	});
+	const { session } = await createAgentSessionFromServices({
+		services,
 		model,
 		thinkingLevel: request.thinkingLevel,
 		sessionManager: manager,
-		noTools: "all",
 		tools: [],
 	});
+	const cacheAffinity = providerAccountCacheAffinity(
+		request.projectRoot,
+		model.provider,
+		model.id,
+		request.accountId,
+		session.systemPrompt,
+	);
+	registerCacheAffinity(cacheAffinity);
+	installProviderCacheRouting(session, cacheAffinity, undefined, policy.currentGlobalPrompt()?.instructions);
 	const abort = () => void session.abort();
 	request.signal.addEventListener("abort", abort, { once: true });
 	try {

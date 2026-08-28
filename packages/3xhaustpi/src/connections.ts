@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { ModelAccount } from "./account-selection.ts";
 import { eligibleModelAccounts } from "./account-selection.ts";
-import { type AsideAccount, parseAsideAccounts } from "./npm-workflow.ts";
+import { type AsideAccount, parseAsideAccounts } from "./aside-accounts.ts";
 import { listCodexAccounts } from "./provider-accounts.ts";
 import {
 	collectProviderStatuses,
@@ -141,11 +141,5 @@ export function renderConnections(
 		);
 	}
 	if (inventory.aside.length > 0) lines.push(`  ${accountCommand} aside use <id>`);
-	lines.push("", "npm publishing");
-	lines.push(
-		inventory.npm.configured
-			? `  ● ${inventory.npm.account}  ${inventory.npm.registry}`
-			: `  ○ login required  ${inventory.npm.registry}`,
-	);
 	return lines.join("\n");
 }

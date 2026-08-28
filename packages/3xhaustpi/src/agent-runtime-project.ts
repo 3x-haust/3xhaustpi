@@ -15,6 +15,7 @@ import { createDelegatedAgentEventProjection } from "./agent-delegation-events.t
 import { executeAgentTask } from "./agent-runtime-execution.ts";
 import { installProviderCacheRouting, providerAccountCacheAffinity } from "./agent-runtime-provider.ts";
 import { findAgentSessionPath, openAgentSessionManager } from "./agent-runtime-session-lookup.ts";
+import { createNativeSystemPromptPolicy } from "./agent-runtime-system-prompt.ts";
 import type {
 	AgentCacheWarmResult,
 	AgentCompactConversationResult,
@@ -38,6 +39,7 @@ class AgentModelUnavailableError extends Error {
 
 export interface ProjectAgentRuntimeOptions {
 	readonly projectRoot: string;
+	readonly userRoot?: string;
 	readonly modelRuntime: Promise<ModelRuntime>;
 	readonly runChild: (request: AgentTaskRequest) => Promise<AgentTaskResult>;
 	readonly registerCacheAffinity: (cacheAffinity: string) => void;
@@ -48,6 +50,7 @@ export class ProjectAgentRuntime {
 	private readonly options: ProjectAgentRuntimeOptions;
 	private runtime: AgentSessionRuntime | undefined;
 	private activeRequest: AgentTaskRequest | undefined;
+	private globalInstructions: string | undefined;
 	private tail: Promise<void> = Promise.resolve();
 
 	constructor(options: ProjectAgentRuntimeOptions) {
@@ -62,10 +65,15 @@ export class ProjectAgentRuntime {
 		const request = this.activeRequest;
 		if (!request) throw new AgentRuntimeStateError("Agent session creation requires an active task");
 		await recoverApprovedFileTransactions(this.options.projectRoot);
+		const nativePromptPolicy = this.options.userRoot
+			? createNativeSystemPromptPolicy(this.options.userRoot)
+			: undefined;
 		const services = await createAgentSessionServices({
 			cwd,
 			modelRuntime: await this.options.modelRuntime,
+			...(nativePromptPolicy ? { resourceLoaderOptions: nativePromptPolicy.resourceLoaderOptions } : {}),
 		});
+		this.globalInstructions = nativePromptPolicy?.currentGlobalPrompt()?.instructions;
 		const hasExplicitModel = request.provider !== undefined || request.model !== undefined;
 		const available = hasExplicitModel ? await services.modelRuntime.getAvailable(request.provider) : [];
 		const model = hasExplicitModel
@@ -170,6 +178,7 @@ export class ProjectAgentRuntime {
 			return executeAgentTask(request, this.options.projectRoot, {
 				session: runtime.session,
 				registerCacheAffinity: this.options.registerCacheAffinity,
+				...(this.globalInstructions ? { globalInstructions: this.globalInstructions } : {}),
 			});
 		} finally {
 			this.activeRequest = undefined;
@@ -186,6 +195,17 @@ export class ProjectAgentRuntime {
 			await this.selectRuntime(request);
 			const runtime = this.runtime;
 			if (!runtime) throw new AgentRuntimeStateError("Agent runtime was not initialized");
+			const model = runtime.session.model;
+			if (!model) throw new AgentRuntimeStateError("Conversation compaction requires an active model");
+			const cacheAffinity = providerAccountCacheAffinity(
+				this.options.projectRoot,
+				model.provider,
+				model.id,
+				request.accountId,
+				runtime.session.systemPrompt,
+			);
+			this.options.registerCacheAffinity(`${cacheAffinity}_compaction`);
+			installProviderCacheRouting(runtime.session, cacheAffinity, undefined, this.globalInstructions);
 			const result = await runtime.session.compact(instructions);
 			return {
 				tokensBefore: result.tokensBefore,
@@ -211,9 +231,10 @@ export class ProjectAgentRuntime {
 				model.provider,
 				model.id,
 				request.accountId,
+				runtime.session.systemPrompt,
 			);
 			this.options.registerCacheAffinity(cacheAffinity);
-			installProviderCacheRouting(runtime.session, cacheAffinity, undefined);
+			installProviderCacheRouting(runtime.session, cacheAffinity, undefined, this.globalInstructions);
 			return warmAgentPromptCache(runtime.session, request.signal);
 		} finally {
 			this.activeRequest = undefined;

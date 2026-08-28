@@ -10,6 +10,7 @@ import type {
 } from "./resource-loader-contracts.ts";
 import { parseHookManifest } from "./resource-loader-hooks.ts";
 import { loadSkills, renderSkillContext } from "./resource-loader-skills.ts";
+import { loadGlobalSystemPrompt } from "./resource-loader-system-prompt.ts";
 
 const MAX_SKILLS = 16;
 
@@ -21,6 +22,7 @@ export function loadHarnessResources(options: HarnessResourceOptions): HarnessRe
 	const builtinRoot = options.builtinRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "../resources");
 	const userRoot = options.userRoot ?? resolveUserDataDirectory();
 	const projectRoot = resolveProjectDataDirectory(options.projectRoot);
+	const globalSystemPrompt = loadGlobalSystemPrompt(userRoot);
 	const roots = [
 		{ root: builtinRoot, scope: "builtin" as const },
 		{ root: userRoot, scope: "user" as const },
@@ -61,15 +63,22 @@ export function loadHarnessResources(options: HarnessResourceOptions): HarnessRe
 		})),
 	];
 	const context = renderSkillContext(skills);
-	const receipt = JSON.stringify({
+	const contextReceipt = JSON.stringify({
+		globalSystemPrompt: globalSystemPrompt?.sha256 ?? null,
 		skills: skills.map(({ id, scope, sha256 }) => ({ id, scope, sha256 })),
+	});
+	const resourceContextDigest = `sha256:${digest(contextReceipt)}`;
+	const receipt = JSON.stringify({
+		resourceContextDigest,
 		hooks: hooks.map(({ id, event, command, args, scope }) => ({ id, event, command, args, scope })),
 	});
 	return {
+		...(globalSystemPrompt ? { globalSystemPrompt } : {}),
 		skills,
 		hooks,
 		entries,
 		skillContext: context,
+		resourceContextDigest,
 		digest: `sha256:${digest(receipt)}`,
 	};
 }

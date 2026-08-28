@@ -12,8 +12,13 @@ import type {
 	AgentTaskRequest,
 	AgentTaskResult,
 } from "./agent-runtime-types.ts";
+import { resolveUserDataDirectory } from "./identity.ts";
 import { ProjectSerialQueue } from "./project-serial-queue.ts";
 import { createCredentialStore } from "./provider-runtime.ts";
+
+export interface AgentRuntimeHostOptions {
+	readonly userRoot?: string;
+}
 
 /** Persistent host that owns one serial AgentSessionRuntime per project. */
 export class AgentRuntimeHost {
@@ -24,6 +29,11 @@ export class AgentRuntimeHost {
 	private readonly activeTasks = new Set<Promise<unknown>>();
 	private closed = false;
 	private closePromise: Promise<void> | undefined;
+	private readonly userRoot: string;
+
+	constructor(options: AgentRuntimeHostOptions = {}) {
+		this.userRoot = options.userRoot ?? resolveUserDataDirectory();
+	}
 
 	private getModelRuntime(accountId: string | undefined): Promise<ModelRuntime> {
 		const key = accountId ?? "default";
@@ -41,6 +51,7 @@ export class AgentRuntimeHost {
 		if (!runtime) {
 			runtime = new ProjectAgentRuntime({
 				projectRoot,
+				userRoot: this.userRoot,
 				modelRuntime: this.getModelRuntime(accountId),
 				runChild: (request) => this.runIsolatedChild(request),
 				registerCacheAffinity: (affinity) => this.cacheAffinities.add(affinity),
@@ -66,7 +77,9 @@ export class AgentRuntimeHost {
 
 	runSideQuestion(request: AgentEphemeralQuestionRequest): Promise<string> {
 		if (this.closed) throw new Error("AgentRuntimeHost is closed");
-		return runEphemeralQuestion(this.getModelRuntime(request.accountId), request);
+		return runEphemeralQuestion(this.getModelRuntime(request.accountId), request, this.userRoot, (affinity) =>
+			this.cacheAffinities.add(affinity),
+		);
 	}
 
 	async compactConversation(request: AgentCompactConversationRequest): Promise<AgentCompactConversationResult> {
@@ -114,6 +127,7 @@ export class AgentRuntimeHost {
 		const projectRoot = canonicalProjectRoot(request.projectRoot);
 		const runtime = new ProjectAgentRuntime({
 			projectRoot,
+			userRoot: this.userRoot,
 			modelRuntime: this.getModelRuntime(request.accountId),
 			runChild: (child) => this.runIsolatedChild(child),
 			registerCacheAffinity: (affinity) => this.cacheAffinities.add(affinity),

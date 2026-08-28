@@ -21,8 +21,6 @@ export type ThreeXhaustCommand =
 	  }
 	| { readonly kind: "account-use"; readonly selector: string }
 	| { readonly kind: "account-delete"; readonly selector: string }
-	| { readonly kind: "npm-login"; readonly account?: string }
-	| { readonly kind: "npm-publish"; readonly account?: string }
 	| { readonly kind: "skill-create"; readonly name: string }
 	| {
 			readonly kind: "mcp-add";
@@ -116,13 +114,9 @@ export function parseCliArgs(args: readonly string[]): ThreeXhaustCommand {
 		throw new CliArgumentError('mcp supports "mcp add", "mcp tools", and "mcp call"');
 	}
 	if (args[0] === "npm") {
-		if ((args[1] !== "login" && args[1] !== "publish") || args.length > 3) {
-			throw new CliArgumentError('npm supports "npm login [account]" or "npm publish [account]"');
-		}
-		return {
-			kind: args[1] === "login" ? "npm-login" : "npm-publish",
-			...(args[2] ? { account: args[2] } : {}),
-		};
+		throw new CliArgumentError(
+			"Local npm login and publish are disabled; use the repository's reviewed Trusted Publishing workflow",
+		);
 	}
 	if (args[0] === "extension") {
 		if (args[1] !== "list" || args.length !== 2) {

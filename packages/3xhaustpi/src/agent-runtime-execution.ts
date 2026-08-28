@@ -13,6 +13,7 @@ class AgentSessionModelError extends Error {
 export interface AgentTaskExecutionContext {
 	readonly session: AgentSession;
 	readonly registerCacheAffinity: (cacheAffinity: string) => void;
+	readonly globalInstructions?: string;
 }
 
 export async function executeAgentTask(
@@ -24,7 +25,13 @@ export async function executeAgentTask(
 	const model = session.model;
 	if (!model) throw new AgentSessionModelError();
 	const sessionId = session.sessionManager.getSessionId();
-	const cacheAffinity = providerAccountCacheAffinity(projectRoot, model.provider, model.id, request.accountId);
+	const cacheAffinity = providerAccountCacheAffinity(
+		projectRoot,
+		model.provider,
+		model.id,
+		request.accountId,
+		session.systemPrompt,
+	);
 	context.registerCacheAffinity(cacheAffinity);
 	context.registerCacheAffinity(`${cacheAffinity}_compaction`);
 	let unsubscribe: (() => void) | undefined;
@@ -32,7 +39,7 @@ export async function executeAgentTask(
 		void session.abort();
 	};
 	try {
-		installProviderCacheRouting(session, cacheAffinity, request.onProviderPayload);
+		installProviderCacheRouting(session, cacheAffinity, request.onProviderPayload, context.globalInstructions);
 		request.onEvent({
 			type: "session.started",
 			runtimeKind: "native-agent",

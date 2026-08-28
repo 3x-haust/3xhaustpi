@@ -1,14 +1,16 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { type Context, fauxProvider } from "@earendil-works/pi-ai";
+import { type AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
 import {
 	AgentSessionNotFoundError,
 	cacheRoutingOptions,
 	openAgentSessionManager,
 	providerCacheAffinity,
 } from "../src/agent-runtime.ts";
+import { installProviderCacheRouting } from "../src/agent-runtime-provider.ts";
 
 describe("native agent cache routing", () => {
 	it("keeps project/provider/model affinity deterministic and isolated", () => {
@@ -16,7 +18,65 @@ describe("native agent cache routing", () => {
 		expect(providerCacheAffinity("/project", "openai-codex", "gpt-5.6-terra")).toBe(first);
 		expect(providerCacheAffinity("/other", "openai-codex", "gpt-5.6-terra")).not.toBe(first);
 		expect(providerCacheAffinity("/project", "openai-codex", "gpt-5.4")).not.toBe(first);
+		expect(providerCacheAffinity("/project", "openai-codex", "gpt-5.6-terra", "SYSTEM_A")).not.toBe(
+			providerCacheAffinity("/project", "openai-codex", "gpt-5.6-terra", "SYSTEM_B"),
+		);
 		expect(first).toMatch(/^3xhaustpi_[0-9a-f]{32}$/u);
+	});
+
+	it("restores one required native policy before the provider call", () => {
+		const providerContexts: Context[] = [];
+		const requiredSystemPrompt =
+			"NATIVE_BASE\n\n<user_global_instructions>\nGLOBAL_POLICY_SENTINEL\n</user_global_instructions>";
+		const baseStream = vi.fn(((_model, context) => {
+			providerContexts.push(structuredClone(context));
+			return {};
+		}) as AgentSession["agent"]["streamFunction"]);
+		const session = {
+			systemPrompt: requiredSystemPrompt,
+			agent: { streamFunction: baseStream },
+		} as unknown as AgentSession;
+		const model = fauxProvider().getModel();
+		const replacementContext: Context = {
+			systemPrompt: "REPLACEMENT_ONLY",
+			messages: [],
+			tools: [],
+		};
+
+		installProviderCacheRouting(session, "cache_key", undefined, "GLOBAL_POLICY_SENTINEL");
+		installProviderCacheRouting(session, "cache_key", undefined, "GLOBAL_POLICY_SENTINEL");
+		session.agent.streamFunction(model, replacementContext);
+
+		const enforced = providerContexts[0]?.systemPrompt ?? "";
+		expect(enforced.startsWith(requiredSystemPrompt)).toBe(true);
+		expect(enforced.split("GLOBAL_POLICY_SENTINEL")).toHaveLength(2);
+		expect(enforced.split("REPLACEMENT_ONLY")).toHaveLength(2);
+		expect(baseStream).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the compaction contract first and adds global policy once", () => {
+		const providerContexts: Context[] = [];
+		const baseStream = vi.fn(((_model, context) => {
+			providerContexts.push(structuredClone(context));
+			return {};
+		}) as AgentSession["agent"]["streamFunction"]);
+		const session = {
+			systemPrompt: "NATIVE_BASE\n\n<user_global_instructions>\nGLOBAL_POLICY_SENTINEL\n</user_global_instructions>",
+			agent: { streamFunction: baseStream },
+		} as unknown as AgentSession;
+		const summaryContext: Context = {
+			systemPrompt: "You are a context summarization assistant. Summarize.",
+			messages: [],
+			tools: [],
+		};
+
+		installProviderCacheRouting(session, "cache_key", undefined, "GLOBAL_POLICY_SENTINEL");
+		session.agent.streamFunction(fauxProvider().getModel(), summaryContext);
+
+		const enforced = providerContexts[0]?.systemPrompt ?? "";
+		expect(enforced.startsWith("You are a context summarization assistant.")).toBe(true);
+		expect(enforced.split("GLOBAL_POLICY_SENTINEL")).toHaveLength(2);
+		expect(enforced).not.toContain("NATIVE_BASE");
 	});
 
 	it("uses long-lived main affinity and an isolated short compaction affinity", () => {
