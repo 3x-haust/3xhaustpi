@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { listProjectFilePaths, searchProjectFiles } from "../src/project-files.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { listProjectFilePaths, resolveRipgrepPath, searchProjectFiles } from "../src/project-files.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -22,9 +22,21 @@ function fixture(): string {
 
 afterEach(() => {
 	for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
+	vi.unstubAllEnvs();
 });
 
 describe("project file fallback", () => {
+	it("prefers the coding-agent managed ripgrep binary", () => {
+		const agentRoot = fixture();
+		const binDirectory = join(agentRoot, "bin");
+		const managedRipgrep = join(binDirectory, process.platform === "win32" ? "rg.exe" : "rg");
+		mkdirSync(binDirectory);
+		writeFileSync(managedRipgrep, "");
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentRoot);
+
+		expect(resolveRipgrepPath()).toBe(managedRipgrep);
+	});
+
 	it("lists and searches bounded project files without ripgrep", () => {
 		const root = fixture();
 

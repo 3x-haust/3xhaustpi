@@ -1,11 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { getToolPath } from "@earendil-works/pi-coding-agent/tools-manager";
 
 const SKIPPED_DIRECTORIES = new Set([".git", "artifacts", "node_modules"]);
 const MAX_MATCHES = 200;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+export function resolveRipgrepPath(): string | null {
+	const agentRoot = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	const managedRipgrep = join(agentRoot, "bin", process.platform === "win32" ? "rg.exe" : "rg");
+	if (existsSync(managedRipgrep)) return managedRipgrep;
+	const systemRipgrep = spawnSync("rg", ["--version"], { stdio: "ignore" });
+	return systemRipgrep.error ? null : "rg";
+}
 
 export interface ProjectSearchResult {
 	readonly status: "completed" | "failed" | "timed-out";
@@ -39,7 +47,7 @@ function walkProjectFiles(projectRoot: string): readonly string[] {
 
 export function listProjectFilePaths(
 	projectRoot: string,
-	ripgrepPath: string | null = getToolPath("rg"),
+	ripgrepPath: string | null = resolveRipgrepPath(),
 ): readonly string[] {
 	if (!ripgrepPath) return walkProjectFiles(projectRoot);
 	const result = spawnSync(
@@ -66,7 +74,7 @@ export function searchProjectFiles(
 	projectRoot: string,
 	query: string,
 	timeoutMs: number,
-	ripgrepPath: string | null = getToolPath("rg"),
+	ripgrepPath: string | null = resolveRipgrepPath(),
 ): ProjectSearchResult {
 	if (ripgrepPath) {
 		const result = spawnSync(ripgrepPath, ["-n", "--fixed-strings", "--glob", "!node_modules/**", query, "."], {

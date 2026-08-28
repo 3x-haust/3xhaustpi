@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-28
+
+### Breaking Changes
+
+- Removed local `npm login` and `npm publish` CLI commands; releases now require the reviewed Trusted Publishing workflow.
+
 ### Added
 
 - Added one bounded `~/.3xhaust/system-prompt.md` across native and semantic sessions, with strict file validation, provider-slot isolation, cache identity, and stale semantic-resume protection.
@@ -10,11 +16,11 @@
 ### Changed
 
 - Replaced local npm login/publish guidance with a bounded `release-governance` built-in for protected PR/CI flows and npmjs Trusted Publishing.
-- Removed local npm login/publish CLI commands so package releases cannot bypass the reviewed Trusted Publishing workflow.
 - Changed native project `SYSTEM.md` handling only when a global prompt exists so the native base and user-global policy cannot be replaced.
 
 ### Fixed
 
+- Fixed external npm installs failing to load because project search imported an unpublished coding-agent package subpath.
 - Fixed manual release recovery to verify the requested tag/source/version and safely replace assets on reruns.
 - Fixed project snapshots and semantic searches to prefer coding-agent's managed ripgrep binary with a bounded Node fallback.
 - Fixed approved file writes on Windows hosts where directory `fsync` reports `EPERM`.
