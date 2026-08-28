@@ -103,6 +103,15 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 	const requestId = recovered?.requestId ?? `req_${randomUUID()}`;
 	const fingerprint = recovered?.fingerprint ?? digest(`${projectRoot}\0${objective}`);
 	const generation = recovered?.generation ?? 1;
+	if (
+		recovered?.resourceContextDigest !== undefined &&
+		recovered.resourceContextDigest !== resources.resourceContextDigest &&
+		["provider-settled", "followup-ready", "followup-settled"].includes(recovered.phase)
+	) {
+		throw new Error(
+			"Global system prompt or resolved skills changed after semantic reasoning; start a new coding task",
+		);
+	}
 	const state = new ThreeXhaustState(input.statePath);
 	const pythonConcurrency = configuredPythonConcurrency();
 	const pythonPool = pythonConcurrency ? new PythonReadPool(pythonConcurrency) : undefined;
@@ -124,15 +133,6 @@ export async function runCodingTask(input: CodingTaskInput): Promise<CodingTaskR
 		documents: durableDocuments,
 		generation,
 	};
-	if (
-		recovered?.resourceContextDigest !== undefined &&
-		recovered.resourceContextDigest !== resources.resourceContextDigest &&
-		["provider-settled", "followup-ready", "followup-settled"].includes(recovered.phase)
-	) {
-		throw new Error(
-			"Global system prompt or resolved skills changed after semantic reasoning; start a new coding task",
-		);
-	}
 	if (!recovered) {
 		state.beginRun({
 			projectId,

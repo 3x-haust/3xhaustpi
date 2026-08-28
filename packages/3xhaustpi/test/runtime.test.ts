@@ -298,6 +298,7 @@ describe("standalone runtime foundations", () => {
 				resourceContextDigest: "sha256:stale-policy",
 			}),
 		};
+		rmSync(statePath, { force: true });
 
 		await expect(
 			runCodingTask({
@@ -309,6 +310,7 @@ describe("standalone runtime foundations", () => {
 				resources: { enabled: true, userRoot },
 			}),
 		).rejects.toThrow(/changed after semantic reasoning/u);
+		expect(() => statSync(statePath)).toThrow();
 	});
 
 	it("does not apply a patch after cancellation resolves pending approval", async () => {
