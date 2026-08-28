@@ -1,5 +1,5 @@
 import { fork } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const directory = process.argv[2];
@@ -24,7 +24,12 @@ if (role === "grandchild") {
 		if (message?.type !== "ready") return;
 		const tree = { childPid: process.pid, grandchildPid: message.grandchildPid };
 		if (process.send) process.send({ type: "ready", ...tree });
-		else writeFileSync(join(directory, "tree-ready.json"), JSON.stringify(tree));
+		else {
+			const readyPath = join(directory, "tree-ready.json");
+			const pendingPath = `${readyPath}.pending`;
+			writeFileSync(pendingPath, JSON.stringify(tree));
+			renameSync(pendingPath, readyPath);
+		}
 	});
 }
 
