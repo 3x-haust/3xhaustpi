@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import type { CodingTaskEvent } from "./coding-runtime.ts";
-import { isolateProcessGroup, isProcessTreeRunning, signalProcessTree } from "./process-tree.ts";
+import { isolateProcessGroup, terminateProcessTree } from "./process-tree.ts";
 import type { ObserverHook } from "./resource-loader.ts";
 
 export interface HookOutcome {
@@ -114,31 +114,22 @@ async function runHook(
 		});
 		let settled = false;
 		let timedOut = false;
-		let killTimer: NodeJS.Timeout | undefined;
 		const finish = (outcome: HookOutcome) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			if (killTimer) clearTimeout(killTimer);
 			resolve(outcome);
 		};
 		const timedOutOutcome = (): HookOutcome => ({ id: hook.id, status: "timed-out" });
 		const timer = setTimeout(() => {
 			timedOut = true;
-			if (!child.pid) return finish(timedOutOutcome());
-			signalProcessTree(child.pid, "SIGTERM");
-			killTimer = setTimeout(() => {
-				if (child.pid) signalProcessTree(child.pid, "SIGKILL");
-				finish(timedOutOutcome());
-			}, 250);
+			void terminateProcessTree(child).then(() => finish(timedOutOutcome()));
 		}, options.timeoutMs);
-		child.once("error", () => finish(timedOut ? timedOutOutcome() : { id: hook.id, status: "failed" }));
+		child.once("error", () => {
+			if (!timedOut) finish({ id: hook.id, status: "failed" });
+		});
 		child.once("exit", (code) => {
-			if (timedOut) {
-				if (child.pid && isProcessTreeRunning(child.pid)) return;
-				finish(timedOutOutcome());
-				return;
-			}
+			if (timedOut) return;
 			finish({
 				id: hook.id,
 				status: code === 0 ? "completed" : "failed",
