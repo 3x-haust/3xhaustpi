@@ -13,6 +13,7 @@ export {
 	GlobalSystemPromptError,
 	initializeGlobalSystemPrompt,
 	loadGlobalSystemPrompt,
+	loadGlobalSystemPromptLayers,
 	MAX_GLOBAL_SYSTEM_PROMPT_BYTES,
 } from "./resource-loader-system-prompt.ts";
 export { createSkillTemplate } from "./resource-loader-template.ts";

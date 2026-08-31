@@ -17,10 +17,13 @@ afterEach(() => {
 });
 
 function options(root: string): HarnessResourceOptions {
+	const builtinRoot = join(root, "builtin");
+	mkdirSync(builtinRoot, { recursive: true });
+	writeFileSync(join(builtinRoot, "default-system-prompt.md"), "SERVICE_POLICY_SENTINEL");
 	return {
 		projectRoot: join(root, "project"),
 		userRoot: join(root, "user"),
-		builtinRoot: join(root, "builtin"),
+		builtinRoot,
 		allowProjectHooks: false,
 	};
 }
@@ -93,7 +96,7 @@ describe("3xhaustpi harness resources", () => {
 		expect(first.resourceContextDigest).toBe(second.resourceContextDigest);
 	});
 
-	it("treats missing and whitespace-only global prompts as the same absence", () => {
+	it("falls back to the mandatory service prompt for missing or blank user customization", () => {
 		const root = temporaryDirectory();
 		const input = options(root);
 		mkdirSync(input.userRoot!, { recursive: true });
@@ -101,8 +104,11 @@ describe("3xhaustpi harness resources", () => {
 		writeFileSync(join(input.userRoot!, "system-prompt.md"), " \r\n\t");
 		const blank = loadHarnessResources(input);
 
-		expect(missing.globalSystemPrompt).toBeUndefined();
-		expect(blank.globalSystemPrompt).toBeUndefined();
+		expect(missing.globalSystemPrompt).toMatchObject({
+			instructions: "SERVICE_POLICY_SENTINEL",
+			scope: "builtin",
+		});
+		expect(blank.globalSystemPrompt).toEqual(missing.globalSystemPrompt);
 		expect(blank.resourceContextDigest).toBe(missing.resourceContextDigest);
 	});
 
@@ -175,7 +181,10 @@ describe("3xhaustpi harness resources", () => {
 		mkdirSync(join(input.projectRoot, ".3xhaust"), { recursive: true });
 		writeFileSync(join(input.projectRoot, ".3xhaust", "system-prompt.md"), "PROJECT_OVERRIDE_SENTINEL");
 
-		expect(loadHarnessResources(input).globalSystemPrompt).toBeUndefined();
+		expect(loadHarnessResources(input).globalSystemPrompt).toMatchObject({
+			instructions: "SERVICE_POLICY_SENTINEL",
+			scope: "builtin",
+		});
 	});
 
 	it("loads observer hooks but keeps project hooks disabled without opt-in", () => {

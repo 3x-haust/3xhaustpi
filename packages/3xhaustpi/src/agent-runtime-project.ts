@@ -73,7 +73,7 @@ export class ProjectAgentRuntime {
 			modelRuntime: await this.options.modelRuntime,
 			...(nativePromptPolicy ? { resourceLoaderOptions: nativePromptPolicy.resourceLoaderOptions } : {}),
 		});
-		this.globalInstructions = nativePromptPolicy?.currentGlobalPrompt()?.instructions;
+		this.globalInstructions = nativePromptPolicy?.currentGlobalInstructions();
 		const hasExplicitModel = request.provider !== undefined || request.model !== undefined;
 		const available = hasExplicitModel ? await services.modelRuntime.getAvailable(request.provider) : [];
 		const model = hasExplicitModel

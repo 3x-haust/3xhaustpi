@@ -16,6 +16,12 @@ import type { GlobalSystemPromptResource } from "./resource-loader-contracts.ts"
 
 export const MAX_GLOBAL_SYSTEM_PROMPT_BYTES = 16_384;
 const DEFAULT_BUILTIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../resources");
+const DEFAULT_USER_SYSTEM_PROMPT = "No additional user-global instructions are configured.\n";
+
+export interface GlobalSystemPromptLayers {
+	readonly service: GlobalSystemPromptResource;
+	readonly user: GlobalSystemPromptResource | undefined;
+}
 
 export class GlobalSystemPromptError extends Error {
 	readonly sourcePath: string;
@@ -94,10 +100,21 @@ export function loadGlobalSystemPrompt(
 	userRoot: string,
 	builtinRoot = DEFAULT_BUILTIN_ROOT,
 ): GlobalSystemPromptResource | undefined {
-	return (
-		loadPromptFile(join(userRoot, "system-prompt.md"), "user") ??
-		loadPromptFile(join(builtinRoot, "default-system-prompt.md"), "builtin")
-	);
+	const layers = loadGlobalSystemPromptLayers(userRoot, builtinRoot);
+	return layers.user ?? layers.service;
+}
+
+export function loadGlobalSystemPromptLayers(
+	userRoot: string,
+	builtinRoot = DEFAULT_BUILTIN_ROOT,
+): GlobalSystemPromptLayers {
+	const bundledPath = join(builtinRoot, "default-system-prompt.md");
+	const service = loadPromptFile(bundledPath, "builtin");
+	if (!service) throw new GlobalSystemPromptError(bundledPath, "is missing or blank");
+	return {
+		service,
+		user: loadPromptFile(join(userRoot, "system-prompt.md"), "user"),
+	};
 }
 
 export function initializeGlobalSystemPrompt(
@@ -110,7 +127,7 @@ export function initializeGlobalSystemPrompt(
 	const sourcePath = join(userRoot, "system-prompt.md");
 	mkdirSync(userRoot, { recursive: true, mode: 0o700 });
 	try {
-		writeFileSync(sourcePath, bundled.instructions, { encoding: "utf8", flag: "wx", mode: 0o600 });
+		writeFileSync(sourcePath, DEFAULT_USER_SYSTEM_PROMPT, { encoding: "utf8", flag: "wx", mode: 0o600 });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
 			throw new GlobalSystemPromptError(sourcePath, "already exists and will not be overwritten");
