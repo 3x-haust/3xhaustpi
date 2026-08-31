@@ -128,15 +128,15 @@ export class OutputAccumulator {
 
 		await new Promise<void>((resolve, reject) => {
 			const onError = (error: Error) => {
-				stream.off("close", onClose);
+				stream.off("finish", onFinish);
 				reject(error);
 			};
-			const onClose = () => {
+			const onFinish = () => {
 				stream.off("error", onError);
 				resolve();
 			};
 			stream.once("error", onError);
-			stream.once("close", onClose);
+			stream.once("finish", onFinish);
 			stream.end();
 		});
 	}

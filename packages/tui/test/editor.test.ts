@@ -3,14 +3,15 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "../src/autocomplete.ts";
 import { Editor, wordWrapLine } from "../src/components/editor.ts";
-import { TUI } from "../src/tui.ts";
+import type { TUI } from "../src/tui.ts";
+import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { visibleWidth } from "../src/utils.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 /** Create a TUI with a virtual terminal for testing */
 function createTestTUI(cols = 80, rows = 24): TUI {
-	return new TUI(new VirtualTerminal(cols, rows));
+	return new TuiMainScreen(new VirtualTerminal(cols, rows));
 }
 
 /** Standard applyCompletion that replaces prefix with item.value */
@@ -39,53 +40,6 @@ async function flushAutocomplete(): Promise<void> {
 }
 
 describe("Editor component", () => {
-	describe("Placeholder", () => {
-		it("renders only while the editor is empty", () => {
-			const editor = new Editor(createTestTUI(), defaultEditorTheme, {
-				placeholder: "Ask anything",
-				promptPrefix: "› ",
-			});
-
-			const empty = editor.render(40).map(stripVTControlCharacters).join("\n");
-			assert.match(empty, /› {2}Ask anything/u);
-
-			editor.setText("inspect src");
-			const populated = editor.render(40).map(stripVTControlCharacters).join("\n");
-			assert.doesNotMatch(populated, /Ask anything/u);
-			assert.match(populated, /› inspect src/u);
-		});
-
-		it("supports a native shell composer with only a top rule", () => {
-			const editor = new Editor(createTestTUI(), defaultEditorTheme, {
-				promptPrefix: "> ",
-				bottomBorder: false,
-			});
-
-			const output = editor.render(40).map(stripVTControlCharacters);
-
-			assert.strictEqual(output.length, 2);
-			assert.match(output[0] ?? "", /^─{40}$/u);
-			assert.match(output[1] ?? "", /^> /u);
-		});
-
-		it("keeps a long multiline draft inside a one-row shell composer", () => {
-			const editor = new Editor(createTestTUI(56, 22), defaultEditorTheme, {
-				promptPrefix: "> ",
-				bottomBorder: false,
-				maxVisibleLines: 1,
-			});
-			const draft = `${"긴 입력 ".repeat(40)}\nsecond line`;
-			editor.setText(draft);
-
-			const output = editor.render(56).map(stripVTControlCharacters);
-
-			assert.strictEqual(output.length, 2);
-			assert.match(output[0] ?? "", /↑/u);
-			assert.match(output[1] ?? "", /second line/u);
-			assert.strictEqual(editor.getText(), draft);
-		});
-	});
-
 	describe("Prompt history navigation", () => {
 		it("does nothing on Up arrow when history is empty", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
@@ -2843,60 +2797,6 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
-		it("opens slash argument completions with Tab on an empty argument prefix", async () => {
-			const editor = new Editor(createTestTUI(), defaultEditorTheme);
-			const provider = new CombinedAutocompleteProvider(
-				[
-					{
-						name: "model",
-						description: "Switch model",
-						getArgumentCompletions: () => [
-							{ value: "gpt-5.6-luna", label: "gpt-5.6-luna" },
-							{ value: "gpt-5.6-terra", label: "gpt-5.6-terra" },
-						],
-					},
-				],
-				process.cwd(),
-			);
-			editor.setAutocompleteProvider(provider);
-			editor.setText("/model ");
-
-			editor.handleInput("\t");
-			await flushAutocomplete();
-
-			assert.strictEqual(editor.isShowingAutocomplete(), true);
-			assert.strictEqual(editor.getText(), "/model ");
-		});
-
-		it("can submit a slash argument immediately when the host opts in", async () => {
-			const editor = new Editor(createTestTUI(), defaultEditorTheme, {
-				submitSlashArgumentCompletions: true,
-			});
-			const provider = new CombinedAutocompleteProvider(
-				[
-					{
-						name: "model",
-						description: "Switch model",
-						getArgumentCompletions: () => [{ value: "gpt-5.6-luna", label: "gpt-5.6-luna" }],
-					},
-				],
-				process.cwd(),
-			);
-			let submitted = "";
-			editor.onSubmit = (value) => {
-				submitted = value;
-			};
-			editor.setAutocompleteProvider(provider);
-			editor.setText("/model ");
-
-			editor.handleInput("\t");
-			await flushAutocomplete();
-			editor.handleInput("\r");
-
-			assert.strictEqual(submitted, "/model gpt-5.6-luna");
-			assert.strictEqual(editor.getText(), "");
-		});
-
 		it("ignores invalid slash command argument completion results", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const provider = new CombinedAutocompleteProvider(
@@ -3690,25 +3590,6 @@ describe("Editor component", () => {
 			assert.match(text, /\[paste #\d+ \+\d+ lines\]/);
 		});
 
-		it("expands an immediately repeated large paste instead of duplicating it", () => {
-			// Given: one large paste represented by the normal compact marker.
-			const editor = new Editor(createTestTUI(), defaultEditorTheme);
-			const content = bigPaste("verbatim-");
-			editor.handleInput(`\x1b[200~${content}\x1b[201~`);
-			assert.match(editor.getText(), /\[paste #1 \+\d+ lines\]/);
-
-			// When: the terminal sends the exact same bracketed paste again.
-			editor.handleInput(`\x1b[200~${content}\x1b[201~`);
-
-			// Then: the marker becomes visible source text without a duplicate copy.
-			assert.equal(editor.getText(), content);
-			assert.equal(editor.getExpandedText(), content);
-
-			editor.handleInput("\x1b[45;5u");
-			assert.match(editor.getText(), /\[paste #1 \+\d+ lines\]/);
-			assert.equal(editor.getExpandedText(), content);
-		});
-
 		it("treats paste marker as single unit for right arrow", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			editor.handleInput("A");
@@ -4266,73 +4147,6 @@ describe("Editor component", () => {
 			editor.handleInput("\r");
 
 			assert.strictEqual(submitted, pastedText);
-		});
-	});
-
-	describe("Overlay autocomplete and prompt prefix", () => {
-		const slashProvider: AutocompleteProvider = {
-			async getSuggestions() {
-				return {
-					prefix: "/",
-					items: [
-						{ value: "help", label: "help", description: "Show help" },
-						{ value: "model", label: "model", description: "Select model" },
-					],
-				};
-			},
-			applyCompletion,
-		};
-
-		it("keeps inline autocomplete as the default editor behavior", async () => {
-			const editor = new Editor(createTestTUI(), defaultEditorTheme);
-			editor.setAutocompleteProvider(slashProvider);
-
-			editor.handleInput("/");
-			await flushAutocomplete();
-
-			const rendered = stripVTControlCharacters(editor.render(60).join("\n"));
-			assert.ok(rendered.includes("help"));
-			assert.ok(rendered.includes("model"));
-		});
-
-		it("renders autocomplete through a non-capturing overlay when explicitly enabled", async () => {
-			const terminal = new VirtualTerminal(60, 20);
-			const tui = new TUI(terminal);
-			const editor = new Editor(tui, defaultEditorTheme, { autocompletePresentation: "overlay" });
-			editor.setAutocompleteProvider(slashProvider);
-			tui.addChild(editor);
-			tui.setFocus(editor);
-			tui.start();
-
-			editor.handleInput("/");
-			await flushAutocomplete();
-			tui.requestRender(true);
-			await new Promise<void>((resolve) => process.nextTick(resolve));
-			await terminal.waitForRender();
-
-			assert.ok(editor.isShowingAutocomplete());
-			const editorRows = stripVTControlCharacters(editor.render(60).join("\n"));
-			assert.ok(!editorRows.includes("Show help"));
-			const viewport = terminal.getViewport().join("\n");
-			assert.ok(viewport.includes("Show help"));
-			assert.ok(viewport.includes("┌"));
-			assert.ok(viewport.includes("└"));
-			const topBorder = terminal.getViewport().find((line) => line.includes("┌"));
-			assert.strictEqual(topBorder?.indexOf("┌"), 0);
-
-			editor.handleInput("\x1b");
-			assert.equal(editor.isShowingAutocomplete(), false);
-			tui.stop();
-		});
-
-		it("lets the editor visibly own the prompt prefix and cursor marker", () => {
-			const editor = new Editor(createTestTUI(20, 10), defaultEditorTheme, { promptPrefix: "› " });
-			editor.focused = true;
-
-			const row = editor.render(20)[1] ?? "";
-			assert.ok(stripVTControlCharacters(row).startsWith("› "));
-			assert.ok(row.includes("\x1b_pi:c\x07"));
-			assert.equal(visibleWidth(row), 20);
 		});
 	});
 });
