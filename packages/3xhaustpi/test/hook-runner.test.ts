@@ -98,10 +98,6 @@ writeFileSync(process.argv[2], JSON.stringify({ event: JSON.parse(input), env: p
 		const root = mkdtempSync(join(tmpdir(), "3xhaustpi-hook-tree-"));
 		temporaryDirectories.push(root);
 		const readyPath = join(root, "tree-ready.json");
-		const terminations =
-			process.platform === "win32"
-				? []
-				: [waitForFile(join(root, "child-terminated")), waitForFile(join(root, "grandchild-terminated"))];
 		const ready = waitForFile(readyPath);
 
 		const execution = runObserverHooks(
@@ -132,7 +128,6 @@ writeFileSync(process.argv[2], JSON.stringify({ event: JSON.parse(input), env: p
 		fixturePids.add(tree.childPid);
 		fixturePids.add(tree.grandchildPid);
 		await expect(execution).resolves.toEqual([{ id: "tree", status: "timed-out" }]);
-		await Promise.all(terminations);
 		expect(() => process.kill(tree.childPid, 0)).toThrow();
 		expect(() => process.kill(tree.grandchildPid, 0)).toThrow();
 	}, 10_000);

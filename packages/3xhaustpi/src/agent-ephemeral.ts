@@ -45,7 +45,7 @@ export async function runEphemeralQuestion(
 		session.systemPrompt,
 	);
 	registerCacheAffinity(cacheAffinity);
-	installProviderCacheRouting(session, cacheAffinity, undefined, policy.currentGlobalPrompt()?.instructions);
+	installProviderCacheRouting(session, cacheAffinity, undefined, policy.currentGlobalInstructions());
 	const abort = () => void session.abort();
 	request.signal.addEventListener("abort", abort, { once: true });
 	try {

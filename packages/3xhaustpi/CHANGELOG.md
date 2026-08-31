@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-31
+
+### Added
+
+- Added a service-wide English CI quota policy that optimizes total billed runner minutes while preserving correctness, security, provenance, and required platform coverage.
+
+### Changed
+
+- Bundled service instructions are now mandatory for every native session, with `~/.3xhaust/system-prompt.md` applied afterward as optional user customization.
+- `3xhaustpi system-prompt init` now creates a neutral user customization file instead of duplicating the mandatory bundled service prompt.
+
+### Fixed
+
+- Prevented an existing user-global prompt from replacing service-wide harness instructions.
+
 ## [0.2.2] - 2026-08-28
 
 ### Changed

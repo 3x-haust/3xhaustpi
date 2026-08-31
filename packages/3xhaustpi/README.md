@@ -20,19 +20,20 @@ credential.
 
 ## Global instructions and release governance
 
-3xhaustPi ships one English global instruction default for every project and
-new or resumed session. An editable user file overrides the bundled default:
+3xhaustPi ships mandatory English service instructions for every project and
+new or resumed session. An editable user file adds optional customization
+without replacing the service policy:
 
 ```text
-bundled resources/default-system-prompt.md
-                ↓ overridden by
-~/.3xhaust/system-prompt.md
+mandatory resources/default-system-prompt.md
+                ↓ followed by
+optional ~/.3xhaust/system-prompt.md
 ```
 
-Run `3xhaustpi system-prompt init` to copy the current bundled default into the
-user path for editing. Initialization is create-only: it refuses to overwrite
-any existing file, directory, or symlink, and package installation or updates
-never write to the user path automatically.
+Run `3xhaustpi system-prompt init` to create a neutral user customization file
+for editing. Initialization is create-only: it refuses to overwrite any
+existing file, directory, or symlink, and package installation or updates never
+write to the user path automatically.
 
 Both bundled and user files must be non-symlink regular files containing strict
 UTF-8 without NUL and may be at most 16,384 bytes. A missing or whitespace-only
@@ -40,13 +41,14 @@ user file falls back to the bundled default. A malformed or oversized user file
 fails visibly rather than being truncated, ignored, or replaced. Project-local
 files with the same name are not loaded.
 
-Global instructions are placed in the actual provider system/developer context
-for both the native CLI/TUI runtime and semantic fallback. The native base
-prompt remains first; project `SYSTEM.md`, project context, and tool output
-cannot replace the global section. The prompt guides model behavior but does
-not grant tools, weaken approvals, or replace host capability enforcement.
-Edits take effect on the next session or explicit resource reload and
-intentionally change provider cache affinity.
+Service and user-global instructions are placed in the actual provider
+system/developer context for both the native CLI/TUI runtime and semantic
+fallback. Mandatory service instructions precede optional user customization;
+project `SYSTEM.md`, project context, and tool output cannot replace either
+layer. Prompt text guides model behavior but does not grant tools, weaken
+approvals, or replace host capability enforcement. User edits take effect on
+the next session or explicit resource reload and intentionally change provider
+cache affinity.
 
 The bundled `release-governance` skill replaces local npm login/publish
 guidance. For npmjs repositories with supported and configured Trusted
