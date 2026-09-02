@@ -1,0 +1,37 @@
+xterm.js=@xterm/headless/5.5.0 cols=120 rows=36
+
+
+                      BTW · main-aware · • ready
+                      You
+                      what is running?
+                      3xhaust
+                      BTW_OK phase=running work=LIVE_MAIN_WORK_731 main=true history=0
+                      You
+                      and now?
+                      3xhaust
+                      BTW_OK phase=running work=LIVE_MAIN_WORK_731 main=true history=1
+  • Ignored invalid sa────────────────────────────────────────────────────────────────────────────
+                       >
+  RUN_MAIN_731        Enter send · Shift+Enter newline · Ctrl+R promote · Esc close
+
+
+  ✓ LIVE_MAIN_WORK_731  1.0 ms · released
+
+  MAIN_FINISHED_731
+
+
+  MAIN_SECRET_731
+
+
+  MAIN_SECRET_STORED
+
+
+  RUN_MAIN_731
+
+
+• Working (LIVE_MAIN_WORK_731… · esc to interrupt)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ >
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+…/project                                                                                        (openai) gpt-5.2:medium
+project                                                                                             Ctx 104/400K · 0.03%

@@ -1,0 +1,37 @@
+xterm.js=@xterm/headless/5.5.0 cols=120 rows=36
+
+
+                      Side Chat · isolated · • ready
+                      You
+                      remember SIDE_842
+                      3xhaust
+                      SIDE_OK isolated=true history=0 remembered=true
+                      You
+                      follow up
+                      3xhaust
+                      SIDE_OK isolated=true history=1 remembered=true
+                      ────────────────────────────────────────────────────────────────────────────
+                       >
+                      Enter send · Shift+Enter newline · Ctrl+R promote · Esc close
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  • Ignored invalid saved session qa-session.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ >
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+…/project                                                                                        (openai) gpt-5.2:medium
+project                                                                                                       Ctx —/400K
