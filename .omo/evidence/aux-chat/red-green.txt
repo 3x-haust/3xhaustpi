@@ -1,0 +1,37 @@
+RED -> GREEN focused regression receipts
+Captured during implementation on 2026-09-02/03.
+
+MODEL FILTERING
+Command: node ../../node_modules/vitest/dist/cli.js --run test/tui-model-availability.test.ts test/tui-settings-command.test.ts
+RED: unauthenticated and disabled provider models remained visible.
+GREEN: 2 files, 8 tests passed; enabled authenticated providers remained selectable and all others were absent.
+
+RESPONSE TERMINAL OUTCOMES
+Command: node ../../node_modules/vitest/dist/cli.js --run test/agent-runtime-events.test.ts test/agent-runtime-ownership.test.ts test/agent-runtime.test.ts test/tui-native-drain.test.ts
+RED: provider error, aborted, and empty assistant turns could settle without an answer or actionable TUI error.
+GREEN: 4 files, 25 tests passed; every invalid terminal outcome rejects with an actionable message.
+
+SIDE CHAT AND BTW
+Command: node ../../node_modules/vitest/dist/cli.js --run test/tui-side-command.test.ts test/tui-btw-command.test.ts test/tui-side-chat-state.test.ts
+RED: /side did not exist; BTW was one-shot and lost its first answer; BTW history crossed project boundaries.
+GREEN: persistent isolated Side history/restart, process-local project-scoped BTW history, live observations, cancellation,
+and one pending turn all passed.
+
+PROMOTION
+Command: node ../../node_modules/vitest/dist/cli.js --run test/tui-auxiliary-promotion-command.test.ts test/tui-auxiliary-promotion-state.test.ts test/tui-auxiliary-overlay.test.ts
+RED: promoteLatest did not exist; a stale answer from another auxiliary surface could be promoted; long answers hid
+their beginning; repeated sources had no durable admission contract.
+GREEN: Ctrl+R confirmation, full-answer review-to-end, cross-surface isolation, durable FIFO admission, restart-safe
+source deduplication, and duplicate feedback passed.
+
+ADMISSION AND SECURITY
+Command: node ../../node_modules/vitest/dist/cli.js --run test/tui-main-admission.test.ts test/tui-side-chat-state.test.ts
+RED: asynchronous account discovery tore project/model snapshots, discovery errors rejected silently, hidden /provider
+bypassed eligible accounts, and expired workers could terminate Side turns.
+GREEN: immutable admission, visible prompt-restoring errors, authenticated provider selection, and active-lease fencing
+passed.
+
+FULL-SUITE FLAKE
+Command: node ../../node_modules/vitest/dist/cli.js --run test/config.test.ts
+RED: Windows-shaped .pnpm path detection invoked an ambient fake pnpm executable; marker assertion received true.
+GREEN: 15 tests passed; path-based detection constructs the update instruction without any ambient package-manager probe.

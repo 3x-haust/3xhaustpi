@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
-import { createTuiAutocompleteController } from "../src/tui-live-autocomplete.ts";
+import { createProviderRuntime } from "../src/provider-runtime.ts";
+import { createTuiAutocompleteController, type TuiAutocompleteController } from "../src/tui-live-autocomplete.ts";
 import { createTuiLiveCore } from "../src/tui-live-state.ts";
 import { installTuiSubmission } from "../src/tui-live-submit.ts";
 import type { TuiTaskController } from "../src/tui-live-tasks.ts";
@@ -115,7 +116,18 @@ describe("native TUI session commands", () => {
 		core.database.setTuiProjectGoal(projectB, "Goal B");
 		const view = createTuiLiveView(core);
 		const workspace = createTuiWorkspaceCommands(core, view);
-		const autocomplete = createTuiAutocompleteController(core, workspace);
+		const autocomplete: TuiAutocompleteController = {
+			currentProviderModels: () => Promise.resolve(createProviderRuntime().getModels(core.state.provider)),
+			eligibleProviderModels: () =>
+				Promise.resolve(
+					["openai-codex", "anthropic"].flatMap((provider) =>
+						createProviderRuntime()
+							.getModels(provider)
+							.map(({ id }) => ({ provider, model: id })),
+					),
+				),
+			installAutocomplete() {},
+		};
 		const tasks: TuiTaskController = {
 			drainQueue() {},
 			startResume() {},
@@ -129,7 +141,7 @@ describe("native TUI session commands", () => {
 			autocomplete,
 			requestExit() {},
 		});
-		const alternate = autocomplete.currentProviderModels().find(({ id }) => id !== core.state.model);
+		const alternate = (await autocomplete.currentProviderModels()).find(({ id }) => id !== core.state.model);
 		expect(alternate).toBeDefined();
 
 		core.state.latestContextTokens = 12_345;

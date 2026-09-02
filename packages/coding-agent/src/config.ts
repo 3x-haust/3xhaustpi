@@ -123,24 +123,17 @@ function getSelfUpdateCommandForMethod(
 		case "bun-binary":
 			return undefined;
 		case "pnpm": {
-			const match = readCommandOutput("pnpm", ["root", "-g"])
-				? undefined
-				: /^(.*[\\/]global[\\/][^\\/]+)[\\/]\.pnpm[\\/]/.exec(getPackageDir());
-			const binDirArgs = match
-				? [`--config.global-bin-dir=${process.env.PNPM_HOME || dirname(dirname(match[1]))}`]
-				: [];
 			return makeSelfUpdateCommand(
 				makeSelfUpdateCommandStep("pnpm", [
 					"install",
 					"-g",
 					"--ignore-scripts",
 					"--config.minimumReleaseAge=0",
-					...binDirArgs,
 					target.installSpec,
 				]),
 				target.packageName === installedPackageName
 					? undefined
-					: makeSelfUpdateCommandStep("pnpm", ["remove", "-g", ...binDirArgs, installedPackageName]),
+					: makeSelfUpdateCommandStep("pnpm", ["remove", "-g", installedPackageName]),
 			);
 		}
 		case "yarn":

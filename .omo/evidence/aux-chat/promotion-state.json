@@ -1,0 +1,23 @@
+{
+  "promotions": [
+    {
+      "position": 3,
+      "status": "completed",
+      "kind": "side",
+      "sourceId": "side_43f313f6-8d09-4ae6-9cfb-50d30b56f052"
+    },
+    {
+      "position": 5,
+      "status": "completed",
+      "kind": "btw",
+      "sourceId": "btw_d60b38de-d0ec-47c7-a84b-043127b50a16"
+    },
+    {
+      "position": 9,
+      "status": "completed",
+      "kind": "btw",
+      "sourceId": "btw_0813eaf7-34ac-4762-a9ee-982b41bf50ce"
+    }
+  ],
+  "duplicateSourceRows": []
+}

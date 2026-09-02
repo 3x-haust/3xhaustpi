@@ -1,28 +1,13 @@
-import {
-	type Component,
-	Editor,
-	type EditorTheme,
-	getCapabilities,
-	Image,
-	KeybindingsManager,
-	type TUI,
-	TUI_KEYBINDINGS,
-} from "@earendil-works/pi-tui";
+import { type Component, Editor, type EditorTheme, getCapabilities, Image, type TUI } from "@earendil-works/pi-tui";
 import { readClipboardText } from "../../coding-agent/src/utils/clipboard.ts";
 import { readClipboardImage } from "../../coding-agent/src/utils/clipboard-image.ts";
 import { resizeImage } from "../../coding-agent/src/utils/image-resize.ts";
+import { APP_KEYBINDINGS } from "./tui-app-keybindings.ts";
 import { composerEditorRowLimit, layoutComposerPreviews, tokenItemAtCursor } from "./tui-composer-preview-layout.ts";
 import type { TuiDisplayImage } from "./tui-image-viewer.ts";
 import { parseTuiMouseInput } from "./tui-mouse.ts";
 import type { TuiRequestImage } from "./tui-operation-types.ts";
 import { accent, muted, selection } from "./tui-text.ts";
-
-declare module "@earendil-works/pi-tui" {
-	interface Keybindings {
-		"app.clipboard.pasteImage": true;
-		"app.image.openAtCursor": true;
-	}
-}
 
 interface ComposerAttachment extends TuiDisplayImage {
 	readonly index: number;
@@ -53,23 +38,11 @@ const DEFAULT_EDITOR_THEME: EditorTheme = {
 		noMatch: muted,
 	},
 };
-const COMPOSER_KEYBINDINGS = new KeybindingsManager({
-	...TUI_KEYBINDINGS,
-	"app.clipboard.pasteImage": {
-		defaultKeys: "ctrl+v",
-		description: "Paste an image or clipboard text",
-	},
-	"app.image.openAtCursor": {
-		defaultKeys: "ctrl+o",
-		description: "Open the image under the cursor",
-	},
-});
-
 class ComposerEditor extends Editor {
 	onPasteImage?: () => void;
 
 	override handleInput(data: string): void {
-		if (COMPOSER_KEYBINDINGS.matches(data, "app.clipboard.pasteImage")) {
+		if (APP_KEYBINDINGS.matches(data, "app.clipboard.pasteImage")) {
 			this.onPasteImage?.();
 			return;
 		}
@@ -199,7 +172,7 @@ export class TuiComposer implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (COMPOSER_KEYBINDINGS.matches(data, "app.image.openAtCursor")) {
+		if (APP_KEYBINDINGS.matches(data, "app.image.openAtCursor")) {
 			const { line, col } = this.editor.getCursor();
 			const editorLine = this.editor.getLines()[line];
 			const target = editorLine ? tokenItemAtCursor(editorLine, col, this.attachments) : undefined;

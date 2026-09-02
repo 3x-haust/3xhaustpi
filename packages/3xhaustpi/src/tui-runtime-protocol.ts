@@ -1,6 +1,9 @@
 import type { AgentProviderEffectBoundaryRequest, AgentToolApprovalRequest } from "./agent-runtime.ts";
 import type { CodingTaskEvent, CodingTaskPatchProposal } from "./coding-runtime.ts";
+import type { TuiAuxiliaryRequestData } from "./tui-auxiliary-types.ts";
 import type { TuiRequestImage } from "./tui-operation-types.ts";
+
+export { createTuiRunRequest } from "./tui-runtime-run-request.ts";
 
 export interface TuiRuntimeHooks {
 	readonly onEvent: (event: CodingTaskEvent) => void;
@@ -23,6 +26,7 @@ export type TuiRuntimeRequest =
 			readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 			readonly allowProjectHooks?: boolean;
 	  }
+	| ({ readonly mode: "auxiliary" } & TuiAuxiliaryRequestData)
 	| {
 			readonly mode: "resume";
 			readonly projectRoot: string;
@@ -83,33 +87,6 @@ export type RuntimeRunParentMessage = (
 ) & { readonly runId: string };
 
 export type RuntimeParentMessage = RuntimeRunParentMessage | { readonly type: "shutdown" };
-
-export function createTuiRunRequest(input: {
-	readonly projectRoot: string;
-	readonly objective: string;
-	readonly selectedModel: {
-		readonly provider: string;
-		readonly model: string;
-		readonly accountId?: string;
-		readonly images?: readonly TuiRequestImage[];
-		readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-	};
-	readonly sessionId?: string;
-	readonly allowProjectHooks?: boolean;
-}): TuiRuntimeRequest {
-	return {
-		mode: "run",
-		projectRoot: input.projectRoot,
-		objective: input.objective,
-		provider: input.selectedModel.provider,
-		model: input.selectedModel.model,
-		...(input.selectedModel.accountId ? { accountId: input.selectedModel.accountId } : {}),
-		...(input.selectedModel.images?.length ? { images: input.selectedModel.images } : {}),
-		...(input.selectedModel.thinkingLevel ? { thinkingLevel: input.selectedModel.thinkingLevel } : {}),
-		...(input.sessionId ? { sessionId: input.sessionId } : {}),
-		...(input.allowProjectHooks ? { allowProjectHooks: true } : {}),
-	};
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

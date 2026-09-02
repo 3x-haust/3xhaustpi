@@ -1,15 +1,17 @@
-import { createProviderRuntime } from "./provider-runtime.ts";
+import { collectProviderConnections } from "./connections.ts";
 import type { TuiAutocompleteController } from "./tui-live-autocomplete.ts";
 import type { TuiDesktopController } from "./tui-live-desktop.ts";
 import { startResourcesCommand, startSkillBrowser } from "./tui-live-resources.ts";
 import { resetLiveContextTelemetry, type TuiLiveCore } from "./tui-live-state.ts";
 import type { TuiLiveView } from "./tui-live-view.ts";
+import { eligibleProviderModelEntries } from "./tui-model-availability.ts";
 import { SettingsOverlay, type SettingsOverlaySnapshot, type SettingsReasoningLevel } from "./tui-settings-overlay.ts";
 
-function snapshot(core: TuiLiveCore): SettingsOverlaySnapshot {
-	const models = createProviderRuntime()
-		.getProviders()
-		.flatMap((provider) => provider.getModels().map((model) => ({ provider: provider.id, model: model.id })));
+async function snapshot(core: TuiLiveCore): Promise<SettingsOverlaySnapshot> {
+	const models = eligibleProviderModelEntries(
+		await collectProviderConnections(),
+		core.database.listTuiAccountExclusions(core.state.projectRoot),
+	);
 	return {
 		models,
 		currentModel: { provider: core.state.provider, model: core.state.model },
@@ -18,13 +20,13 @@ function snapshot(core: TuiLiveCore): SettingsOverlaySnapshot {
 	};
 }
 
-export function startSettings(
+export async function startSettings(
 	core: TuiLiveCore,
 	view: TuiLiveView,
 	autocomplete: TuiAutocompleteController,
 	desktop: TuiDesktopController,
 	initialDepth: "root" | "model" = "root",
-): void {
+): Promise<void> {
 	const columns = process.stdout.columns || 120;
 	if (columns < 40) {
 		view.appendText(
@@ -40,7 +42,7 @@ export function startSettings(
 		action();
 	};
 	const overlay = new SettingsOverlay(
-		snapshot(core),
+		await snapshot(core),
 		() => Math.max(1, Math.floor((process.stdout.rows || 36) * 0.4)),
 		{
 			selectModel: async ({ provider, model }) => {
@@ -49,12 +51,12 @@ export function startSettings(
 				resetLiveContextTelemetry(core.state);
 				autocomplete.installAutocomplete();
 				view.updateChrome(`model ${model}`);
-				return snapshot(core);
+				return await snapshot(core);
 			},
 			selectReasoning: async (level: SettingsReasoningLevel) => {
 				core.state.thinkingLevel = level;
 				view.updateChrome(`reasoning ${level}`);
-				return snapshot(core);
+				return await snapshot(core);
 			},
 			setCacheWarm: async (enabled) => {
 				core.database.setTuiProjectPreference(
@@ -64,7 +66,7 @@ export function startSettings(
 				);
 				core.cacheWarm.setEnabled(enabled);
 				view.updateChrome(`cache warming ${enabled ? "on" : "off"}`);
-				return snapshot(core);
+				return await snapshot(core);
 			},
 			openSkills: () => closeThen(() => startSkillBrowser(core, view)),
 			openMcpServers: () => closeThen(() => startResourcesCommand(core, view)),

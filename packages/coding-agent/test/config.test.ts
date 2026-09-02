@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -147,6 +147,13 @@ function createFakeBunScript(bunBin: string): string {
 
 describe("detectInstallMethod", () => {
 	test("detects pnpm from Windows .pnpm install paths", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-pnpm-path-detection-"));
+		const marker = join(root, "pnpm-invoked");
+		const command = join(root, "pnpm");
+		writeFileSync(command, `#!/bin/sh\n: > '${marker}'\nprintf '%s\\n' '/unexpected/root'\n`);
+		chmodSync(command, 0o755);
+		tempDir = root;
+		process.env.PATH = `${root}${delimiter}${originalPath ?? ""}`;
 		setExecPath(
 			"C:\\Users\\Admin\\Documents\\pnpm-repository\\global\\5\\.pnpm\\@earendil-works+pi-coding-agent@0.67.68\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
 		);
@@ -155,6 +162,7 @@ describe("detectInstallMethod", () => {
 		expect(getUpdateInstruction("@earendil-works/pi-coding-agent")).toBe(
 			"Run: pnpm install -g --ignore-scripts --config.minimumReleaseAge=0 @earendil-works/pi-coding-agent",
 		);
+		expect(existsSync(marker)).toBe(false);
 	});
 
 	test("does not self-update unknown wrapper installs", () => {

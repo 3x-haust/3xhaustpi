@@ -20,6 +20,19 @@ export interface TuiRequestImage {
 	readonly mimeType: "image/png" | "image/jpeg" | "image/webp";
 }
 
+export interface TuiPromotionSource {
+	readonly kind: "side" | "btw";
+	readonly sourceId: string;
+	readonly question: string;
+	readonly answer: string;
+	readonly completedAt: string;
+}
+
+export interface TuiPromotionPayload {
+	readonly version: 1;
+	readonly source: TuiPromotionSource;
+}
+
 export interface CompareAndSwapTuiConversationHeadInput {
 	readonly expectedGeneration: number;
 	readonly sessionId: string | null;
@@ -51,9 +64,10 @@ export interface TuiRequest {
 	readonly objective: string;
 	readonly images?: readonly TuiRequestImage[];
 	readonly position: number;
-	readonly status: "queued" | "running";
+	readonly status: "queued" | "running" | "completed" | "failed";
 	readonly createdAt: string;
 	readonly binding: TuiDispatchBinding | null;
+	readonly promotion?: TuiPromotionPayload;
 }
 
 export interface ClaimedTuiRequest extends TuiRequest {
@@ -69,6 +83,7 @@ export interface EnqueueTuiRequestInput {
 	readonly objective: string;
 	readonly images?: readonly TuiRequestImage[];
 	readonly binding?: TuiDispatchBinding;
+	readonly promotion?: TuiPromotionPayload;
 }
 
 export interface ClaimTuiRequestOptions {
@@ -125,6 +140,9 @@ export interface TuiRequestRow {
 	readonly model: string | null;
 	readonly account_id: string | null;
 	readonly thinking_level: string | null;
+	readonly promotion_kind: string | null;
+	readonly promotion_id: string | null;
+	readonly promotion_json: string | null;
 }
 
 export interface RunningTuiRequestRow {

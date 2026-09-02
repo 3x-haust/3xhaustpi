@@ -29,6 +29,33 @@ export function providerAccountCacheAffinity(
 	return `${providerCacheAffinity(projectRoot, provider, model, systemPrompt)}${accountAffinity}`;
 }
 
+export function providerAuxiliaryCacheAffinity(
+	kind: "side" | "btw",
+	identity: string,
+	projectRoot: string,
+	provider: string,
+	model: string,
+	accountId: string | undefined,
+	systemPrompt: string,
+): string {
+	const digest = createHash("sha256")
+		.update(
+			[
+				"auxiliary",
+				kind,
+				identity,
+				projectRoot,
+				provider,
+				model,
+				accountId ?? "",
+				createHash("sha256").update(systemPrompt).digest("hex"),
+			].join("\0"),
+		)
+		.digest("hex")
+		.slice(0, 32);
+	return `3xhaustpi_aux_${digest}`;
+}
+
 export function cacheRoutingOptions(
 	cacheAffinity: string,
 	systemPrompt: string | undefined,

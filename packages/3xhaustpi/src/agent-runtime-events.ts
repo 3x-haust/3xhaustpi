@@ -1,3 +1,4 @@
+import type { StopReason } from "@earendil-works/pi-ai";
 import type { AgentSessionEventListener } from "@earendil-works/pi-coding-agent";
 import type { CodingTaskEvent, CodingTaskUsage } from "./coding-runtime.ts";
 
@@ -17,7 +18,14 @@ function usageOf(message: {
 
 export interface AgentEventProjection {
 	readonly listener: AgentSessionEventListener;
+	readonly terminal: () => AgentTerminalState | undefined;
 	readonly usage: () => CodingTaskUsage;
+}
+
+export interface AgentTerminalState {
+	readonly errorMessage: string | undefined;
+	readonly stopReason: StopReason;
+	readonly textCharacters: number;
 }
 
 export function createAgentEventProjection(
@@ -31,9 +39,11 @@ export function createAgentEventProjection(
 	let outputTokens = 0;
 	let cacheReadTokens = 0;
 	let cacheWriteTokens = 0;
+	let terminal: AgentTerminalState | undefined;
 	const toolStartedAt = new Map<string, number>();
 
 	return {
+		terminal: () => terminal,
 		usage: () => lastUsage,
 		listener: (event) => {
 			if (event.type === "message_start" && event.message.role === "assistant") {
@@ -51,6 +61,11 @@ export function createAgentEventProjection(
 				const assistantText = event.message.content
 					.flatMap((content) => (content.type === "text" ? [content.text] : []))
 					.join("");
+				terminal = {
+					errorMessage: event.message.errorMessage,
+					stopReason: event.message.stopReason,
+					textCharacters: assistantText.trim().length,
+				};
 				if (assistantText.trim().length > 0) onEvent({ type: "assistant.message", text: assistantText });
 				const usage = usageOf(event.message);
 				inputTokens += usage.input ?? 0;

@@ -3,10 +3,41 @@ import { parseImagePayloads } from "./image-payload.ts";
 import type {
 	RunningTuiRequestRow,
 	TuiDispatchBinding,
+	TuiPromotionPayload,
 	TuiRequest,
 	TuiRequestLease,
 	TuiRequestRow,
 } from "./tui-operation-types.ts";
+
+function parsePromotion(row: TuiRequestRow): TuiPromotionPayload | undefined {
+	if (row.promotion_json === null && row.promotion_kind === null && row.promotion_id === null) return undefined;
+	if (row.promotion_json === null || row.promotion_kind === null || row.promotion_id === null) {
+		throw new Error("TUI promotion fields are incomplete");
+	}
+	const value: unknown = JSON.parse(row.promotion_json);
+	if (value === null || typeof value !== "object" || Reflect.get(value, "version") !== 1) {
+		throw new Error("Invalid TUI promotion payload");
+	}
+	const source = Reflect.get(value, "source");
+	if (source === null || typeof source !== "object") throw new Error("Invalid TUI promotion source");
+	const kind = Reflect.get(source, "kind");
+	const sourceId = Reflect.get(source, "sourceId");
+	const question = Reflect.get(source, "question");
+	const answer = Reflect.get(source, "answer");
+	const completedAt = Reflect.get(source, "completedAt");
+	if (
+		(kind !== "side" && kind !== "btw") ||
+		typeof sourceId !== "string" ||
+		typeof question !== "string" ||
+		typeof answer !== "string" ||
+		typeof completedAt !== "string" ||
+		kind !== row.promotion_kind ||
+		sourceId !== row.promotion_id
+	) {
+		throw new Error("Invalid TUI promotion source fields");
+	}
+	return { version: 1, source: { kind, sourceId, question, answer, completedAt } };
+}
 
 export function isoTimestamp(value?: string): string {
 	const date = value === undefined ? new Date() : new Date(value);
@@ -29,15 +60,18 @@ export function mapTuiRequest(row: TuiRequestRow): TuiRequest {
 						: {}),
 				}
 			: null;
+	const promotion = parsePromotion(row);
+	const images = parseImagePayloads(row.images_json ? JSON.parse(row.images_json) : []);
 	return {
 		id: row.request_id,
 		projectPath: row.canonical_path,
 		objective: row.objective,
-		images: parseImagePayloads(row.images_json ? JSON.parse(row.images_json) : []),
+		...(images.length ? { images } : {}),
 		position: row.position,
 		status: row.status,
 		createdAt: row.created_at,
 		binding,
+		...(promotion ? { promotion } : {}),
 	};
 }
 

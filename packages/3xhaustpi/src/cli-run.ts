@@ -78,6 +78,7 @@ async function runInteractive(command: RunCommand, project: string): Promise<voi
 					: `Working tree changed during review; findings may be stale.\n\n${answer}`;
 			},
 			runSideQuestion: (request) => runtimeHost.runSideQuestion(request),
+			runAuxiliary: (request) => runtimeHost.runAuxiliary(request),
 			runTask: async (projectRoot, objective, hooks, selectedModel) => {
 				let effectAcknowledged = false;
 				try {

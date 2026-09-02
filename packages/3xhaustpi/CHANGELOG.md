@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added one persistent project-scoped Side Chat with isolated history, plus process-local multi-turn BTW that observes a fresh read-only snapshot of active main work.
+- Added reviewed `Ctrl+R` promotion from Side Chat and BTW into the durable FIFO main queue, with source-level deduplication and restart-safe persistence.
+- Added user-remappable auxiliary controls through `~/.3xhaust/keybindings.json`.
+
+### Changed
+
+- Model settings, autocomplete, and hidden provider selection now expose only models backed by currently enabled logged-in accounts.
+- Removed product branding from the normal TUI footer while preserving the tiny-terminal exit affordance.
+
+### Fixed
+
+- Provider error, aborted, empty, missing, and credential-discovery outcomes now produce an assistant response or actionable visible TUI error instead of settling silently.
+- Fenced Side Chat completion and termination by active leases, reset BTW history across projects, sanitized auxiliary errors, and canceled pending auxiliary input during close or shutdown.
+
 ## [0.2.3] - 2026-08-31
 
 ### Added

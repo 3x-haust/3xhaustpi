@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type RuntimeSessionManager = {
@@ -44,15 +44,34 @@ function createSession(
 	model = { provider: "persisted-provider", id: "persisted-model", api: "openai-responses" },
 	thinkingLevel: "off" | "low" | "medium" | "high" = "high",
 ) {
+	let subscriber: ((event: unknown) => void) | undefined;
+	const emitAssistant = () => {
+		const message = {
+			role: "assistant",
+			content: [{ type: "text", text: "Done" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			stopReason: "stop",
+			timestamp: 1,
+		};
+		subscriber?.({ type: "message_start", message });
+		subscriber?.({ type: "message_end", message });
+	};
 	return {
 		agent: { streamFunction: vi.fn() },
 		model,
 		thinkingLevel,
 		sessionManager,
-		subscribe: vi.fn(() => vi.fn()),
-		prompt: vi.fn(async () => {}),
+		subscribe: vi.fn((listener) => {
+			subscriber = listener;
+			return vi.fn();
+		}),
+		prompt: vi.fn(async () => emitAssistant()),
 		abort: vi.fn(async () => {}),
 		dispose: vi.fn(),
+		emitAssistant,
 	};
 }
 
@@ -68,6 +87,7 @@ const mocks = vi.hoisted(() => ({
 	delegateObjective: new Map<"objective", string>().get("objective"),
 	listSessions: vi.fn(),
 	openSessionManager: vi.fn(),
+	runAuxiliaryQuestion: vi.fn(),
 	runEphemeralQuestion: vi.fn(),
 	runtimes: [] as RuntimeMock[],
 }));
@@ -118,6 +138,10 @@ vi.mock("../src/agent-ephemeral.ts", () => ({
 	runEphemeralQuestion: mocks.runEphemeralQuestion,
 }));
 
+vi.mock("../src/agent-auxiliary.ts", () => ({
+	runAuxiliaryQuestion: mocks.runAuxiliaryQuestion,
+}));
+
 import { AgentRuntimeHost } from "../src/agent-runtime.ts";
 import { ProjectAgentRuntime } from "../src/agent-runtime-project.ts";
 import type { AgentTaskRequest, AgentTaskResult } from "../src/agent-runtime-types.ts";
@@ -143,6 +167,17 @@ describe("project-scoped agent session runtime ownership", () => {
 				return "side answer";
 			},
 		);
+		mocks.runAuxiliaryQuestion.mockImplementation(
+			async (
+				_runtime: unknown,
+				_request: unknown,
+				_userRoot: string,
+				registerCacheAffinity: (affinity: string) => void,
+			) => {
+				registerCacheAffinity("auxiliary-affinity");
+				return "auxiliary answer";
+			},
+		);
 		mocks.createAgentSessionServices.mockImplementation(async ({ cwd }) => ({
 			cwd,
 			modelRuntime: {
@@ -162,6 +197,7 @@ describe("project-scoped agent session runtime ownership", () => {
 				if (objective && mocks.delegate) {
 					await mocks.delegate({ workId: "child_work", objective });
 				}
+				session.emitAssistant();
 			});
 			return { session };
 		});
@@ -322,6 +358,38 @@ describe("project-scoped agent session runtime ownership", () => {
 		await host.close();
 
 		expect(mocks.cleanupSessionResources).toHaveBeenCalledWith("side-question-affinity");
+	});
+
+	it("runs auxiliary work on its separate project queue and owns its cache affinity", async () => {
+		const host = new AgentRuntimeHost({ userRoot: "/tmp/user" });
+		const controller = new AbortController();
+		expect(
+			await host.runAuxiliary({
+				kind: "side",
+				identity: "side_chat_1",
+				projectRoot: "/tmp/project",
+				question: "Remember SIDE_842",
+				history: [],
+				provider: "openai-codex",
+				model: "gpt-5.6-terra",
+				thinkingLevel: "low",
+				signal: controller.signal,
+			}),
+		).toBe("auxiliary answer");
+
+		await host.close();
+
+		expect(mocks.runAuxiliaryQuestion).toHaveBeenCalledWith(
+			expect.any(Promise),
+			expect.objectContaining({
+				kind: "side",
+				identity: "side_chat_1",
+				projectRoot: resolve("/tmp/project"),
+			}),
+			"/tmp/user",
+			expect.any(Function),
+		);
+		expect(mocks.cleanupSessionResources).toHaveBeenCalledWith("auxiliary-affinity");
 	});
 
 	it("propagates the root cancellation signal into delegated children", async () => {

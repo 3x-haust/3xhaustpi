@@ -8,6 +8,7 @@ import type {
 	DesktopComputerAction,
 } from "./desktop-runtime.ts";
 import type { WorkspaceSnapshot } from "./state.ts";
+import type { TuiAuxiliaryRequestData } from "./tui-auxiliary-types.ts";
 import type { TuiRequestImage } from "./tui-operation-types.ts";
 
 export interface TuiViewState {
@@ -78,6 +79,10 @@ export interface TuiSideQuestionRequest {
 	readonly signal: AbortSignal;
 }
 
+export interface TuiAuxiliaryRequest extends TuiAuxiliaryRequestData {
+	readonly signal: AbortSignal;
+}
+
 export interface TuiCompactConversationRequest {
 	readonly projectRoot: string;
 	readonly sessionId: string;
@@ -116,6 +121,7 @@ export interface RunTuiInput {
 	readonly providerConfigured?: boolean;
 	readonly desktopHost?: TuiDesktopHost;
 	readonly runSideQuestion?: (request: TuiSideQuestionRequest) => Promise<string>;
+	readonly runAuxiliary?: (request: TuiAuxiliaryRequest) => Promise<string>;
 	readonly compactConversation?: (request: TuiCompactConversationRequest) => Promise<TuiCompactionResult>;
 	readonly warmCache?: (request: TuiCacheWarmRequest) => Promise<CacheWarmResult>;
 	readonly reviewWorkingTree?: (request: TuiWorkingTreeReviewRequest) => Promise<string>;

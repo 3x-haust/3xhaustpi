@@ -7,6 +7,7 @@ const expectedNames = [
 	"new",
 	"resume",
 	"goal",
+	"side",
 	"btw",
 	"compact",
 	"rewind",

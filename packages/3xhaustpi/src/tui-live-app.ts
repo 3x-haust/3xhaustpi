@@ -1,4 +1,5 @@
 import { quarantineInvalidAgentConversationHead } from "./agent-session-catalog.ts";
+import { configureTuiAppKeybindings } from "./tui-app-keybindings.ts";
 import { approvalFitsTerminal } from "./tui-approval.ts";
 import {
 	bindTuiSigint,
@@ -9,6 +10,7 @@ import {
 import type { RunTuiInput } from "./tui-contract.ts";
 import { TuiImageViewer } from "./tui-image-viewer.ts";
 import { createTuiAutocompleteController } from "./tui-live-autocomplete.ts";
+import { createTuiAuxiliaryController } from "./tui-live-auxiliary.ts";
 import { createTuiDesktopController } from "./tui-live-desktop.ts";
 import { createTuiTaskEvents } from "./tui-live-events.ts";
 import { createTuiLiveCore } from "./tui-live-state.ts";
@@ -20,6 +22,7 @@ import { enableTuiMouseTracking, parseTuiMouseInput } from "./tui-mouse.ts";
 import { muted, success, warning } from "./tui-text.ts";
 
 export async function runTui(input: RunTuiInput): Promise<void> {
+	configureTuiAppKeybindings();
 	const core = createTuiLiveCore(input);
 	const { state } = core;
 	const imageViewer = new TuiImageViewer(core.ui);
@@ -38,12 +41,16 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 	const workspace = createTuiWorkspaceCommands(core, view);
 	const desktop = createTuiDesktopController(core, view);
 	const autocomplete = createTuiAutocompleteController(core, workspace);
+	const auxiliary = createTuiAuxiliaryController(core, view, { drainQueue: () => tasks.drainQueue() });
 	let disableMouseTracking: (() => void) | undefined;
 	const requestExit = () => {
 		disableMouseTracking?.();
 		state.active = false;
 		state.activeController?.abort();
 		state.desktopController?.abort();
+		void auxiliary.shutdown().finally(() => {
+			if (!state.activeExecution && !state.desktopOperation) core.finish();
+		});
 		if (state.approvalResolve) {
 			const resolve = state.approvalResolve;
 			state.approvalResolve = undefined;
@@ -54,10 +61,10 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 		}
 		core.ui.stop();
 		process.exitCode = 0;
-		if (!state.activeExecution && !state.desktopOperation) core.finish();
+		if (!state.activeExecution && !state.desktopOperation && !auxiliary.isRunning()) core.finish();
 	};
 	autocomplete.installAutocomplete();
-	installTuiSubmission({ core, view, tasks, workspace, desktop, autocomplete, requestExit });
+	installTuiSubmission({ core, view, tasks, workspace, desktop, autocomplete, auxiliary, requestExit });
 	core.ui.addInputListener((value) => {
 		const imageViewerOpen = imageViewer.isOpen();
 		const action = resolveTuiInputAction(value, {
@@ -67,7 +74,7 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 				process.stdout.columns || 120,
 				process.stdout.rows || 36,
 			),
-			active: state.activeController !== undefined || state.desktopController !== undefined,
+			active: state.activeController !== undefined || state.desktopController !== undefined || auxiliary.isRunning(),
 			composerText: core.editor.getText(),
 			pendingCount: state.queuedRequests.length,
 			overlayOpen: core.ui.hasOverlay(),
@@ -151,6 +158,7 @@ export async function runTui(input: RunTuiInput): Promise<void> {
 		imageViewer.close();
 		unbindSigint();
 		if (view.workAnimationTimer) clearInterval(view.workAnimationTimer);
+		await auxiliary.shutdown();
 		await core.cacheWarm.close();
 		core.database.close();
 	}

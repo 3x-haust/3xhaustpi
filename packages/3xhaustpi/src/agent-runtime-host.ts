@@ -1,9 +1,11 @@
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { runAuxiliaryQuestion } from "./agent-auxiliary.ts";
 import { runEphemeralQuestion } from "./agent-ephemeral.ts";
 import { ProjectAgentRuntime } from "./agent-runtime-project.ts";
 import { canonicalProjectRoot } from "./agent-runtime-session-lookup.ts";
 import type {
+	AgentAuxiliaryRequest,
 	AgentCacheWarmRequest,
 	AgentCacheWarmResult,
 	AgentCompactConversationRequest,
@@ -24,6 +26,7 @@ export interface AgentRuntimeHostOptions {
 export class AgentRuntimeHost {
 	private readonly modelRuntimePromises = new Map<string, Promise<ModelRuntime>>();
 	private readonly projectQueue = new ProjectSerialQueue();
+	private readonly auxiliaryQueue = new ProjectSerialQueue();
 	private readonly runtimesByProject = new Map<string, ProjectAgentRuntime>();
 	private readonly cacheAffinities = new Set<string>();
 	private readonly activeTasks = new Set<Promise<unknown>>();
@@ -80,6 +83,21 @@ export class AgentRuntimeHost {
 		return runEphemeralQuestion(this.getModelRuntime(request.accountId), request, this.userRoot, (affinity) =>
 			this.cacheAffinities.add(affinity),
 		);
+	}
+
+	runAuxiliary(request: AgentAuxiliaryRequest): Promise<string> {
+		if (this.closed) return Promise.reject(new Error("AgentRuntimeHost is closed"));
+		const projectRoot = canonicalProjectRoot(request.projectRoot);
+		const task = this.auxiliaryQueue.run(projectRoot, () =>
+			runAuxiliaryQuestion(
+				this.getModelRuntime(request.accountId),
+				{ ...request, projectRoot },
+				this.userRoot,
+				(affinity) => this.cacheAffinities.add(affinity),
+			),
+		);
+		this.activeTasks.add(task);
+		return task.finally(() => this.activeTasks.delete(task));
 	}
 
 	async compactConversation(request: AgentCompactConversationRequest): Promise<AgentCompactConversationResult> {
@@ -150,6 +168,7 @@ export class AgentRuntimeHost {
 	private async closeHost(): Promise<void> {
 		await Promise.allSettled([...this.activeTasks]);
 		await this.projectQueue.idle();
+		await this.auxiliaryQueue.idle();
 		const runtimes = [...this.runtimesByProject.values()];
 		this.runtimesByProject.clear();
 		this.modelRuntimePromises.clear();

@@ -16,6 +16,7 @@
 
 - Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
 - Fixed compaction serialization to preserve tool identities, operational arguments, failure status, and both ends of truncated output while omitting assistant reasoning and replacing oversized payloads with stable digests.
+- Fixed self-update detection for already-identifiable pnpm install paths so it does not synchronously probe an ambient package manager.
 
 ## [0.82.1] - 2026-07-25
 

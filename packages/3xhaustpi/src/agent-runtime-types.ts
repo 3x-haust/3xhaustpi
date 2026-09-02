@@ -1,6 +1,7 @@
 import type { AgentToolApprovalRequest } from "./agent-approved-tools.ts";
 import type { CacheWarmResult } from "./cache-warm-controller.ts";
 import type { CodingTaskEvent, CodingTaskImage, CodingTaskPatchProposal, CodingTaskUsage } from "./coding-runtime.ts";
+import type { TuiAuxiliaryRequestData } from "./tui-auxiliary-types.ts";
 
 export interface AgentProviderEffectBoundaryRequest {
 	readonly effectId: string;
@@ -15,6 +16,10 @@ export interface AgentEphemeralQuestionRequest {
 	readonly model: string;
 	readonly accountId?: string;
 	readonly thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	readonly signal: AbortSignal;
+}
+
+export interface AgentAuxiliaryRequest extends TuiAuxiliaryRequestData {
 	readonly signal: AbortSignal;
 }
 

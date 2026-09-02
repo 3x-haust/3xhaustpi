@@ -8,6 +8,7 @@ import {
 	AgentSessionNotFoundError,
 	cacheRoutingOptions,
 	openAgentSessionManager,
+	providerAuxiliaryCacheAffinity,
 	providerCacheAffinity,
 } from "../src/agent-runtime.ts";
 import { installProviderCacheRouting } from "../src/agent-runtime-provider.ts";
@@ -22,6 +23,75 @@ describe("native agent cache routing", () => {
 			providerCacheAffinity("/project", "openai-codex", "gpt-5.6-terra", "SYSTEM_B"),
 		);
 		expect(first).toMatch(/^3xhaustpi_[0-9a-f]{32}$/u);
+	});
+
+	it("isolates Side Chat and BTW cache identity from main and each other", () => {
+		const main = providerCacheAffinity("/project", "openai-codex", "gpt-5.6-terra", "SYSTEM");
+		const side = providerAuxiliaryCacheAffinity(
+			"side",
+			"side_chat_1",
+			"/project",
+			"openai-codex",
+			"gpt-5.6-terra",
+			"account-a",
+			"SYSTEM",
+		);
+		expect(
+			providerAuxiliaryCacheAffinity(
+				"side",
+				"side_chat_1",
+				"/project",
+				"openai-codex",
+				"gpt-5.6-terra",
+				"account-a",
+				"SYSTEM",
+			),
+		).toBe(side);
+		expect(side).not.toBe(main);
+		expect(
+			providerAuxiliaryCacheAffinity(
+				"btw",
+				"btw_run_1",
+				"/project",
+				"openai-codex",
+				"gpt-5.6-terra",
+				"account-a",
+				"SYSTEM",
+			),
+		).not.toBe(side);
+		expect(
+			providerAuxiliaryCacheAffinity(
+				"side",
+				"side_chat_2",
+				"/project",
+				"openai-codex",
+				"gpt-5.6-terra",
+				"account-a",
+				"SYSTEM",
+			),
+		).not.toBe(side);
+		expect(
+			providerAuxiliaryCacheAffinity(
+				"side",
+				"side_chat_1",
+				"/project",
+				"openai-codex",
+				"gpt-5.6-terra",
+				"account-b",
+				"SYSTEM",
+			),
+		).not.toBe(side);
+		expect(
+			providerAuxiliaryCacheAffinity(
+				"side",
+				"side_chat_1",
+				"/project",
+				"openai-codex",
+				"gpt-5.6-terra",
+				"account-a",
+				"SYSTEM_CHANGED",
+			),
+		).not.toBe(side);
 	});
 
 	it("restores one required native policy before the provider call", () => {

@@ -1,13 +1,16 @@
 import { basename } from "node:path";
 import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
+import { collectProviderConnections } from "./connections.ts";
 import { createProviderRuntime } from "./provider-runtime.ts";
 import { TUI_PRIMARY_COMMANDS } from "./tui-command-catalog.ts";
 import { terminalBelowFloor } from "./tui-layout-frame.ts";
 import type { TuiLiveCore } from "./tui-live-state.ts";
 import type { TuiWorkspaceCommands } from "./tui-live-workspace.ts";
+import { eligibleProviderModelEntries } from "./tui-model-availability.ts";
 
 export interface TuiAutocompleteController {
-	currentProviderModels(): ReturnType<ReturnType<typeof createProviderRuntime>["getModels"]>;
+	currentProviderModels(): Promise<ReturnType<ReturnType<typeof createProviderRuntime>["getModels"]>>;
+	eligibleProviderModels(): Promise<readonly { readonly provider: string; readonly model: string }[]>;
 	installAutocomplete(): void;
 }
 
@@ -16,7 +19,21 @@ export function createTuiAutocompleteController(
 	workspace: TuiWorkspaceCommands,
 ): TuiAutocompleteController {
 	const { state } = core;
-	const currentProviderModels = () => createProviderRuntime().getModels(state.provider);
+	const eligibleProviderModels = async () =>
+		eligibleProviderModelEntries(
+			await collectProviderConnections(),
+			core.database.listTuiAccountExclusions(state.projectRoot),
+		);
+	const currentProviderModels = async () => {
+		const eligible = new Set(
+			(await eligibleProviderModels())
+				.filter(({ provider }) => provider === state.provider)
+				.map(({ model }) => model),
+		);
+		return createProviderRuntime()
+			.getModels(state.provider)
+			.filter(({ id }) => eligible.has(id));
+	};
 	const installAutocomplete = () => {
 		const commands: SlashCommand[] = TUI_PRIMARY_COMMANDS.map((command) => {
 			if (command.name === "resume") {
@@ -62,5 +79,5 @@ export function createTuiAutocompleteController(
 		};
 		core.editor.setAutocompleteProvider(floorAwareProvider);
 	};
-	return { currentProviderModels, installAutocomplete };
+	return { currentProviderModels, eligibleProviderModels, installAutocomplete };
 }

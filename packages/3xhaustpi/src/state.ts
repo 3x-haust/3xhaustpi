@@ -28,6 +28,8 @@ import type {
 	TuiRequest,
 	TuiRequestCompletionStatus,
 } from "./tui-operation-types.ts";
+import { migrateTuiSideChatSchema } from "./tui-side-chat-schema.ts";
+import { TuiSideChatStore } from "./tui-side-chat-store.ts";
 
 export type { TuiProjectGoal, TuiProjectGoalStatus } from "./state-goal-store.ts";
 export type { BeginRunInput, ExplicitResumeClaim, ResumeCheckpoint, WorkspaceSnapshot } from "./state-types.ts";
@@ -51,6 +53,7 @@ export class ThreeXhaustState {
 	readonly #journal: StateJournalStore;
 	readonly #workspace: StateWorkspaceStore;
 	readonly #tuiOperations: TuiOperationStore;
+	readonly sideChats: TuiSideChatStore;
 	readonly #goals: StateGoalStore;
 
 	constructor(path = resolveStatePath()) {
@@ -60,7 +63,9 @@ export class ThreeXhaustState {
 			"PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;",
 		);
 		migrateStateSchema(this.#database);
+		migrateTuiSideChatSchema(this.#database);
 		this.#tuiOperations = new TuiOperationStore(this.#database);
+		this.sideChats = new TuiSideChatStore(this.#database);
 		this.#goals = new StateGoalStore(this.#database);
 		this.#runs = new StateRunStore(this.#database);
 		this.#resume = new StateResumeStore(this.#database);

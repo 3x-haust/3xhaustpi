@@ -26,11 +26,21 @@ export class TuiOperationQueue {
 			const existing = this.#database
 				.prepare(
 					`SELECT request_id, canonical_path, objective, images_json, position, status, created_at,
-						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level
+						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level,
+						promotion_kind, promotion_id, promotion_json
 					 FROM tui_request_queue
-					 WHERE canonical_path = ? AND fingerprint = ? AND status IN ('queued', 'running')`,
+					 WHERE canonical_path = ? AND ${
+							input.promotion
+								? "promotion_kind = ? AND promotion_id = ?"
+								: "fingerprint = ? AND status IN ('queued', 'running')"
+						}`,
 				)
-				.get(input.projectPath, input.fingerprint) as TuiRequestRow | undefined;
+				.get(
+					input.projectPath,
+					...(input.promotion
+						? [input.promotion.source.kind, input.promotion.source.sourceId]
+						: [input.fingerprint]),
+				) as TuiRequestRow | undefined;
 			if (existing) {
 				this.#database.exec("COMMIT");
 				return { request: mapTuiRequest(existing), inserted: false };
@@ -45,8 +55,8 @@ export class TuiOperationQueue {
 					`INSERT INTO tui_request_queue(
 						request_id, canonical_path, position, fingerprint, objective, images_json,
 						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level,
-						status, created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+						promotion_kind, promotion_id, promotion_json, status, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
 				)
 				.run(
 					input.requestId,
@@ -62,6 +72,9 @@ export class TuiOperationQueue {
 					input.binding?.model ?? null,
 					input.binding?.accountId ?? null,
 					input.binding?.thinkingLevel ?? null,
+					input.promotion?.source.kind ?? null,
+					input.promotion?.source.sourceId ?? null,
+					input.promotion ? JSON.stringify(input.promotion) : null,
 					now,
 					now,
 				);
@@ -76,6 +89,7 @@ export class TuiOperationQueue {
 					status: "queued",
 					createdAt: now,
 					binding: input.binding ?? null,
+					...(input.promotion ? { promotion: input.promotion } : {}),
 				},
 				inserted: true,
 			};
@@ -89,7 +103,8 @@ export class TuiOperationQueue {
 		const rows = this.#database
 			.prepare(
 				`SELECT request_id, canonical_path, objective, images_json, position, status, created_at,
-					binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level
+					binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level,
+					promotion_kind, promotion_id, promotion_json
 				 FROM tui_request_queue
 				 WHERE canonical_path = ? AND status IN ('queued', 'running') ORDER BY position`,
 			)
@@ -104,7 +119,8 @@ export class TuiOperationQueue {
 			const row = this.#database
 				.prepare(
 					`SELECT request_id, canonical_path, objective, images_json, position, status, created_at,
-						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level
+						binding_version, conversation_generation, session_id, provider, model, account_id, thinking_level,
+						promotion_kind, promotion_id, promotion_json
 					 FROM tui_request_queue
 					 WHERE canonical_path = ? AND status = 'queued'
 					 ORDER BY position DESC LIMIT 1`,

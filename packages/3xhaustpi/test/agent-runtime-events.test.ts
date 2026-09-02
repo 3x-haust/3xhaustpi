@@ -48,6 +48,7 @@ const usage = {
 };
 
 describe("native agent event projection", () => {
+	let emitSessionEvent: (event: unknown) => void;
 	let sessionMock: {
 		readonly model: { readonly provider: string; readonly id: string; readonly api: string };
 		readonly sessionManager: { readonly getSessionId: () => string };
@@ -76,6 +77,7 @@ describe("native agent event projection", () => {
 			api: "openai-codex-responses",
 		};
 		let subscriber: ((event: unknown) => void) | undefined;
+		emitSessionEvent = (event) => subscriber?.(event);
 		sessionMock = {
 			model,
 			sessionManager: { getSessionId: () => "session_fixture" },
@@ -136,6 +138,23 @@ describe("native agent event projection", () => {
 		});
 	});
 
+	function emitAssistantTerminal(stopReason: string, text: string, errorMessage?: string): void {
+		const message = {
+			role: "assistant",
+			content: text ? [{ type: "text", text }] : [],
+			api: sessionMock.model.api,
+			provider: sessionMock.model.provider,
+			model: sessionMock.model.id,
+			responseId: "response_terminal",
+			usage: { ...usage, input: 0, output: 0, totalTokens: 0 },
+			stopReason,
+			...(errorMessage ? { errorMessage } : {}),
+			timestamp: 1,
+		};
+		emitSessionEvent({ type: "message_start", message });
+		emitSessionEvent({ type: "message_end", message });
+	}
+
 	it("emits the final assistant text when the provider sends no text deltas", async () => {
 		const events: CodingTaskEvent[] = [];
 
@@ -159,6 +178,57 @@ describe("native agent event projection", () => {
 		);
 	});
 
+	it("rejects a provider error terminal instead of completing silently", async () => {
+		const events: CodingTaskEvent[] = [];
+		sessionMock.prompt.mockImplementationOnce(async () => {
+			emitAssistantTerminal("error", "", "401 unauthorized");
+		});
+
+		await expect(
+			runAgentTask({
+				projectRoot: "/tmp/project",
+				objective: "안녕",
+				provider: "openai-codex",
+				model: "gpt-5.3-codex-spark",
+				onEvent: (event) => events.push(event),
+			}),
+		).rejects.toThrow(/401 unauthorized/u);
+
+		expect(events.some((event) => event.type === "session.completed")).toBe(false);
+	});
+
+	it("rejects an internal provider abort when the outer task was not canceled", async () => {
+		sessionMock.prompt.mockImplementationOnce(async () => {
+			emitAssistantTerminal("aborted", "", "provider stream aborted");
+		});
+
+		await expect(
+			runAgentTask({
+				projectRoot: "/tmp/project",
+				objective: "안녕",
+				provider: "openai-codex",
+				model: "gpt-5.3-codex-spark",
+				onEvent: () => {},
+			}),
+		).rejects.toThrow(/provider stream aborted/u);
+	});
+
+	it("rejects a terminal response with no assistant output", async () => {
+		sessionMock.prompt.mockImplementationOnce(async () => {
+			emitAssistantTerminal("stop", "");
+		});
+
+		await expect(
+			runAgentTask({
+				projectRoot: "/tmp/project",
+				objective: "안녕",
+				provider: "openai-codex",
+				model: "gpt-5.3-codex-spark",
+				onEvent: () => {},
+			}),
+		).rejects.toThrow(/no assistant output/u);
+	});
+
 	it("preserves tool identity and measures its real duration", async () => {
 		const events: CodingTaskEvent[] = [];
 		const now = vi.spyOn(performance, "now").mockReturnValueOnce(10).mockReturnValueOnce(24.5);
@@ -172,6 +242,7 @@ describe("native agent event projection", () => {
 				result: {},
 				isError: false,
 			});
+			emitAssistantTerminal("stop", "Tool complete");
 		});
 
 		await runAgentTask({
@@ -225,6 +296,7 @@ describe("native agent event projection", () => {
 		});
 		sessionMock.prompt.mockImplementationOnce(async () => {
 			sequence.push("prompt");
+			emitAssistantTerminal("stop", "Done");
 		});
 
 		await runAgentTask({

@@ -10,6 +10,13 @@ class AgentSessionModelError extends Error {
 	}
 }
 
+class AgentTerminalResponseError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AgentTerminalResponseError";
+	}
+}
+
 export interface AgentTaskExecutionContext {
 	readonly session: AgentSession;
 	readonly registerCacheAffinity: (cacheAffinity: string) => void;
@@ -64,6 +71,25 @@ export async function executeAgentTask(
 				? { images: request.images.map((image) => ({ type: "image" as const, ...image })) }
 				: {}),
 		});
+		const terminal = projection.terminal();
+		if (!terminal) {
+			throw new AgentTerminalResponseError(
+				"Provider returned no assistant output. Check the selected account and model, then retry.",
+			);
+		}
+		if (terminal.stopReason === "error") {
+			throw new AgentTerminalResponseError(terminal.errorMessage ?? "Provider failed before returning an answer.");
+		}
+		if (terminal.stopReason === "aborted") {
+			throw new AgentTerminalResponseError(
+				terminal.errorMessage ?? "Provider stopped before returning an answer. Retry the request.",
+			);
+		}
+		if (terminal.textCharacters === 0) {
+			throw new AgentTerminalResponseError(
+				"Provider returned no assistant output. Check the selected account and model, then retry.",
+			);
+		}
 		const aborted = request.signal?.aborted ?? false;
 		const usage = projection.usage();
 		request.onEvent({

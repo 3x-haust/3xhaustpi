@@ -18,6 +18,34 @@ method from Pi. Accounts are grouped by provider and start checked for each
 conversation; session-local exclusions never switch the process-global Codex
 credential.
 
+## Models and auxiliary conversations
+
+Model settings and autocomplete list only providers backed by currently logged-in, enabled accounts. Disabling an
+account removes its provider models from selection for the current conversation without changing process-global
+credentials.
+
+`/side [message]` opens one persistent Side Chat per project. Its history survives restart and is intentionally isolated
+from the durable main conversation. `/btw [question]` opens a process-local multi-turn conversation that receives a fresh
+read-only snapshot of the current main transcript and activity on every turn; it resets when the project changes.
+
+Both surfaces run independently from main work. Press `Ctrl+R`, review the complete latest answer through its end, then
+confirm to promote it into the durable main FIFO queue. Promotion never interrupts active main work, is deduplicated by
+the completed auxiliary source, and survives restart.
+
+Provider failures, aborted or empty assistant turns, and account-discovery failures render actionable errors and preserve
+unsent input instead of leaving an idle zero-throughput state.
+
+Auxiliary and composer bindings use the shared app key registry. Optional user overrides load from
+`~/.3xhaust/keybindings.json`:
+
+```json
+{
+  "app.auxiliary.promote": "ctrl+p",
+  "tui.select.confirm": "ctrl+y",
+  "app.auxiliary.reviewEnd": "end"
+}
+```
+
 ## Global instructions and release governance
 
 3xhaustPi ships mandatory English service instructions for every project and
@@ -65,7 +93,7 @@ progressive-disclosure lifecycle. See
 [`docs/research/global-system-prompt-governance.md`](../../docs/research/global-system-prompt-governance.md)
 for the cited design, limitations, and follow-up work.
 
-This package build is `3xhaustpi@0.2.2`. It has passed local `npm pack`, isolated global
+The package version is defined by `package.json`. The current release has passed local `npm pack`, isolated global
 install, real-provider coding, crash-resume, and a five-case, 50-pair
 real-provider benchmark with 98% semantic-only and 100% direct-tool
 provider-reported warm cache-hit requests. Capability success and model-output

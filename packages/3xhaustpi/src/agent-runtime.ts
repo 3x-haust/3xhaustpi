@@ -5,6 +5,7 @@ export type { AgentToolApprovalRequest } from "./agent-approved-tools.ts";
 export { AgentRuntimeHost } from "./agent-runtime-host.ts";
 export {
 	cacheRoutingOptions,
+	providerAuxiliaryCacheAffinity,
 	providerCacheAffinity,
 } from "./agent-runtime-provider.ts";
 export {
@@ -12,6 +13,7 @@ export {
 	openAgentSessionManager,
 } from "./agent-runtime-session-lookup.ts";
 export type {
+	AgentAuxiliaryRequest,
 	AgentCompactConversationRequest,
 	AgentEphemeralQuestionRequest,
 	AgentProviderEffectBoundaryRequest,

@@ -1,0 +1,37 @@
+Verification receipts
+
+npm run check
+PASS: Biome, pinned dependencies, TypeScript import rules, shrinkwrap, install lock, tsgo --noEmit, browser smoke.
+
+./test.sh
+PASS: isolated non-e2e repository suite.
+- 3xhaustpi: 95 files, 466 tests
+- agent: 21 files, 246 passed, 1 skipped
+- ai: 92 passed / 25 skipped files; 692 passed / 795 skipped tests
+- coding-agent: 182 passed / 6 skipped files; 1648 passed / 48 skipped tests
+- core, pi-adapter, pi-session, semantic-contract, and pi-tui: PASS
+
+npm run build
+PASS: TUI, AI, agent, semantic-contract, core, adapters, storage, coding-agent, server.
+
+npm run build --workspace=3xhaustpi
+PASS: changed package artifact built.
+
+Real PTY + @xterm/headless evidence verifier
+PASS: authenticated-only model list, Korean response, Side isolation/restart, live BTW history, Side/BTW promotion,
+PNG signatures/sizes, and durable promotion source uniqueness.
+
+Flake hardening
+PASS: coding-agent config suite, 15 tests. Windows-shaped pnpm install detection no longer probes the ambient host pnpm;
+the regression uses a marker fixture and passes deterministically.
+
+Packed clean consumer
+PASS: npm pack prepack/build; isolated install; npm audit --omit=dev --audit-level=high reported 0 vulnerabilities;
+--help, --version, bare account inventory, and actionable bad-input behavior.
+Pack receipt before version bump: 3xhaustpi-0.2.3.tgz, 2,010,709 bytes, 30 files,
+sha512-dqgtugSw7nzTvo6g94bLAewgUTytYlXDPqHeGW8fnMEn/KZ20pfIPJ6pRnsCFgRTFy7HycUn2p6p+izqHM06Ag==.
+
+Native darwin-arm64
+PASS: archive build, SHA-256 verification, --version, --help, actionable bad input, Mach-O arm64 Node runtime,
+and runtime manifest. Pre-bump archive SHA-256:
+25cfaae301e63d62be218992c44050e7c69de6824be96eb8505ecb00a12931ba.

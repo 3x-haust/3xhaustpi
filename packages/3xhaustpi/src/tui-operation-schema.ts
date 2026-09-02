@@ -18,6 +18,9 @@ export function migrateTuiOperationSchema(database: DatabaseSync): void {
 				model TEXT,
 				account_id TEXT,
 				thinking_level TEXT,
+				promotion_kind TEXT,
+				promotion_id TEXT,
+				promotion_json TEXT,
 				status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
@@ -54,6 +57,9 @@ export function migrateTuiOperationSchema(database: DatabaseSync): void {
 			["account_id", "ALTER TABLE tui_request_queue ADD COLUMN account_id TEXT"],
 			["images_json", "ALTER TABLE tui_request_queue ADD COLUMN images_json TEXT"],
 			["thinking_level", "ALTER TABLE tui_request_queue ADD COLUMN thinking_level TEXT"],
+			["promotion_kind", "ALTER TABLE tui_request_queue ADD COLUMN promotion_kind TEXT"],
+			["promotion_id", "ALTER TABLE tui_request_queue ADD COLUMN promotion_id TEXT"],
+			["promotion_json", "ALTER TABLE tui_request_queue ADD COLUMN promotion_json TEXT"],
 		] as const;
 		for (const [column, statement] of migrations) {
 			if (!columns.has(column)) database.exec(statement);
@@ -62,6 +68,9 @@ export function migrateTuiOperationSchema(database: DatabaseSync): void {
 			CREATE UNIQUE INDEX IF NOT EXISTS tui_request_queue_active_fingerprint
 				ON tui_request_queue(canonical_path, fingerprint)
 				WHERE status IN ('queued', 'running');
+			CREATE UNIQUE INDEX IF NOT EXISTS tui_request_queue_unique_promotion
+				ON tui_request_queue(canonical_path, promotion_kind, promotion_id)
+				WHERE promotion_id IS NOT NULL;
 			CREATE TABLE IF NOT EXISTS tui_agent_sessions (
 				canonical_path TEXT PRIMARY KEY,
 				session_id TEXT NOT NULL,
