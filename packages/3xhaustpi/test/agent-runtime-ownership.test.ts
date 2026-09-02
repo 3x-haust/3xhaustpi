@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type RuntimeSessionManager = {
@@ -384,7 +384,7 @@ describe("project-scoped agent session runtime ownership", () => {
 			expect.objectContaining({
 				kind: "side",
 				identity: "side_chat_1",
-				projectRoot: "/tmp/project",
+				projectRoot: resolve("/tmp/project"),
 			}),
 			"/tmp/user",
 			expect.any(Function),
