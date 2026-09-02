@@ -2,8 +2,8 @@
 
 Captured 2026-09-03 from the production `runTui` surface in a 120x36 PTY. ANSI streams were replayed through
 `@xterm/headless` 5.5.0; the resulting terminal buffers were rendered to the paired PNG and text files.
-The tested source, including every product and regression change, is commit
-`27c066266d618200125ad213dc9795a0c4d9aba0`.
+The captured product implementation and feature-regression source is commit
+`27c066266d618200125ad213dc9795a0c4d9aba0`; CI receipts attest the exact pull-request and merge heads.
 
 - `model-picker.*`: `/model` with one enabled OpenAI API-key account; only `openai/*` models render.
 - `response.*`: submitting `안녕` produces `RESPONSE_OK_안녕` and `TPS 320.0 tok/s`.
