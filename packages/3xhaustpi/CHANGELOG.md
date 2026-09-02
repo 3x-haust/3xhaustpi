@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-02
+
 ### Added
 
 - Added one persistent project-scoped Side Chat with isolated history, plus process-local multi-turn BTW that observes a fresh read-only snapshot of active main work.
