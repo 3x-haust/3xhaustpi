@@ -4,8 +4,9 @@ import { type Component, Image } from "@earendil-works/pi-tui";
 import { PRODUCT_DISPLAY_NAME, PRODUCT_MACHINE_NAME } from "./product-identity.ts";
 import { formatTuiActivityLine } from "./tui-activity-state.ts";
 import { contextUsageLabel } from "./tui-context-meter.ts";
-import type { TuiDensityMode, TuiLayoutContract, TuiViewState } from "./tui-contract.ts";
+import type { TuiLayoutContract, TuiViewState } from "./tui-contract.ts";
 import { formatImagePreviewLabel, type TuiDisplayImage } from "./tui-image-viewer.ts";
+import { layoutTuiFrame, terminalBelowFloor, terminalFloorLines } from "./tui-layout-contract.ts";
 import { parseTuiMouseInput } from "./tui-mouse.ts";
 import {
 	accent,
@@ -20,52 +21,7 @@ import {
 } from "./tui-text.ts";
 import { fitTranscriptCards } from "./tui-transcript.ts";
 
-function densityMode(columns: number): TuiDensityMode {
-	if (columns < 40) return "degraded";
-	if (columns < 56) return "minimal";
-	if (columns < 80) return "compact";
-	if (columns < 120) return "full";
-	return "wide";
-}
-
-export function terminalBelowFloor(columns: number, rows: number): boolean {
-	return columns < 20 || rows < 8;
-}
-
-export function terminalFloorLines(columns: number, rows: number): readonly string[] {
-	const width = Math.max(1, Math.floor(columns));
-	const height = Math.max(1, Math.floor(rows));
-	const warning = width >= 28 ? "3xhaustPi · terminal too small" : width >= 19 ? "3xhaustPi too small" : "3xhaustPi";
-	return [warning, "/exit"].slice(0, height).map((line) => frameLine(line, width));
-}
-
-export function layoutTuiFrame(
-	columns: number,
-	rows: number,
-	options: { readonly autocompleteRows?: number } = {},
-): TuiLayoutContract {
-	const width = Math.max(1, Math.floor(columns));
-	const height = Math.max(1, Math.floor(rows));
-	const requested = Math.max(0, Math.floor(options.autocompleteRows ?? 0));
-	const bounded = Math.min(requested, Math.floor(height * 0.4));
-	const chromeRows = 6;
-	const autocompleteRows = Math.min(bounded, Math.max(0, height - chromeRows - 1));
-	const transcriptRows = Math.max(1, height - chromeRows - autocompleteRows);
-	return {
-		columns: width,
-		rows: height,
-		mode: densityMode(width),
-		identityRows: 2,
-		contextRows: 0,
-		activityRows: 1,
-		composerRows: 3,
-		footerRows: 0,
-		autocompleteRows,
-		chromeRows,
-		transcriptRows,
-		totalRows: chromeRows + transcriptRows + autocompleteRows,
-	};
-}
+export { layoutTuiFrame, terminalBelowFloor, terminalFloorLines } from "./tui-layout-contract.ts";
 
 function compactPath(value: string): string {
 	const home = homedir();
@@ -91,16 +47,15 @@ export function contextHeaderRail(state: TuiViewState, layout: TuiLayoutContract
 export function identityRail(state: TuiViewState, layout: TuiLayoutContract): string {
 	if (layout.columns < 40) return frameLine(text(PRODUCT_DISPLAY_NAME), layout.columns);
 	const project = sanitizeTerminalText(basename(state.projectRoot));
-	const brand = `(${accent("😺")} ${text(`${PRODUCT_DISPLAY_NAME} Native`)})`;
 	const fallback = project === PRODUCT_MACHINE_NAME ? "" : dim(project);
 	const goal = state.goal
 		? `${dim("Goal")} ${text(sanitizeTerminalText(state.goal).replace(/\s+/gu, " ").trim())}`
 		: fallback;
 	const context = contextUsageLabel(state.contextTokens, state.contextLimit, "meter");
-	if (!context) return frameLine([brand, goal].filter(Boolean).join(" "), layout.columns);
+	if (!context) return frameLine(goal, layout.columns);
 	const right = muted(context);
 	const leftBudget = Math.max(1, layout.columns - cellWidth(stripAnsi(right)) - 2);
-	const left = ellipsizeCells([brand, goal].filter(Boolean).join(" "), leftBudget);
+	const left = ellipsizeCells(goal, leftBudget);
 	const gap = Math.max(2, layout.columns - cellWidth(stripAnsi(left)) - cellWidth(stripAnsi(right)));
 	return frameLine(`${left}${" ".repeat(gap)}${right}`, layout.columns);
 }

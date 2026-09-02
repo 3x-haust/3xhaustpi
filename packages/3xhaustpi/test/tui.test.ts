@@ -97,7 +97,7 @@ function expectFrameWithin(output: string, columns: number, rows: number): void 
 }
 
 function expectNoDuplicateIdentity(output: string): void {
-	expect(output.match(/3xhaustPi/gu) ?? []).toHaveLength(1);
+	expect(output.match(/3xhaustPi/gu) ?? []).toHaveLength(output.includes("3xhaustPi") ? 1 : 0);
 }
 
 describe("Pi-native event-driven TUI renderer", () => {
@@ -179,7 +179,9 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(lines.at(-2)).toContain("/tmp/project");
 		expect(lines.at(-2)).toContain("gpt-5.6-terra:medium");
 		expect(lines.at(-2)).not.toMatch(/ready|tasks/u);
-		expect(lines.at(-1)).toContain("(😺 3xhaustPi Native) project");
+		expect(lines.at(-1)).toContain("project");
+		expect(lines.at(-1)).not.toContain("3xhaustPi Native");
+		expect(lines.at(-1)).not.toContain("😺");
 		expect(lines.at(-1)).toContain("Ctx 35K/400K · 8.8%");
 		expect(lines.join("\n")).not.toContain("Queued");
 		expect(lines.at(-3)).toMatch(/^─+$/u);
@@ -197,7 +199,8 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(wide.at(-2)).toContain("gpt-5.6-terra:medium");
 		expect(wide.at(-2)).toContain("(openai-codex)");
 		expect(wide.at(-4)).toContain("> ");
-		expect(wide.at(-1)).toContain("3xhaustPi");
+		expect(wide.at(-1)).not.toContain("3xhaustPi");
+		expect(wide.at(-1)).toContain("Ctx 35K/400K · 8.8%");
 	});
 
 	it("removes command hints and provider metadata below sixty columns", () => {
@@ -207,7 +210,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 		expect(output.at(-2)).toContain("/tmp/project");
 		expect(output.at(-2)).toContain("gpt-5.6-terra");
 		expect(output.at(-4)).toContain("> ");
-		expect(output.at(-1)).toContain("3xhaustPi");
+		expect(output.at(-1)).not.toContain("3xhaustPi");
 		expect(output.at(-1)).toContain("Ctx 35K/400K · 8.8%");
 	});
 
@@ -1047,7 +1050,7 @@ describe("Pi-native event-driven TUI renderer", () => {
 
 	it("renders the target prompt band, answer flow, title, activity, and composer", () => {
 		const output = renderTuiFrame(state, 120, 34);
-		expect(output).toContain("3xhaustPi");
+		expect(output).not.toContain("3xhaustPi");
 		expect(output).toContain("로그인 오류를 조사해");
 		expect(output).not.toContain("진단 결과도 확인해");
 		expect(visibleLines(output).at(-2)).toContain("gpt-5.6-terra:medium");

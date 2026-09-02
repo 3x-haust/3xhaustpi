@@ -54,6 +54,21 @@ export class TuiRuntimeWorkerExecutor {
 					signal: hooks.signal,
 				});
 				break;
+			case "auxiliary":
+				result = await this.agentRuntimeHost.runAuxiliary({
+					kind: request.kind,
+					identity: request.identity,
+					projectRoot: request.projectRoot,
+					question: request.question,
+					history: request.history,
+					...(request.observation ? { observation: request.observation } : {}),
+					provider: request.provider,
+					model: request.model,
+					...(request.accountId ? { accountId: request.accountId } : {}),
+					thinkingLevel: request.thinkingLevel,
+					signal: hooks.signal,
+				});
+				break;
 			case "compact":
 				result = await this.agentRuntimeHost.compactConversation({
 					projectRoot: request.projectRoot,

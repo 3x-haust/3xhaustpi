@@ -1,8 +1,9 @@
 import { formatHelpCommandLines } from "./tui-command-helpers.ts";
 import type { TuiAutocompleteController } from "./tui-live-autocomplete.ts";
+import type { TuiAuxiliaryController } from "./tui-live-auxiliary.ts";
 import type { TuiDesktopController } from "./tui-live-desktop.ts";
 import { startGoalCommand } from "./tui-live-goal.ts";
-import { startCompaction, startSideQuestion, startWorkingTreeReview } from "./tui-live-quick-actions.ts";
+import { startCompaction, startWorkingTreeReview } from "./tui-live-quick-actions.ts";
 import { startRewind } from "./tui-live-rewind.ts";
 import { startSettings } from "./tui-live-settings.ts";
 import type { TuiLiveCore } from "./tui-live-state.ts";
@@ -17,15 +18,21 @@ export async function handleTuiQuickCommand(
 		readonly view: TuiLiveView;
 		readonly autocomplete: TuiAutocompleteController;
 		readonly desktop: TuiDesktopController;
+		readonly auxiliary?: TuiAuxiliaryController;
 	},
 ): Promise<boolean> {
-	const { core, view, autocomplete, desktop } = deps;
+	const { core, view, autocomplete, desktop, auxiliary } = deps;
 	switch (command) {
 		case "help":
 			view.appendText(formatHelpCommandLines(process.stdout.columns || 120).join("\n"));
 			return true;
+		case "side":
+			if (auxiliary) await auxiliary.startSide(argument);
+			else view.appendText("Side Chat is unavailable.");
+			return true;
 		case "btw":
-			await startSideQuestion(argument, core, view);
+			if (auxiliary) await auxiliary.startBtw(argument);
+			else view.appendText("BTW is unavailable.");
 			return true;
 		case "goal":
 			startGoalCommand(argument, core, view);
@@ -40,7 +47,7 @@ export async function handleTuiQuickCommand(
 			await startRewind(core, view, autocomplete);
 			return true;
 		case "settings":
-			startSettings(core, view, autocomplete, desktop);
+			await startSettings(core, view, autocomplete, desktop);
 			return true;
 		case "status":
 			startStatus(core, view);

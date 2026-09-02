@@ -93,4 +93,88 @@ describe("TUI runtime worker request validation", () => {
 			}),
 		).toBe(true);
 	});
+
+	it("accepts structurally isolated Side Chat and main-aware BTW requests", () => {
+		const binding = {
+			provider: "openai-codex",
+			model: "gpt-5.6-terra",
+			accountId: "openai-codex:acct-a",
+			thinkingLevel: "medium",
+		};
+		expect(
+			isRuntimeParentMessage({
+				type: "start",
+				runId,
+				request: {
+					mode: "auxiliary",
+					kind: "side",
+					identity: "side_chat_1",
+					projectRoot: "/tmp/project",
+					question: "Remember SIDE_842",
+					history: [{ question: "First", answer: "First answer" }],
+					...binding,
+				},
+			}),
+		).toBe(true);
+		expect(
+			isRuntimeParentMessage({
+				type: "start",
+				runId,
+				request: {
+					mode: "auxiliary",
+					kind: "btw",
+					identity: "btw_run_1",
+					projectRoot: "/tmp/project",
+					question: "What is main doing?",
+					history: [{ question: "Earlier", answer: "Earlier answer" }],
+					observation: {
+						version: 1,
+						observedAt: "2026-09-02T00:00:00.000Z",
+						sessionId: "session_main",
+						activeObjective: "Implement main work",
+						phase: "running",
+						activeCapabilities: ["read"],
+						activeWork: ["Inspect code"],
+						queuedObjectives: ["Next task"],
+						transcriptTail: "MAIN_FACT_219",
+					},
+					...binding,
+				},
+			}),
+		).toBe(true);
+	});
+
+	it("rejects main context fields from Side Chat and requires a BTW observation", () => {
+		const base = {
+			mode: "auxiliary",
+			identity: "aux_1",
+			projectRoot: "/tmp/project",
+			question: "Question",
+			history: [],
+			provider: "openai-codex",
+			model: "gpt-5.6-terra",
+			thinkingLevel: "medium",
+		};
+		expect(
+			isRuntimeParentMessage({
+				type: "start",
+				runId,
+				request: { ...base, kind: "side", context: "MAIN_SECRET_731" },
+			}),
+		).toBe(false);
+		expect(
+			isRuntimeParentMessage({
+				type: "start",
+				runId,
+				request: { ...base, kind: "side", observation: { transcriptTail: "MAIN_SECRET_731" } },
+			}),
+		).toBe(false);
+		expect(
+			isRuntimeParentMessage({
+				type: "start",
+				runId,
+				request: { ...base, kind: "btw" },
+			}),
+		).toBe(false);
+	});
 });

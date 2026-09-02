@@ -169,6 +169,25 @@ try {
 						quickHooks(request.signal),
 					),
 				),
+			runAuxiliary: async (request) =>
+				runtimeText(
+					await quickRuntimeHost.run(
+						{
+							mode: "auxiliary",
+							kind: request.kind,
+							identity: request.identity,
+							projectRoot: request.projectRoot,
+							question: request.question,
+							history: request.history,
+							...(request.observation ? { observation: request.observation } : {}),
+							provider: request.provider,
+							model: request.model,
+							...(request.accountId ? { accountId: request.accountId } : {}),
+							thinkingLevel: request.thinkingLevel,
+						},
+						quickHooks(request.signal),
+					),
+				),
 			warmCache: async (request) =>
 				runtimeCacheWarmResult(
 					await cacheWarmRuntimeHost.run(

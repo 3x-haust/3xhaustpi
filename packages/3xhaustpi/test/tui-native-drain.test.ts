@@ -29,6 +29,25 @@ function fixture() {
 }
 
 describe("native TUI queue draining", () => {
+	it("marks a rejected provider turn failed and renders its actionable error", async () => {
+		const { core, runTask, tasks, view } = fixture();
+		runTask.mockRejectedValueOnce(new Error("401 unauthorized"));
+		core.database.enqueueTuiRequest({
+			requestId: "provider_failure",
+			projectPath: core.state.projectRoot,
+			fingerprint: "provider_failure_fingerprint",
+			objective: "안녕",
+		});
+
+		tasks.drainQueue();
+		await core.state.activeExecution;
+
+		expect(core.transcriptEntries.join("\n")).toContain("Error: 401 unauthorized");
+		expect(core.database.listTuiRequests(core.state.projectRoot)).toEqual([]);
+		if (view.workAnimationTimer) clearInterval(view.workAnimationTimer);
+		core.database.close();
+	});
+
 	it("does not let a stale legacy chat block native requests", async () => {
 		const { core, runTask, tasks, view } = fixture();
 		core.database.beginRun({

@@ -60,7 +60,8 @@ export class TuiOperationLeaseStore {
 				.prepare(
 					`SELECT request_id, canonical_path, objective, images_json, position, status, created_at, lease_epoch,
 						execution_sequence, execution_snapshot, binding_version, conversation_generation,
-						session_id, provider, model, account_id, thinking_level
+						session_id, provider, model, account_id, thinking_level,
+						promotion_kind, promotion_id, promotion_json
 					 FROM tui_request_queue
 					 WHERE canonical_path = ? AND status = 'queued'
 ${options?.requestId ? "AND request_id = ?" : ""}

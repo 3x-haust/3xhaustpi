@@ -37,6 +37,7 @@ export interface TuiLiveMutableState {
 	approvalReviewText: string | undefined;
 	activeController: AbortController | undefined;
 	activeExecution: Promise<void> | undefined;
+	mainAdmissions: number;
 	desktopController: AbortController | undefined;
 	desktopOperation: Promise<void> | undefined;
 	desktopApplications: readonly DesktopApplication[];
@@ -193,6 +194,7 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 			approvalReviewText: undefined,
 			activeController: undefined,
 			activeExecution: undefined,
+			mainAdmissions: 0,
 			desktopController: undefined,
 			desktopOperation: undefined,
 			desktopApplications: [],
