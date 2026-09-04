@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-04
+
+### Fixed
+
+- Closed OpenAI Codex WebSocket resources with their owning agent session so completed prompts exit promptly without sacrificing prompt-cache affinity.
+- Accepted an empty OAuth method selection when browser login is explicitly labeled as the default.
+
 ## [0.2.4] - 2026-09-02
 
 ### Added
