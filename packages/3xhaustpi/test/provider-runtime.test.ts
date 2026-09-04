@@ -56,6 +56,28 @@ describe("provider auth prompts", () => {
 		log.mockRestore();
 	});
 
+	it("uses the labeled first OAuth method when selection is empty", async () => {
+		const input = { question: vi.fn().mockResolvedValue("") };
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await expect(
+			answerAuthPrompt(
+				{
+					type: "select",
+					message: "Select OpenAI Codex login method:",
+					options: [
+						{ id: "browser", label: "Browser login (default)" },
+						{ id: "device", label: "Device code login (headless)" },
+					],
+				},
+				input,
+			),
+		).resolves.toBe("browser");
+
+		expect(input.question).toHaveBeenCalledWith("Enter number (1-2): ", { secret: false });
+		log.mockRestore();
+	});
+
 	it("uses terminal raw mode and never writes a secret value to the PTY output", async () => {
 		const input = new PassThrough() as PassThrough & {
 			isTTY: boolean;

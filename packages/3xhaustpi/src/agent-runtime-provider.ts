@@ -125,10 +125,13 @@ export function installProviderCacheRouting(
 					].join("\n\n");
 		const enforcedContext = { ...context, systemPrompt };
 		const previousOnPayload = options?.onPayload;
+		const routing = cacheRoutingOptions(state.cacheAffinity, enforcedContext.systemPrompt);
 		return state.baseStream(requestModel, enforcedContext, {
 			...options,
-			...cacheRoutingOptions(state.cacheAffinity, enforcedContext.systemPrompt),
-			...(requestModel.api === "openai-codex-responses" ? { transport: "websocket" as const } : {}),
+			...routing,
+			...(requestModel.api === "openai-codex-responses"
+				? { sessionId: session.sessionManager.getSessionId(), transport: "websocket" as const }
+				: {}),
 			onPayload: async (payload, payloadModel) => {
 				state.onProviderPayload?.(payload);
 				return previousOnPayload?.(payload, payloadModel);

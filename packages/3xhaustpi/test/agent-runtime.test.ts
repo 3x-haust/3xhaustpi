@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, fauxProvider } from "@earendil-works/pi-ai";
+import { type Context, fauxProvider, type Model } from "@earendil-works/pi-ai";
 import { type AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -159,6 +159,35 @@ describe("native agent cache routing", () => {
 			cacheRetention: "short",
 			sessionId: "cache_key_compaction",
 			promptCacheKey: "cache_key_compaction",
+		});
+	});
+
+	it("owns Codex WebSocket cleanup with the disposable agent session", () => {
+		let routedOptions: Parameters<AgentSession["agent"]["streamFunction"]>[2];
+		const baseStream = vi.fn(((_model, _context, options) => {
+			routedOptions = options;
+			return {};
+		}) as AgentSession["agent"]["streamFunction"]);
+		const session = {
+			systemPrompt: "NATIVE_BASE",
+			sessionManager: { getSessionId: () => "session_owned" },
+			agent: { streamFunction: baseStream },
+		} as unknown as AgentSession;
+		const model = {
+			...fauxProvider().getModel(),
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			id: "gpt-5.6-terra",
+		} satisfies Model<"openai-codex-responses">;
+
+		installProviderCacheRouting(session, "stable_cache_key", undefined);
+		session.agent.streamFunction(model, { systemPrompt: "NATIVE_BASE", messages: [], tools: [] });
+
+		expect(routedOptions).toMatchObject({
+			cacheRetention: "long",
+			promptCacheKey: "stable_cache_key",
+			sessionId: "session_owned",
+			transport: "websocket",
 		});
 	});
 
