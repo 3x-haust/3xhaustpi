@@ -77,14 +77,14 @@ export async function answerAuthPrompt(
 			const option = prompt.options[index]!;
 			console.log(`  ${index + 1}. ${sanitizeTerminalText(option.label)}`);
 		}
-		const answer = Number.parseInt(
-			await input.question(`Enter number (1-${prompt.options.length}): `, {
-				secret: false,
-				...(prompt.signal ? { signal: prompt.signal } : {}),
-			}),
-			10,
-		);
-		const selected = prompt.options[answer - 1];
+		const answer = await input.question(`Enter number (1-${prompt.options.length}): `, {
+			secret: false,
+			...(prompt.signal ? { signal: prompt.signal } : {}),
+		});
+		const selected =
+			answer.trim() === "" && prompt.options[0]?.label.includes("(default)")
+				? prompt.options[0]
+				: prompt.options[Number.parseInt(answer, 10) - 1];
 		if (!selected) throw new Error("Invalid login selection");
 		return selected.id;
 	}
