@@ -1,8 +1,0 @@
-{
-  "name": "3xhaustpi-real-coding-fixture",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --test"
-  }
-}
