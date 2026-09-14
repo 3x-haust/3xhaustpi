@@ -1,5 +1,5 @@
 import { getKeybindings } from "../keybindings.ts";
-import type { Component } from "../tui.ts";
+import type { Component, TuiMouseEvent, TuiMouseEventResult } from "../tui.ts";
 import { truncateToWidth, visibleWidth } from "../utils.ts";
 
 const DEFAULT_PRIMARY_COLUMN_WIDTH = 32;
@@ -41,8 +41,8 @@ export class SelectList implements Component {
 	private items: SelectItem[] = [];
 	private filteredItems: SelectItem[] = [];
 	private selectedIndex: number = 0;
+	private mousePressedIndex: number | undefined;
 	private maxVisible: number = 5;
-	private showScrollInfo = true;
 	private theme: SelectListTheme;
 	private layout: SelectListLayoutOptions;
 
@@ -56,14 +56,6 @@ export class SelectList implements Component {
 		this.maxVisible = maxVisible;
 		this.theme = theme;
 		this.layout = layout;
-	}
-
-	setMaxVisible(maxVisible: number): void {
-		this.maxVisible = Math.max(0, Math.floor(maxVisible));
-	}
-
-	setScrollInfoVisible(visible: boolean): void {
-		this.showScrollInfo = visible;
 	}
 
 	setFilter(filter: string): void {
@@ -92,11 +84,7 @@ export class SelectList implements Component {
 		const primaryColumnWidth = this.getPrimaryColumnWidth();
 
 		// Calculate visible range with scrolling
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
-		);
-		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
+		const { startIndex, endIndex } = this.getVisibleRange();
 
 		// Render visible items
 		for (let i = startIndex; i < endIndex; i++) {
@@ -109,13 +97,49 @@ export class SelectList implements Component {
 		}
 
 		// Add scroll indicators if needed
-		if (this.showScrollInfo && (startIndex > 0 || endIndex < this.filteredItems.length)) {
+		if (startIndex > 0 || endIndex < this.filteredItems.length) {
 			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
 			// Truncate if too long for terminal
 			lines.push(this.theme.scrollInfo(truncateToWidth(scrollText, width - 2, "")));
 		}
 
 		return lines;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.filteredItems.length === 0) return undefined;
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			const previousIndex = this.selectedIndex;
+			this.selectedIndex = Math.max(0, Math.min(this.filteredItems.length - 1, this.selectedIndex + delta));
+			if (this.selectedIndex !== previousIndex) this.notifySelectionChange();
+			return { handled: true, render: this.selectedIndex !== previousIndex };
+		}
+		// Hover must not change selection: the visible range is centered on it.
+		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
+		const { startIndex, endIndex } = this.getVisibleRange();
+		const itemIndex = startIndex + event.y;
+		if (itemIndex < startIndex || itemIndex >= endIndex) return undefined;
+
+		if (event.type === "press") {
+			this.mousePressedIndex = itemIndex;
+			if (this.selectedIndex !== itemIndex) {
+				this.selectedIndex = itemIndex;
+				this.notifySelectionChange();
+			}
+			return { handled: true, focus: true };
+		}
+		if (event.type === "click") {
+			const clickedIndex = this.mousePressedIndex ?? itemIndex;
+			this.mousePressedIndex = undefined;
+			const changed = this.selectedIndex !== clickedIndex;
+			this.selectedIndex = clickedIndex;
+			if (changed) this.notifySelectionChange();
+			const selectedItem = this.filteredItems[this.selectedIndex];
+			if (selectedItem) this.onSelect?.(selectedItem);
+			return { handled: true };
+		}
+		return undefined;
 	}
 
 	handleInput(keyData: string): void {
@@ -145,6 +169,17 @@ export class SelectList implements Component {
 		}
 	}
 
+	private getVisibleRange(): { startIndex: number; endIndex: number } {
+		const startIndex = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
+		);
+		return {
+			startIndex,
+			endIndex: Math.min(startIndex + this.maxVisible, this.filteredItems.length),
+		};
+	}
+
 	private renderItem(
 		item: SelectItem,
 		isSelected: boolean,
@@ -152,7 +187,7 @@ export class SelectList implements Component {
 		descriptionSingleLine: string | undefined,
 		primaryColumnWidth: number,
 	): string {
-		const prefix = isSelected ? "› " : "  ";
+		const prefix = isSelected ? "→ " : "  ";
 		const prefixWidth = visibleWidth(prefix);
 
 		if (descriptionSingleLine && width > 40) {
