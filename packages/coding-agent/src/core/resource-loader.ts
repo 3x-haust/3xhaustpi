@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { detectCapabilities, getTerminalColorMode, type TerminalColorMode } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
@@ -8,6 +9,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	clearExtensionCache,
@@ -16,6 +18,7 @@ import {
 	loadExtensionsCached,
 } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import { findGitPaths } from "./footer-data-provider.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
@@ -35,6 +38,61 @@ export interface ResourceLoaderReloadOptions {
 	resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
 }
 
+const HOST_PROVIDED_EXTENSION_PACKAGES = new Set([
+	"@earendil-works/pi-agent-core",
+	"@earendil-works/pi-ai",
+	"@earendil-works/pi-coding-agent",
+	"@earendil-works/pi-tui",
+	"@mariozechner/pi-agent-core",
+	"@mariozechner/pi-ai",
+	"@mariozechner/pi-coding-agent",
+	"@mariozechner/pi-tui",
+	"@sinclair/typebox",
+	"typebox",
+]);
+
+function collectExtensionPackageWarnings(
+	extensionPaths: string[],
+	metadataByPath: Map<string, PathMetadata>,
+): Array<{ path: string; warning: string }> {
+	const warnings: Array<{ path: string; warning: string }> = [];
+	const packageRoots = new Set(
+		extensionPaths
+			.map((extensionPath) => metadataByPath.get(extensionPath)?.packageRoot)
+			.filter((packageRoot): packageRoot is string => packageRoot !== undefined),
+	);
+	for (const packageRoot of packageRoots) {
+		const packageJsonPath = join(packageRoot, "package.json");
+		if (!existsSync(packageJsonPath)) continue;
+		const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { dependencies?: unknown };
+		if (
+			typeof manifest.dependencies !== "object" ||
+			manifest.dependencies === null ||
+			Array.isArray(manifest.dependencies)
+		) {
+			continue;
+		}
+		const hostDependencies = Object.keys(manifest.dependencies)
+			.filter((name) => HOST_PROVIDED_EXTENSION_PACKAGES.has(name))
+			.sort();
+		if (hostDependencies.length === 0) continue;
+		warnings.push({
+			path: packageJsonPath,
+			warning: `Host-provided extension packages must be declared in peerDependencies with a "*" range, not dependencies: ${hostDependencies.join(", ")}. Installed copies can bypass the extension loader and create duplicate runtime modules.`,
+		});
+	}
+	return warnings;
+}
+
+function mergeExtensionWarnings(
+	result: LoadExtensionsResult,
+	warnings: Array<{ path: string; warning: string }>,
+): void {
+	result.warnings = [
+		...new Map([...(result.warnings ?? []), ...warnings].map((warning) => [warning.path, warning])).values(),
+	];
+}
+
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
@@ -42,7 +100,9 @@ export interface ResourceLoader {
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
+	getSystemPromptSource(): { path: string } | undefined;
 	getAppendSystemPrompt(): string[];
+	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): void;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }
@@ -54,7 +114,7 @@ function resolvePromptInput(input: string | undefined, description: string): str
 
 	if (existsSync(input)) {
 		try {
-			return readFileSync(input, "utf-8");
+			return stripBom(readFileSync(input, "utf-8"));
 		} catch (error) {
 			console.error(chalk.yellow(`Warning: Could not read ${description} file ${input}: ${error}`));
 			return input;
@@ -65,7 +125,7 @@ function resolvePromptInput(input: string | undefined, description: string): str
 }
 
 function loadContextFileFromDir(dir: string): { path: string; content: string } | null {
-	const candidates = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+	const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
@@ -75,7 +135,7 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 				}
 				return {
 					path: filePath,
-					content: readFileSync(filePath, "utf-8"),
+					content: stripBom(readFileSync(filePath, "utf-8")),
 				};
 			} catch (error) {
 				console.error(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));
@@ -83,6 +143,33 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 		}
 	}
 	return null;
+}
+
+/**
+ * The main repo's context file that a nested linked worktree's own copy shadows: both
+ * occupy the same logical repository scope, so loading both applies that context twice. Returns
+ * undefined when nothing is shadowed, leaving normal ancestor inheritance alone.
+ *
+ * Returned canonicalized (realpath), because `git worktree add` writes the `.git`
+ * file's `gitdir:` target in realpath form while cwd may still be symlinked
+ * (macOS `/tmp` -> `/private/tmp`).
+ */
+function findShadowedContextFile(cwd: string): string | undefined {
+	const gitPaths = findGitPaths(cwd);
+	if (!gitPaths) return undefined;
+	const commonGitDir = canonicalizePath(gitPaths.commonGitDir);
+	const worktreeRoot = canonicalizePath(gitPaths.repoDir);
+	const mainRepoRoot = dirname(commonGitDir);
+	// False for an ordinary repo, where the two are the same dir, and for a sibling
+	// worktree (`git worktree add ../feat`), whose main repo is not an ancestor.
+	if (!worktreeRoot.startsWith(`${mainRepoRoot}${sep}`)) return undefined;
+	// dirname of the common git dir is the main worktree root only when that dir is
+	// itself checked out from the same repo. In a bare layout (`proj/.bare` +
+	// `proj/main`) it is just the directory holding `.bare`, which tracks nothing; a
+	// submodule's gitdir has no `commondir`, so it lands under `.git/modules`.
+	if (canonicalizePath(join(mainRepoRoot, ".git")) !== commonGitDir) return undefined;
+	const worktreeContextFile = loadContextFileFromDir(worktreeRoot);
+	return worktreeContextFile ? join(mainRepoRoot, basename(worktreeContextFile.path)) : undefined;
 }
 
 export function loadProjectContextFiles(options: {
@@ -103,11 +190,14 @@ export function loadProjectContextFiles(options: {
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
 
+	const shadowedContextFile = findShadowedContextFile(resolvedCwd);
 	let currentDir = resolvedCwd;
 
 	while (true) {
 		const contextFile = loadContextFileFromDir(currentDir);
-		if (contextFile && !seenPaths.has(contextFile.path)) {
+		const isShadowed =
+			shadowedContextFile !== undefined && canonicalizePath(contextFile?.path ?? "") === shadowedContextFile;
+		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
 			ancestorContextFiles.unshift(contextFile);
 			seenPaths.add(contextFile.path);
 		}
@@ -205,7 +295,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private themeDiagnostics: ResourceDiagnostic[];
 	private agentsFiles: Array<{ path: string; content: string }>;
 	private systemPrompt?: string;
+	private systemPromptSourcePath?: string;
 	private appendSystemPrompt: string[];
+	private appendSystemPromptSourcePaths: string[];
 	private lastSkillPaths: string[];
 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
 	private extensionPromptSourceInfos: Map<string, SourceInfo>;
@@ -254,6 +346,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.themeDiagnostics = [];
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
+		this.appendSystemPromptSourcePaths = [];
 		this.lastSkillPaths = [];
 		this.extensionSkillSourceInfos = new Map();
 		this.extensionPromptSourceInfos = new Map();
@@ -288,8 +381,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return this.systemPrompt;
 	}
 
+	getSystemPromptSource(): { path: string } | undefined {
+		return this.systemPromptSourcePath ? { path: this.systemPromptSourcePath } : undefined;
+	}
+
 	getAppendSystemPrompt(): string[] {
 		return this.appendSystemPrompt;
+	}
+
+	getAppendSystemPromptSources(): Array<{ path: string }> {
+		return this.appendSystemPromptSourcePaths.map((path) => ({ path }));
 	}
 
 	extendResources(paths: ResourceExtensionPaths): void {
@@ -408,7 +509,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
 
+		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 		const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);
+		mergeExtensionWarnings(extensionsResult, packageWarnings);
 		for (const p of this.additionalExtensionPaths) {
 			if (isLocalPath(p)) {
 				const resolved = this.resolveResourcePath(p);
@@ -478,21 +581,26 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
-		const baseSystemPrompt = resolvePromptInput(
-			this.systemPromptSource ?? this.discoverSystemPromptFile(),
-			"system prompt",
-		);
+		const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
+		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
 		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+		this.systemPromptSourcePath =
+			systemPromptSource && existsSync(systemPromptSource) ? resolvePath(systemPromptSource) : undefined;
 
-		const appendSources =
-			this.appendSystemPromptSource ??
-			(this.discoverAppendSystemPromptFile() ? [this.discoverAppendSystemPromptFile()!] : []);
+		let appendSources = this.appendSystemPromptSource;
+		if (!appendSources) {
+			const discoveredAppendSystemPromptFile = this.discoverAppendSystemPromptFile();
+			appendSources = discoveredAppendSystemPromptFile ? [discoveredAppendSystemPromptFile] : [];
+		}
 		const baseAppend = appendSources
 			.map((s) => resolvePromptInput(s, "append system prompt"))
 			.filter((s): s is string => s !== undefined);
 		this.appendSystemPrompt = this.appendSystemPromptOverride
 			? this.appendSystemPromptOverride(baseAppend)
 			: baseAppend;
+		this.appendSystemPromptSourcePaths = appendSources
+			.filter((source) => existsSync(source))
+			.map((source) => resolvePath(source));
 		this.loaded = true;
 	}
 
@@ -506,7 +614,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
+		const metadataByPath = new Map(
+			[...resolvedPaths.extensions, ...cliExtensionPaths.extensions].map((resource) => [
+				resource.path,
+				resource.metadata,
+			]),
+		);
+		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+		mergeExtensionWarnings(extensionsResult, packageWarnings);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
 		}
@@ -568,6 +684,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const extensionsResult: LoadExtensionsResult = {
 			extensions: orderedExtensions,
 			errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
+			warnings: [...(preTrustExtensions.warnings ?? []), ...(remainingExtensions.warnings ?? [])],
 			runtime: preTrustExtensions.runtime,
 		};
 		this.addExtensionConflictDiagnostics(extensionsResult);
@@ -647,13 +764,17 @@ export class DefaultResourceLoader implements ResourceLoader {
 		if (this.noPromptTemplates && promptPaths.length === 0) {
 			promptsResult = { prompts: [], diagnostics: [] };
 		} else {
-			const allPrompts = loadPromptTemplates({
+			const loaded = loadPromptTemplates({
 				cwd: this.cwd,
 				agentDir: this.agentDir,
 				promptPaths,
 				includeDefaults: false,
 			});
-			promptsResult = this.dedupePrompts(allPrompts);
+			const deduped = this.dedupePrompts(loaded.templates);
+			promptsResult = {
+				prompts: deduped.prompts,
+				diagnostics: [...loaded.diagnostics, ...deduped.diagnostics],
+			};
 		}
 		const resolvedPrompts = this.promptsOverride ? this.promptsOverride(promptsResult) : promptsResult;
 		this.prompts = resolvedPrompts.prompts.map((prompt) => ({
@@ -671,7 +792,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		if (this.noThemes && themePaths.length === 0) {
 			themesResult = { themes: [], diagnostics: [] };
 		} else {
-			const loaded = this.loadThemes(themePaths, false);
+			// Theme construction only needs trueColor, so skip the unrelated tmux hyperlink probe.
+			const colorMode = getTerminalColorMode({
+				...detectCapabilities(() => false),
+				...this.settingsManager.getTerminalCapabilityOverrides(),
+			});
+			const loaded = this.loadThemes(themePaths, false, colorMode);
 			const deduped = this.dedupeThemes(loaded.themes);
 			themesResult = { themes: deduped.themes, diagnostics: [...loaded.diagnostics, ...deduped.diagnostics] };
 		}
@@ -814,7 +940,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private loadThemes(
 		paths: string[],
-		includeDefaults: boolean = true,
+		includeDefaults: boolean,
+		colorMode: TerminalColorMode,
 	): {
 		themes: Theme[];
 		diagnostics: ResourceDiagnostic[];
@@ -825,7 +952,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			const defaultDirs = [join(this.agentDir, "themes"), join(this.cwd, CONFIG_DIR_NAME, "themes")];
 
 			for (const dir of defaultDirs) {
-				this.loadThemesFromDir(dir, themes, diagnostics);
+				this.loadThemesFromDir(dir, themes, diagnostics, colorMode);
 			}
 		}
 
@@ -839,9 +966,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			try {
 				const stats = statSync(resolved);
 				if (stats.isDirectory()) {
-					this.loadThemesFromDir(resolved, themes, diagnostics);
+					this.loadThemesFromDir(resolved, themes, diagnostics, colorMode);
 				} else if (stats.isFile() && resolved.endsWith(".json")) {
-					this.loadThemeFromFile(resolved, themes, diagnostics);
+					this.loadThemeFromFile(resolved, themes, diagnostics, colorMode);
 				} else {
 					diagnostics.push({ type: "warning", message: "theme path is not a json file", path: resolved });
 				}
@@ -854,7 +981,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return { themes, diagnostics };
 	}
 
-	private loadThemesFromDir(dir: string, themes: Theme[], diagnostics: ResourceDiagnostic[]): void {
+	private loadThemesFromDir(
+		dir: string,
+		themes: Theme[],
+		diagnostics: ResourceDiagnostic[],
+		colorMode: TerminalColorMode,
+	): void {
 		if (!existsSync(dir)) {
 			return;
 		}
@@ -876,7 +1008,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 				if (!entry.name.endsWith(".json")) {
 					continue;
 				}
-				this.loadThemeFromFile(join(dir, entry.name), themes, diagnostics);
+				this.loadThemeFromFile(join(dir, entry.name), themes, diagnostics, colorMode);
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to read theme directory";
@@ -884,9 +1016,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 	}
 
-	private loadThemeFromFile(filePath: string, themes: Theme[], diagnostics: ResourceDiagnostic[]): void {
+	private loadThemeFromFile(
+		filePath: string,
+		themes: Theme[],
+		diagnostics: ResourceDiagnostic[],
+		colorMode: TerminalColorMode,
+	): void {
 		try {
-			themes.push(loadThemeFromPath(filePath));
+			themes.push(loadThemeFromPath(filePath, colorMode));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to load theme";
 			diagnostics.push({ type: "warning", message, path: filePath });

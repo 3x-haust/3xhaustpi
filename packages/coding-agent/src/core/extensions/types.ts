@@ -16,21 +16,28 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type {
+	AnyModel,
 	Api,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	ClassifierApi,
 	ConstrainedSamplingConfig,
-	Context,
+	ImageApi,
 	ImageContent,
+	Message,
 	Model,
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	Provider,
+	ProviderClassifier,
 	ProviderHeaders,
+	ProviderId,
+	ProviderImages,
 	RefreshModelsContext,
 	SimpleStreamOptions,
 	TextContent,
 	ToolResultMessage,
+	TranscriptContext,
 	Usage,
 } from "@earendil-works/pi-ai";
 import type {
@@ -47,6 +54,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
+import type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
@@ -58,14 +66,16 @@ import type { ScopedModel } from "../model-resolver.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
+	ContextEditEntry,
 	CustomEntry,
+	ProjectedSessionEntry,
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
 } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BuildSystemPromptOptions, NormalizedBuildSystemPromptOptions } from "../system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
@@ -78,13 +88,15 @@ import type {
 	GrepToolInput,
 	LsToolDetails,
 	LsToolInput,
+	PowerShellToolDetails,
+	PowerShellToolInput,
 	ReadToolDetails,
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
-export type { BuildSystemPromptOptions } from "../system-prompt.ts";
+export type { BuildSystemPromptOptions, NormalizedBuildSystemPromptOptions } from "../system-prompt.ts";
 export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 
@@ -177,8 +189,8 @@ export interface ExtensionUIContext {
 	/** Set a custom footer component, or undefined to restore the built-in footer.
 	 *
 	 * The factory receives a FooterDataProvider for data not otherwise accessible:
-	 * git branch and extension statuses from setStatus(). Token stats, model info,
-	 * etc. are available via ctx.sessionManager and ctx.model.
+	 * git branch and extension statuses from setStatus(). Context usage is on
+	 * ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), model info on ctx.model.
 	 */
 	setFooter(
 		factory:
@@ -399,7 +411,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): Promise<void>;
 }
 
@@ -601,7 +613,7 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
-/** Fired after context compaction */
+/** Fired after context compaction succeeds */
 export interface SessionCompactEvent {
 	type: "session_compact";
 	compactionEntry: CompactionEntry;
@@ -610,6 +622,21 @@ export interface SessionCompactEvent {
 	reason: "manual" | "threshold" | "overflow";
 	/** True when the aborted turn is retried after this compaction (overflow recovery) */
 	willRetry: boolean;
+}
+
+/** Fired after context compaction fails or is aborted */
+export interface SessionCompactFailedEvent {
+	type: "session_compact_failed";
+	/** What triggered the compaction: manual /compact, the context threshold, or context overflow recovery */
+	reason: "manual" | "threshold" | "overflow";
+	/** Error text when compaction failed for a non-abort reason. */
+	errorMessage?: string;
+	/** True when compaction was cancelled or aborted. */
+	aborted: boolean;
+	/** True when the aborted turn would have been retried after this compaction (overflow recovery) */
+	willRetry: boolean;
+	/** True when the failing compaction content came from a session_before_compact handler. */
+	fromExtension: boolean;
 }
 
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
@@ -658,6 +685,7 @@ export type SessionEvent =
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| SessionCompactFailedEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -666,9 +694,25 @@ export type SessionEvent =
 // Agent Events
 // ============================================================================
 
-/** Fired before each LLM call. Can modify messages. */
+/**
+ * Fired before each LLM call. Can modify messages.
+ *
+ * `messages` holds the conversation without system messages. The prompt and tool state
+ * belong to Pi: it restores them after the handler returns, so a handler cannot drop
+ * them and does not need to preserve them.
+ */
 export interface ContextEvent {
 	type: "context";
+	messages: AgentMessage[];
+}
+
+/**
+ * Fired before each LLM call, after every `context` handler has run and Pi has restored
+ * the prompt and tool state. `messages` is the full transcript including system messages,
+ * and the result is sent as returned: the handler owns the prompt and tool declarations.
+ */
+export interface ContextWithSystemEvent {
+	type: "context_with_system";
 	messages: AgentMessage[];
 }
 
@@ -695,6 +739,15 @@ export interface AfterProviderResponseEvent {
 	headers: Record<string, string>;
 }
 
+/** Fired for a parsed provider stream event before Pi normalizes it. */
+export interface ProviderStreamEvent {
+	type: "provider_stream_event";
+	provider: ProviderId;
+	api: Api;
+	model: string;
+	data: unknown;
+}
+
 /** Fired after user submits prompt but before agent loop. */
 export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
@@ -702,10 +755,10 @@ export interface BeforeAgentStartEvent {
 	prompt: string;
 	/** Images attached to the user prompt, if any. */
 	images?: ImageContent[];
-	/** The fully assembled system prompt string. */
-	systemPrompt: string;
-	/** Structured options used to build the system prompt. Extensions can inspect this to understand what Pi loaded without re-discovering resources. */
-	systemPromptOptions: BuildSystemPromptOptions;
+	/** The current system prompt, rendered from systemPromptOptions and earlier handler changes. */
+	readonly systemPrompt: string;
+	/** Mutable prompt sections. Later handlers observe mutations made by earlier handlers. */
+	systemPromptOptions: NormalizedBuildSystemPromptOptions;
 }
 
 /** Fired when an agent loop starts */
@@ -719,9 +772,89 @@ export interface AgentEndEvent {
 	messages: AgentMessage[];
 }
 
+export type AgentActivityOutcome = "completed" | "aborted" | "error";
+
+export interface CustomEntryDraft {
+	type: "custom";
+	customType: string;
+	data?: unknown;
+}
+
+export interface CustomMessageEntryDraft {
+	type: "custom_message";
+	customType: string;
+	content: string | (TextContent | ImageContent)[];
+	display: boolean;
+	details?: unknown;
+}
+
+export interface ContextEditEntryDraft {
+	type: "context_edit";
+	targetId: string;
+	replacement: ContextEditEntry["replacement"];
+}
+
+export interface CompactionEntryDraft {
+	type: "compaction";
+	summary: string;
+	/** Null creates a self-retaining compaction that keeps no preceding entries. */
+	firstKeptEntryId: string | null;
+	details?: unknown;
+	usage?: Usage;
+}
+
+export type SessionBoundaryDraft =
+	| CustomEntryDraft
+	| CustomMessageEntryDraft
+	| ContextEditEntryDraft
+	| CompactionEntryDraft;
+
+export interface BoundaryContextPreview {
+	contextEntries: ProjectedSessionEntry[];
+	contextMessages: AgentMessage[];
+	llmMessages: Message[];
+	pendingMessages: AgentMessage[];
+	canContinue: boolean;
+}
+
+export interface BoundaryState {
+	entries: SessionBoundaryDraft[];
+	continue: boolean;
+	context: BoundaryContextPreview;
+	outcome: AgentActivityOutcome;
+}
+
+export interface BoundaryResult {
+	entries?: SessionBoundaryDraft[];
+	continue?: boolean;
+}
+
+/** Fired before final settlement. May append entries and ensure one next provider request. */
+export interface AgentBeforeSettleEvent extends BoundaryState {
+	type: "agent_before_settle";
+}
+
 /** Fired after an agent run has fully settled and no automatic retry, compaction, or queued continuation will run. */
 export interface AgentSettledEvent {
 	type: "agent_settled";
+}
+
+export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
+
+/** Fired when Pi starts waiting on a blocking user-facing extension UI prompt. */
+export interface UIPromptStartEvent {
+	type: "ui_prompt_start";
+	reason: "ui_prompt";
+	kind: UIPromptKind;
+	title?: string;
+}
+
+/** Fired when Pi is no longer waiting on a blocking user-facing extension UI prompt. */
+export interface UIPromptEndEvent {
+	type: "ui_prompt_end";
+	reason: "ui_prompt";
+	kind: UIPromptKind;
+	title?: string;
 }
 
 /** Fired at the start of each turn */
@@ -732,11 +865,13 @@ export interface TurnStartEvent {
 }
 
 /** Fired at the end of each turn */
-export interface TurnEndEvent {
+export interface TurnEndEvent extends BoundaryState {
 	type: "turn_end";
 	turnIndex: number;
 	message: AgentMessage;
 	toolResults: ToolResultMessage[];
+	messageEntryId: string;
+	toolResultEntryIds: string[];
 }
 
 /** Fired when a message starts (user, assistant, or toolResult) */
@@ -860,6 +995,11 @@ export interface BashToolCallEvent extends ToolCallEventBase {
 	input: BashToolInput;
 }
 
+export interface PowerShellToolCallEvent extends ToolCallEventBase {
+	toolName: "powershell";
+	input: PowerShellToolInput;
+}
+
 export interface ReadToolCallEvent extends ToolCallEventBase {
 	toolName: "read";
 	input: ReadToolInput;
@@ -903,6 +1043,7 @@ export interface CustomToolCallEvent extends ToolCallEventBase {
  */
 export type ToolCallEvent =
 	| BashToolCallEvent
+	| PowerShellToolCallEvent
 	| ReadToolCallEvent
 	| EditToolCallEvent
 	| WriteToolCallEvent
@@ -924,6 +1065,11 @@ interface ToolResultEventBase {
 export interface BashToolResultEvent extends ToolResultEventBase {
 	toolName: "bash";
 	details: BashToolDetails | undefined;
+}
+
+export interface PowerShellToolResultEvent extends ToolResultEventBase {
+	toolName: "powershell";
+	details: PowerShellToolDetails | undefined;
 }
 
 export interface ReadToolResultEvent extends ToolResultEventBase {
@@ -964,6 +1110,7 @@ export interface CustomToolResultEvent extends ToolResultEventBase {
 /** Fired after a tool executes. Can modify result. */
 export type ToolResultEvent =
 	| BashToolResultEvent
+	| PowerShellToolResultEvent
 	| ReadToolResultEvent
 	| EditToolResultEvent
 	| WriteToolResultEvent
@@ -975,6 +1122,9 @@ export type ToolResultEvent =
 // Type guards for ToolResultEvent
 export function isBashToolResult(e: ToolResultEvent): e is BashToolResultEvent {
 	return e.toolName === "bash";
+}
+export function isPowerShellToolResult(e: ToolResultEvent): e is PowerShellToolResultEvent {
+	return e.toolName === "powershell";
 }
 export function isReadToolResult(e: ToolResultEvent): e is ReadToolResultEvent {
 	return e.toolName === "read";
@@ -1016,6 +1166,7 @@ export function isLsToolResult(e: ToolResultEvent): e is LsToolResultEvent {
  * CustomToolCallEvent.toolName is `string` which overlaps with all literals.
  */
 export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): event is BashToolCallEvent;
+export function isToolCallEventType(toolName: "powershell", event: ToolCallEvent): event is PowerShellToolCallEvent;
 export function isToolCallEventType(toolName: "read", event: ToolCallEvent): event is ReadToolCallEvent;
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
@@ -1036,13 +1187,19 @@ export type ExtensionEvent =
 	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent
+	| ContextWithSystemEvent
+	| CacheWarmingDecisionEvent
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
+	| ProviderStreamEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
+	| AgentBeforeSettleEvent
 	| AgentSettledEvent
+	| UIPromptStartEvent
+	| UIPromptEndEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| MessageStartEvent
@@ -1066,21 +1223,36 @@ export interface ContextEventResult {
 	messages?: AgentMessage[];
 }
 
+export type TurnEndEventResult = BoundaryResult;
+export type AgentBeforeSettleEventResult = BoundaryResult;
+
 export type BeforeProviderRequestEventResult = unknown;
+
+export type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
 
 export interface ToolCallEventResult {
 	/** Block tool execution. To modify arguments, mutate `event.input` in place instead. */
 	block?: boolean;
 	reason?: string;
+	/**
+	 * Hint that the agent should stop after the current tool batch when this call is blocked.
+	 * Early termination only happens when every finalized tool result in the batch sets this to true.
+	 */
+	terminate?: boolean;
 }
 
 /** Result from user_bash event handler */
-export interface UserBashEventResult {
-	/** Custom operations to use for execution */
-	operations?: BashOperations;
-	/** Full replacement: extension handled execution, use this result */
-	result?: BashResult;
-}
+export type UserBashEventResult =
+	| {
+			/** Custom operations to use for execution */
+			operations: BashOperations;
+			result?: never;
+	  }
+	| {
+			operations?: never;
+			/** Full replacement: extension handled execution, use this result */
+			result: BashResult;
+	  };
 
 export interface ToolResultEventResult {
 	content?: (TextContent | ImageContent)[];
@@ -1096,7 +1268,7 @@ export interface MessageEndEventResult {
 
 export interface BeforeAgentStartEventResult {
 	message?: Pick<CustomMessage, "customType" | "content" | "display" | "details">;
-	/** Replace the system prompt for this turn. If multiple extensions return this, they are chained. */
+	/** Replace the complete system prompt for this turn. Later handlers observe this exact override. */
 	systemPrompt?: string;
 }
 
@@ -1138,6 +1310,14 @@ export interface MessageRenderOptions {
 	/** Horizontal padding configured by the outputPad setting. */
 	outputPad: number;
 }
+
+export interface MarkdownTransformContext {
+	messageType: "user" | "assistant" | "assistant-thinking";
+	isStreaming: boolean;
+	availableWidth: number;
+}
+
+export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
 
 export interface EntryRenderOptions {
 	expanded: boolean;
@@ -1187,48 +1367,73 @@ export interface ExtensionAPI {
 	// Event Subscription
 	// =========================================================================
 
-	on(event: "project_trust", handler: ProjectTrustHandler): void;
-	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
-	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
-	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
+	on(event: "project_trust", handler: ProjectTrustHandler): () => void;
+	on(
+		event: "resources_discover",
+		handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>,
+	): () => void;
+	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): () => void;
+	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): () => void;
 	on(
 		event: "session_before_switch",
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
-	): void;
-	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
+	): () => void;
+	on(
+		event: "session_before_fork",
+		handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>,
+	): () => void;
 	on(
 		event: "session_before_compact",
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
-	): void;
-	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
-	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
-	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
-	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
-	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
+	): () => void;
+	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): () => void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): () => void;
+	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): () => void;
+	on(
+		event: "session_before_tree",
+		handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>,
+	): () => void;
+	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): () => void;
+	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): () => void;
+	on(event: "context_with_system", handler: ExtensionHandler<ContextWithSystemEvent, ContextEventResult>): () => void;
+	on(
+		event: "cache_warming_decision",
+		handler: ExtensionHandler<CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult>,
+	): () => void;
 	on(
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
-	): void;
-	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): void;
-	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
-	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
-	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
-	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
-	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
-	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
-	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
-	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
-	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
-	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): void;
-	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): void;
-	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): void;
-	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
-	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent>): void;
-	on(event: "thinking_level_select", handler: ExtensionHandler<ThinkingLevelSelectEvent>): void;
-	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
-	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
-	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
-	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	): () => void;
+	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): () => void;
+	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): () => void;
+	on(event: "provider_stream_event", handler: ExtensionHandler<ProviderStreamEvent>): () => void;
+	on(
+		event: "before_agent_start",
+		handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>,
+	): () => void;
+	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): () => void;
+	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): () => void;
+	on(
+		event: "agent_before_settle",
+		handler: ExtensionHandler<AgentBeforeSettleEvent, AgentBeforeSettleEventResult>,
+	): () => void;
+	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
+	on(event: "ui_prompt_start", handler: ExtensionHandler<UIPromptStartEvent>): () => void;
+	on(event: "ui_prompt_end", handler: ExtensionHandler<UIPromptEndEvent>): () => void;
+	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
+	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, TurnEndEventResult>): () => void;
+	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): () => void;
+	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): () => void;
+	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): () => void;
+	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): () => void;
+	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): () => void;
+	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): () => void;
+	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent>): () => void;
+	on(event: "thinking_level_select", handler: ExtensionHandler<ThinkingLevelSelectEvent>): () => void;
+	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): () => void;
+	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): () => void;
+	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): () => void;
+	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): () => void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1258,11 +1463,17 @@ export interface ExtensionAPI {
 	/** Register a CLI flag. */
 	registerFlag(
 		name: string,
-		options: {
-			description?: string;
-			type: "boolean" | "string";
-			default?: boolean | string;
-		},
+		options:
+			| {
+					description?: string;
+					type: "boolean";
+					default?: boolean;
+			  }
+			| {
+					description?: string;
+					type: "string";
+					default?: string;
+			  },
 	): void;
 
 	/** Get the value of a registered CLI flag. */
@@ -1274,6 +1485,9 @@ export interface ExtensionAPI {
 
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
+
+	/** Register a transformer for user and assistant Markdown before Pi renders it in the interactive transcript. */
+	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
@@ -1291,10 +1505,11 @@ export interface ExtensionAPI {
 	/**
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
+	 * Set expandPromptTemplates to dispatch extension commands and expand skill commands and prompt templates.
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
@@ -1332,13 +1547,19 @@ export interface ExtensionAPI {
 	// Model and Thinking Level
 	// =========================================================================
 
-	/** Set the current model. Returns false if no API key available. */
+	/**
+	 * Set the model for the current session without changing the configured default for new sessions.
+	 * Returns false if authentication is not configured for the model's provider.
+	 */
 	setModel(model: Model<any>): Promise<boolean>;
 
 	/** Get current thinking level. */
 	getThinkingLevel(): ThinkingLevel;
 
-	/** Set thinking level (clamped to model capabilities). */
+	/**
+	 * Set the thinking level (clamped to model capabilities) for the current session without changing the configured default
+	 * for new sessions.
+	 */
 	setThinkingLevel(level: ThinkingLevel): void;
 
 	// =========================================================================
@@ -1433,8 +1654,25 @@ export interface ProviderConfig {
 	apiKey?: string;
 	/** API type. Required at provider or model level when defining models. */
 	api?: Api;
-	/** Optional streamSimple handler for custom APIs. */
-	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	/**
+	 * Optional streamSimple handler for custom APIs.
+	 * The context is a normalized transcript: read the prompt and tools from its system messages
+	 * (`getCurrentSystemPrompt(context.messages)`, `getCurrentTools(context.messages)`).
+	 * Implementations must invoke `options.onPayload` before sending the provider request and use any
+	 * returned replacement payload. They must invoke `options.onResponse` after receiving the response
+	 * and before consuming its body, matching built-in providers. Implementations may invoke
+	 * `options.onProviderStreamEvent(data, model)` with parsed stream events before normalization.
+	 * Event data is adapter-owned and must be treated as read-only.
+	 */
+	streamSimple?: (
+		model: Model<Api>,
+		context: TranscriptContext,
+		options?: SimpleStreamOptions,
+	) => AssistantMessageEventStream;
+	/** Image-generation implementations keyed by image API. */
+	images?: Partial<Record<ImageApi, ProviderImages>>;
+	/** Classifier implementations keyed by classifier API. */
+	classifiers?: Partial<Record<ClassifierApi, ProviderClassifier>>;
 	/** Custom headers to include in requests. */
 	headers?: Record<string, string>;
 	/** If true, adds Authorization: Bearer header with the resolved API key. */
@@ -1443,19 +1681,21 @@ export interface ProviderConfig {
 	models?: ProviderModelConfig[];
 	/**
 	 * Refresh this provider's model list. The returned list replaces extension-provided models.
-	 * Use context.store explicitly when the catalog should persist across sessions.
+	 * Use context.publish({ persist: entry }) when the catalog should persist across sessions.
 	 */
 	refreshModels?(context: RefreshModelsContext): Promise<ProviderModelConfig[]>;
 	/** OAuth provider for /login support. The `id` is set automatically from the provider name. */
 	oauth?: {
 		/** Display name for the provider in login UI. */
 		name: string;
+		/** Whether access through this auth method is backed by a provider subscription. */
+		isSubscription?: boolean;
 		/** @deprecated Retained for source compatibility; canonical auth flows ignore it. */
 		usesCallbackServer?: boolean;
 		/** Run the login flow, return credentials to persist. */
 		login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
 		/** Refresh expired credentials, return updated credentials to persist. */
-		refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+		refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 		/** Convert credentials to API key string for the provider. */
 		getApiKey(credentials: OAuthCredentials): string;
 		/** Legacy synchronous credential-dependent model projection. */
@@ -1463,33 +1703,60 @@ export interface ProviderConfig {
 	};
 }
 
-/** Configuration for a model within a provider. */
-export interface ProviderModelConfig {
-	/** Model ID (e.g., "claude-sonnet-4-20250514"). */
+interface ProviderModelConfigBase {
+	/** Model ID. */
 	id: string;
-	/** Display name (e.g., "Claude 4 Sonnet"). */
+	/** Display name. */
 	name: string;
 	/** API type override for this model. */
-	api?: Api;
+	api?: string;
 	/** API endpoint URL override for this model. */
 	baseUrl?: string;
+	/** Supported input types. */
+	input: ("text" | "image")[];
+	/** Provider input limits and cache-safe image preprocessing metadata. */
+	inputLimits?: AnyModel["inputLimits"];
+	/** Per-million-token cost rates and optional request-wide input pricing tiers. */
+	cost: AnyModel["cost"];
+	/** Custom headers for this model. */
+	headers?: Record<string, string>;
+}
+
+/** Chat model configuration. Omitted `type` is normalized to `"chat"`. */
+export interface ProviderChatModelConfig extends ProviderModelConfigBase {
+	type?: "chat";
+	api?: Api;
 	/** Whether the model supports extended thinking. */
 	reasoning: boolean;
 	/** Maps pi thinking levels to provider/model-specific values; null marks a level unsupported. */
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
-	/** Supported input types. */
-	input: ("text" | "image")[];
-	/** Per-million-token cost rates and optional request-wide input pricing tiers. */
-	cost: Model<Api>["cost"];
+	/** Best-effort prompt cache lifetime in seconds per retention tier. Unset disables cache warming. */
+	promptCache?: Model<Api>["promptCache"];
 	/** Maximum context window size in tokens. */
 	contextWindow: number;
 	/** Maximum output tokens. */
 	maxTokens: number;
-	/** Custom headers for this model. */
-	headers?: Record<string, string>;
+	samplingParams?: Record<string, unknown>;
 	/** OpenAI compatibility settings. */
 	compat?: Model<Api>["compat"];
 }
+
+/** Image-generation model configuration. */
+export interface ProviderImageModelConfig extends ProviderModelConfigBase {
+	type: "image";
+	api?: ImageApi;
+	output: ("text" | "image")[];
+}
+
+/** Structured classifier model configuration. */
+export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
+	type: "classifier";
+	api?: ClassifierApi;
+	contextWindow: number;
+}
+
+/** Configuration for a model within a provider. */
+export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelConfig | ProviderClassifierModelConfig;
 
 /** Extension factory function type. Supports both sync and async initialization. */
 export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;
@@ -1537,7 +1804,7 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 ) => void;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
@@ -1583,6 +1850,8 @@ export interface ExtensionRuntimeState {
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;
+	/** Retain an event-bus subscription until this runtime is invalidated. */
+	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
 	/**
 	 * Register or unregister a provider.
 	 *
@@ -1675,6 +1944,7 @@ export interface Extension {
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
+	markdownTransformer?: MarkdownTransformer;
 	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
@@ -1685,6 +1955,7 @@ export interface Extension {
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
+	warnings?: Array<{ path: string; warning: string }>;
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */
 	runtime: ExtensionRuntime;
 }
