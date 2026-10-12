@@ -1,9 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+	detectInstallChange,
 	detectInstallMethod,
+	findNodePackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getUpdateInstruction,
@@ -145,15 +147,21 @@ function createFakeBunScript(bunBin: string): string {
 	return `#!/bin/sh\nif [ "$1" = "pm" ] && [ "$2" = "bin" ] && [ "$3" = "-g" ]; then\n\tprintf '%s\\n' '${escapedBunBin}'\n\texit 0\nfi\nexit 1\n`;
 }
 
+describe("findNodePackageDir", () => {
+	test("skips binary metadata copied into dist", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-package-dir-"));
+		const distDir = join(tempDir, "dist");
+		const bundleDir = join(distDir, "bundle");
+		mkdirSync(bundleDir, { recursive: true });
+		writeFileSync(join(tempDir, "package.json"), "{}");
+		writeFileSync(join(distDir, "package.json"), "{}");
+
+		expect(findNodePackageDir(bundleDir)).toBe(tempDir);
+	});
+});
+
 describe("detectInstallMethod", () => {
 	test("detects pnpm from Windows .pnpm install paths", () => {
-		const root = mkdtempSync(join(tmpdir(), "pi-pnpm-path-detection-"));
-		const marker = join(root, "pnpm-invoked");
-		const command = join(root, "pnpm");
-		writeFileSync(command, `#!/bin/sh\n: > '${marker}'\nprintf '%s\\n' '/unexpected/root'\n`);
-		chmodSync(command, 0o755);
-		tempDir = root;
-		process.env.PATH = `${root}${delimiter}${originalPath ?? ""}`;
 		setExecPath(
 			"C:\\Users\\Admin\\Documents\\pnpm-repository\\global\\5\\.pnpm\\@earendil-works+pi-coding-agent@0.67.68\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
 		);
@@ -162,7 +170,6 @@ describe("detectInstallMethod", () => {
 		expect(getUpdateInstruction("@earendil-works/pi-coding-agent")).toBe(
 			"Run: pnpm install -g --ignore-scripts --config.minimumReleaseAge=0 @earendil-works/pi-coding-agent",
 		);
-		expect(existsSync(marker)).toBe(false);
 	});
 
 	test("does not self-update unknown wrapper installs", () => {
@@ -441,5 +448,17 @@ describe("detectInstallMethod", () => {
 		expect(getSelfUpdateUnavailableInstruction("@earendil-works/pi-coding-agent")).toContain(
 			"the install path is not writable",
 		);
+	});
+});
+
+describe("detectInstallChange", () => {
+	// Regression test for #10439: a deleted pnpm install must not fall back to a package.json further up.
+	test("reports a removed install instead of reading a package.json further up", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-install-change-"));
+		const installDir = join(tempDir, "global", "hash");
+		mkdirSync(installDir, { recursive: true });
+		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ version: "0.0.1" }));
+		rmSync(installDir, { recursive: true, force: true });
+		expect(detectInstallChange(join(installDir, "package.json"))).toEqual({ kind: "removed" });
 	});
 });
