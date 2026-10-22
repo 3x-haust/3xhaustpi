@@ -33,6 +33,7 @@
 
 | 검사 | exit code | 결과 |
 | --- | --- | --- |
+| `npm ci --ignore-scripts` | 0 | lifecycle scripts 없이 설치 완료 |
 | 루트 `npx tsgo --noEmit` | 2 → 0 | 외부 전체 갱신 상태의 타입 오류는 타 provider 변경 제외 후 0 오류 |
 | `npm run check` | 1 → 0 | lock 재생성 후 shrinkwrap·install-lock을 재생성하여 통과 |
 | pinned-deps / shrinkwrap / install-lock check | 0 / 0 / 0 | 전체 check에 포함 |
@@ -46,7 +47,7 @@
 
 ## 출처 목록
 
-- 공개 소스 / 코딩 하네스: https://github.com/3x-haust/3xhaustpi , 기준 커밋 `c7fde03` (0.2.6 준비), SPDX `MIT`.
+- 공개 소스 / 코딩 하네스: https://github.com/3x-haust/3xhaustpi , 기준 커밋 `c7fde0353185bc0ee794de8e4d319beadd00031d` (0.2.6 준비), SPDX `MIT`.
 - https://github.com/3x-haust/3xhaustpi/pull/15 : 스냅샷·오프라인 빌드 관례, `3xhaust/model-catalog-build.md:19`.
 - https://github.com/3x-haust/3xhaustpi/pull/16 : 제품만 버전 변경하는 릴리스 준비 관례.
 - https://models.dev/api.json : 외부 OpenAI 모델 입력. `packages/ai/src/providers/data/openai.json:1`, `openai-codex.json:1`, `.manifest.json:1`.

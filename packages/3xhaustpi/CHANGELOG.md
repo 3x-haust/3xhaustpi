@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-22
+
+### Added
+
+- Added GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna for OpenAI and ChatGPT Codex accounts, with 1.05M context, reasoning levels, and long-context pricing.
+
+### Fixed
+
+- Bundled the reviewed GPT-6 model snapshot so installed clients can resolve the new models independently of the pinned pi-ai catalog.
+
 ## [0.2.6] - 2026-10-22
 
 ### Added
