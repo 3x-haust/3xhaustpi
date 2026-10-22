@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
+import { addOpenAiGpt6Models } from "./openai-gpt6-models.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
 	CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
@@ -2409,6 +2410,7 @@ async function generateModels() {
 		},
 	];
 	allModels.push(...codexModels);
+	addOpenAiGpt6Models(allModels);
 
 	// Add missing Mistral Medium 3.5 model until models.dev includes it
 	if (!allModels.some(m => m.provider === "mistral" && m.id === "mistral-medium-3.5")) {
