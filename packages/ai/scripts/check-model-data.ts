@@ -11,6 +11,8 @@ try {
 	console.log("Generated model data is valid.");
 } catch (error) {
 	console.error(error instanceof Error ? error.message : String(error));
-	console.error("\nModel data is missing or stale. Run `npm run hydrate:model-data` from the repository root.");
+	console.error(
+		"\nModel data is missing or stale. Restore the committed snapshot, or explicitly refresh it with `npm --prefix packages/ai run generate-models`.",
+	);
 	process.exitCode = 1;
 }

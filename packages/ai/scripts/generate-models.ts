@@ -810,6 +810,9 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "groq" && model.id === "qwen/qwen3-32b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
 	}
+	if (model.provider === "groq" && model.id === "qwen/qwen3.6-27b") {
+		mergeThinkingLevelMap(model, { off: "none", minimal: "none", low: "none", medium: "none", high: "default" });
+	}
 	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
 	}
@@ -1808,8 +1811,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Kimi For Coding models
-		if (data["kimi-for-coding"]?.models) {
-			const kimiModels = data["kimi-for-coding"].models as Record<string, ModelsDevModel>;
+		if (data["kimi-code-plan-cn"]?.models) {
+			const kimiModels = data["kimi-code-plan-cn"].models;
 			const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
 
 			const kimiAliases = new Set(["k2p5", "k2p6", "k2p7"]);
@@ -2029,6 +2032,13 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 }
 
 async function generateModels() {
+	// Builds consume the reviewed snapshot. Refreshing external catalogs is explicit.
+	if (generatorOptions.dataOnly) {
+		validateGeneratedModelData(packageRoot);
+		console.log("Committed model data is valid; no network hydration needed.");
+		return;
+	}
+
 	// Fetch models from both sources
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
 	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
