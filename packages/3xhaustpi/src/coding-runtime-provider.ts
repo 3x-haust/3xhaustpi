@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Models } from "@earendil-works/pi-ai";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
+import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 import type { SemanticTurnResult } from "../../pi-adapter/src/index.ts";
 import { type PiComplete, X3HAUST_SEMANTIC_STABLE_PREFIX } from "../../pi-adapter/src/index.ts";
 import type {
@@ -46,6 +47,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 	);
 	if (!(await models.checkAuth(provider))) throw new Error(`Provider is not authenticated: ${provider}`);
 	const model = resolveModel(models, provider, modelId);
+	const promptCacheKey = clampOpenAIPromptCacheKey(input.promptCacheKey ?? (input.sessionId || undefined));
 	try {
 		const message = await models.completeSimple(
 			model,
@@ -66,7 +68,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			},
 			{
 				...(input.signal ? { signal: input.signal } : {}),
-				...(input.sessionId ? { sessionId: input.sessionId, promptCacheKey: input.sessionId } : {}),
+				...(input.sessionId ? { sessionId: input.sessionId } : {}),
+				...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
 				...(model.api === "openai-codex-responses" ? { transport: "websocket" as const } : {}),
 				cacheRetention: "long",
 				maxRetries: 0,
