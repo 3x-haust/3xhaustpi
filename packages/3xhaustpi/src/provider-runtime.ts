@@ -9,7 +9,7 @@ import type {
 	Models,
 	MutableModels,
 } from "@earendil-works/pi-ai";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { builtinModels } from "./builtin-models.ts";
 import { FileCredentialStore, SystemCredentialStore, systemCredentialStoreName } from "./credential-store.ts";
 import { ACTIVE_KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE, resolveAuthPath } from "./identity.ts";
 import { codexCredentialStorageId } from "./provider-accounts.ts";
