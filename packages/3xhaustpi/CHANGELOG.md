@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-22
+
+### Added
+
+- Added optional `ConversationInput.promptCacheKey` for stable cache affinity independent of per-call session resource IDs. Omitted keys fall back to `sessionId`; keys use pi-ai's 64-code-point clamp and retain long cache retention.
+
 ## [0.2.7] - 2026-10-22
 
 ### Added

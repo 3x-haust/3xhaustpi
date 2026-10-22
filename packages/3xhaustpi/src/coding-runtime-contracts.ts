@@ -130,6 +130,8 @@ export interface ConversationInput {
 	readonly prompt: string;
 	readonly images?: readonly CodingTaskImage[];
 	readonly sessionId?: string;
+	/** Stable cache affinity, clamped to 64 Unicode code points. Defaults to sessionId; does not own resources. */
+	readonly promptCacheKey?: string;
 	readonly signal?: AbortSignal;
 }
 

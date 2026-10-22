@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type { CodingTaskEvent as RuntimeEvent } from "../src/coding-runtime.ts";
-import type { CodingTaskEvent as ShippedEvent } from "../src/runtime-api.d.ts";
+import type { CodingTaskEvent as ShippedEvent, ConversationInput as ShippedInput } from "../src/runtime-api.d.ts";
+import type { ConversationInput as EntryInput } from "../src/runtime-entry.ts";
 
 const eventContract: [
 	RuntimeEvent extends ShippedEvent ? true : false,
@@ -8,6 +9,11 @@ const eventContract: [
 ] = [true, true];
 
 describe("published runtime declaration", () => {
+	it("publishes the optional conversation cache key through both entry points", () => {
+		expectTypeOf<EntryInput>().toEqualTypeOf<ShippedInput>();
+		expectTypeOf<ShippedInput["promptCacheKey"]>().toEqualTypeOf<string | undefined>();
+	});
+
 	it("matches the runtime event union in both directions", () => {
 		expect(eventContract).toEqual([true, true]);
 	});
