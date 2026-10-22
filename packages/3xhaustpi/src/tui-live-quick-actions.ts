@@ -45,7 +45,6 @@ export async function startCompaction(instructions: string, core: TuiLiveCore, v
 				: `est. ${compactContextTokens(result.tokensBefore)} → ${compactContextTokens(result.estimatedTokensAfter)} tokens (${(
 						(1 - result.estimatedTokensAfter / result.tokensBefore) * 100
 					).toFixed(1)}% less)`;
-		view.appendText(success(`✓ Context compacted · ${reduction} · ${durationSeconds.toFixed(1)}s`));
 		try {
 			const conversation = await loadAgentConversation(core.state.projectRoot, head.sessionId);
 			view.replaceConversation(conversation.messages);
@@ -54,6 +53,7 @@ export async function startCompaction(instructions: string, core: TuiLiveCore, v
 				warning(`Compacted, but transcript refresh failed: ${cause instanceof Error ? cause.message : cause}`),
 			);
 		}
+		view.appendText(success(`✓ Context compacted · ${reduction} · ${durationSeconds.toFixed(1)}s`));
 	} catch (cause) {
 		const message = cause instanceof Error ? cause.message : String(cause);
 		const context = contextUsageLabel(core.state.latestContextTokens, liveContextLimit(core), "feedback");
