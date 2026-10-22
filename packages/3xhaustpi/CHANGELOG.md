@@ -2,9 +2,20 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-22
+
 ### Added
 
 - Added optional conversation usage, pi-ai calculated costs, stop reason, response ID, and response provider/model metadata for downstream embedders. Unknown values remain null; cache counts are reported only when positive because pi-ai normalizes unreported cache counts to zero.
+
+### Changed
+
+- Upgraded the published coding-agent runtime dependency to 1.3.0 and updated vulnerable dependencies and production locks.
+- Made model catalog hydration and builds use a validated committed snapshot, with external catalog updates remaining explicit.
+
+### Fixed
+
+- Kept compaction success feedback visible after reloading the transcript with coding-agent 1.3.0.
 
 ## [0.2.5] - 2026-09-04
 
