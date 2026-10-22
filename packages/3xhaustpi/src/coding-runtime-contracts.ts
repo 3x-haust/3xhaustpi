@@ -137,6 +137,24 @@ export interface ConversationResult {
 	readonly text: string;
 	readonly inputTokens: number;
 	readonly outputTokens: number;
+	readonly usage?: {
+		readonly input: number | null;
+		readonly output: number | null;
+		readonly cacheRead: number | null;
+		readonly cacheWrite: number | null;
+	} | null;
+	/** Model-rate costs calculated by pi-ai, not a provider billing receipt. */
+	readonly cost?: {
+		readonly input: number | null;
+		readonly output: number | null;
+		readonly cacheRead: number | null;
+		readonly cacheWrite: number | null;
+		readonly total: number | null;
+	} | null;
+	readonly stopReason?: string | null;
+	readonly responseId?: string | null;
+	readonly provider?: string | null;
+	readonly model?: string | null;
 }
 
 export interface ResumeCodingTaskInput {

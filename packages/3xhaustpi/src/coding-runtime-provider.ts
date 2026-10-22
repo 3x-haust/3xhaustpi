@@ -85,7 +85,31 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			.join("")
 			.trim();
 		if (!text) throw new Error("Conversation provider returned no text");
-		return { text, inputTokens: message.usage.input, outputTokens: message.usage.output };
+		return {
+			text,
+			inputTokens: message.usage.input,
+			outputTokens: message.usage.output,
+			usage: {
+				input: message.usage.input ?? null,
+				output: message.usage.output ?? null,
+				// pi-ai normalizes unreported cache counts to zero, so only a positive count proves a report.
+				cacheRead: reportedCacheCount(message.usage.cacheRead),
+				cacheWrite: reportedCacheCount(message.usage.cacheWrite),
+			},
+			cost: message.usage.cost
+				? {
+						input: message.usage.cost.input ?? null,
+						output: message.usage.cost.output ?? null,
+						cacheRead: message.usage.cost.cacheRead ?? null,
+						cacheWrite: message.usage.cost.cacheWrite ?? null,
+						total: message.usage.cost.total ?? null,
+					}
+				: null,
+			stopReason: message.stopReason ?? null,
+			responseId: message.responseId ?? null,
+			provider: message.provider ?? null,
+			model: message.responseModel ?? message.model ?? null,
+		};
 	} finally {
 		if (input.sessionId) cleanupSessionResources(input.sessionId);
 	}
@@ -102,6 +126,10 @@ export function semanticUsage(result: Pick<SemanticTurnResult, "usage">): Coding
 		cacheRead: measured("cacheRead"),
 		cacheWrite: measured("cacheWrite"),
 	};
+}
+
+function reportedCacheCount(value: number | undefined): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 const PROVIDER_TURN_TIMEOUT_MS = 60_000;
