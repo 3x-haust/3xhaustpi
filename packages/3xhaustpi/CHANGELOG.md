@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional conversation usage, pi-ai calculated costs, stop reason, response ID, and response provider/model metadata for downstream embedders. Unknown values remain null; cache counts are reported only when positive because pi-ai normalizes unreported cache counts to zero.
+
 ## [0.2.5] - 2026-09-04
 
 ### Fixed

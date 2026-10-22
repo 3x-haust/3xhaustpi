@@ -91,7 +91,17 @@ describe("runConversation", () => {
 			}),
 		);
 		expect(mocks.completeSimple.mock.calls[0]?.[1]).not.toHaveProperty("tools");
-		expect(result).toEqual({ text: "direct answer", inputTokens: 17, outputTokens: 9 });
+		expect(result).toEqual({
+			text: "direct answer",
+			inputTokens: 17,
+			outputTokens: 9,
+			usage: { input: 17, output: 9, cacheRead: null, cacheWrite: null },
+			cost: usage.cost,
+			stopReason: "stop",
+			responseId: null,
+			provider: null,
+			model: null,
+		});
 		expect(mocks.cleanupSessionResources).toHaveBeenCalledWith("session-chat-1");
 	});
 
