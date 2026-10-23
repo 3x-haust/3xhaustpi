@@ -173,6 +173,8 @@ export interface ConversationResult {
 		readonly input: number | null;
 		readonly output: number | null;
 		readonly cacheRead: number | null;
+		/** True only when a valid raw count or positive normalized count proves provider reporting. */
+		readonly cacheReadReported?: boolean;
 		readonly cacheWrite: number | null;
 	} | null;
 	/** Model-rate costs calculated by pi-ai, not a provider billing receipt. */

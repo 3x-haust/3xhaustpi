@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Apply conversation cache affinity at the final Codex payload boundary: the pinned pi-ai 0.84.3 drops `promptCacheKey` and otherwise sends the changing resource session ID as `prompt_cache_key`.
+- Preserve explicit zero Codex `cached_tokens` separately from unavailable cache usage. Conversation results include `usage.cacheReadReported`; normalized zero alone remains unknown. Codex conversations use SSE to observe raw usage before pi-ai normalization, retaining stable prompt-cache affinity and per-call resource cleanup. Prepared package/product identity 0.2.9; publishing remains a separate operation.
+
 ## [0.2.8] - 2026-10-22
 
 ### Added
