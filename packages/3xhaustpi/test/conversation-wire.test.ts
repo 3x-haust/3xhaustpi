@@ -8,9 +8,11 @@ describe("conversation provider wire", () => {
 	it.each([0, 2048, undefined])("reports raw cache count %s through the installed pi-ai adapter", async (cached) => {
 		// Given: an isolated HTTP boundary, with no real credential or provider access.
 		let payload: unknown;
+		let sessionHeader: string | null = null;
 		const fetch: typeof globalThis.fetch = async (_input, init) => {
 			const body = init?.body;
 			const headers = new Headers(init?.headers);
+			sessionHeader = headers.get("session-id");
 			if (typeof body === "string") payload = JSON.parse(body);
 			else if (body instanceof Uint8Array && headers.get("content-encoding") === "zstd")
 				payload = JSON.parse(zstdDecompressSync(body).toString("utf8"));
@@ -72,6 +74,8 @@ describe("conversation provider wire", () => {
 			store: false,
 		});
 		expect(payload).not.toHaveProperty("previous_response_id");
+		// Then: the per-call session id does not split cache routing away from the stable key.
+		expect(sessionHeader).toBe("stable-wire-key");
 		expect(result.usage).toMatchObject({ cacheRead: cached ?? null, cacheReadReported: cached !== undefined });
 	});
 });

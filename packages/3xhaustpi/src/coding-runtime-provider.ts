@@ -70,7 +70,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			},
 			{
 				...(input.signal ? { signal: input.signal } : {}),
-				...(input.sessionId ? { sessionId: input.sessionId } : {}),
+				// Codex routes cache affinity by the session-id header, so it must carry the stable key.
+				...(promptCacheKey ? { sessionId: promptCacheKey } : input.sessionId ? { sessionId: input.sessionId } : {}),
 				...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
 				...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
 					? {

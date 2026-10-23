@@ -52,13 +52,18 @@ describe("conversation cache affinity", () => {
 		mocks.completeSimple.mockResolvedValue(message);
 	});
 
-	it("reuses an explicit key across distinct resource sessions", async () => {
+	it("routes distinct resource sessions through the explicit key", async () => {
 		for (const sessionId of ["request-1", "request-2"]) {
 			await runConversation({ system: "Chat.", prompt: "Hello", sessionId, promptCacheKey: "stable-chat" });
 			expect(mocks.completeSimple).toHaveBeenLastCalledWith(
 				expect.anything(),
 				expect.anything(),
-				expect.objectContaining({ sessionId, promptCacheKey: "stable-chat", cacheRetention: "long" }),
+				// Codex routes cache affinity by the session-id header, so the provider session is the stable key.
+				expect.objectContaining({
+					sessionId: "stable-chat",
+					promptCacheKey: "stable-chat",
+					cacheRetention: "long",
+				}),
 			);
 			expect(mocks.cleanupSessionResources).toHaveBeenLastCalledWith(sessionId);
 		}
@@ -80,7 +85,7 @@ describe("conversation cache affinity", () => {
 	it.each(["a".repeat(65), "\u{1d11e}".repeat(65)])("clamps long keys by Unicode code point: %s", async (key) => {
 		await runConversation({ system: "Chat.", prompt: "Hello", sessionId: "resource", promptCacheKey: key });
 		expect(mocks.completeSimple.mock.calls[0]?.[2]).toMatchObject({
-			sessionId: "resource",
+			sessionId: Array.from(key).slice(0, 64).join(""),
 			promptCacheKey: Array.from(key).slice(0, 64).join(""),
 			cacheRetention: "long",
 		});
@@ -90,7 +95,7 @@ describe("conversation cache affinity", () => {
 		const sessionId = "s".repeat(80);
 		await runConversation({ system: "Chat.", prompt: "Hello", sessionId });
 		expect(mocks.completeSimple.mock.calls[0]?.[2]).toMatchObject({
-			sessionId,
+			sessionId: "s".repeat(64),
 			promptCacheKey: "s".repeat(64),
 			cacheRetention: "long",
 		});
@@ -103,7 +108,8 @@ describe("conversation cache affinity", () => {
 			await runConversation({ system: "Chat.", prompt: "Hello", promptCacheKey });
 			const options = mocks.completeSimple.mock.calls[0]?.[2];
 			expect(options).toMatchObject({ promptCacheKey, cacheRetention: "long" });
-			expect(options).not.toHaveProperty("sessionId");
+			if (promptCacheKey) expect(options).toMatchObject({ sessionId: promptCacheKey });
+			else expect(options).not.toHaveProperty("sessionId");
 			expect(mocks.cleanupSessionResources).not.toHaveBeenCalled();
 		},
 	);
