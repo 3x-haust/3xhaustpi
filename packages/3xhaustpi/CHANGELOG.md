@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-10-23
+
+### Fixed
+
+- Send the stable conversation cache key as the Codex `session-id` header. A production probe showed that the same `prompt_cache_key` with a changing per-call session header never hit the cache (0 of 5,614 tokens), while a matching header read 5,376 cached tokens on the second call.
+
+## [0.2.9] - 2026-10-23
+
 ### Fixed
 
 - Apply conversation cache affinity at the final Codex payload boundary: the pinned pi-ai 0.84.3 drops `promptCacheKey` and otherwise sends the changing resource session ID as `prompt_cache_key`.
