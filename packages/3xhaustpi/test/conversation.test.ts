@@ -85,7 +85,8 @@ describe("runConversation", () => {
 				],
 			},
 			expect.objectContaining({
-				transport: "websocket",
+				transport: "sse",
+				fetch: expect.any(Function),
 				sessionId: "session-chat-1",
 				promptCacheKey: "session-chat-1",
 			}),
@@ -95,7 +96,7 @@ describe("runConversation", () => {
 			text: "direct answer",
 			inputTokens: 17,
 			outputTokens: 9,
-			usage: { input: 17, output: 9, cacheRead: null, cacheWrite: null },
+			usage: { input: 17, output: 9, cacheRead: null, cacheReadReported: false, cacheWrite: null },
 			cost: usage.cost,
 			stopReason: "stop",
 			responseId: null,

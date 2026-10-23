@@ -10,6 +10,7 @@ import type {
 	ConversationInput,
 	ConversationResult,
 } from "./coding-runtime-contracts.ts";
+import { conversationCacheUsage } from "./conversation-cache-usage.ts";
 import {
 	createProviderRuntime,
 	DEFAULT_MODEL,
@@ -48,6 +49,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 	if (!(await models.checkAuth(provider))) throw new Error(`Provider is not authenticated: ${provider}`);
 	const model = resolveModel(models, provider, modelId);
 	const promptCacheKey = clampOpenAIPromptCacheKey(input.promptCacheKey ?? (input.sessionId || undefined));
+	const cacheUsage = conversationCacheUsage();
 	try {
 		const message = await models.completeSimple(
 			model,
@@ -70,7 +72,17 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 				...(input.signal ? { signal: input.signal } : {}),
 				...(input.sessionId ? { sessionId: input.sessionId } : {}),
 				...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
-				...(model.api === "openai-codex-responses" ? { transport: "websocket" as const } : {}),
+				...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
+					? {
+							onPayload: (payload: unknown) => {
+								if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+									throw new Error("Invalid Codex conversation payload");
+								return { ...payload, prompt_cache_key: promptCacheKey };
+							},
+						}
+					: {}),
+				// SSE exposes the raw usage boundary; WebSocket usage is already normalized by pi-ai.
+				...(model.api === "openai-codex-responses" ? { transport: "sse" as const, fetch: cacheUsage.fetch } : {}),
 				cacheRetention: "long",
 				maxRetries: 0,
 				maxTokens: 4_096,
@@ -95,8 +107,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			usage: {
 				input: message.usage.input ?? null,
 				output: message.usage.output ?? null,
-				// pi-ai normalizes unreported cache counts to zero, so only a positive count proves a report.
-				cacheRead: reportedCacheCount(message.usage.cacheRead),
+				cacheRead: cacheUsage.cacheRead ?? reportedCacheCount(message.usage.cacheRead),
+				cacheReadReported: cacheUsage.cacheRead !== null || reportedCacheCount(message.usage.cacheRead) !== null,
 				cacheWrite: reportedCacheCount(message.usage.cacheWrite),
 			},
 			cost: message.usage.cost
