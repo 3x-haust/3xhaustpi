@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 .artifacts/
 *.log
@@ -8,6 +8,7 @@ dist/
 packages/*/dist/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
+packages/ai/src/providers/data/
 packages/ai/src/providers/.model-generation-*/
 *.cpuprofile
 
@@ -36,8 +37,12 @@ out.jsonl
 pi-*.html
 out.html
 packages/coding-agent/binaries/
+packages/env/bin/
+packages/env/daemon/target/
 todo.md
 plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
+.pi/settings.json
 collect.sh
+packages/agent/docs/extensions/pi-server-artifact/index.md

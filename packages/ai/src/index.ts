@@ -10,7 +10,7 @@ export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from
 export type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 export type { BedrockOptions, BedrockThinkingDisplay } from "./api/bedrock-converse-stream.ts";
 export type { GoogleOptions } from "./api/google-generative-ai.ts";
-export type { GoogleThinkingLevel } from "./api/google-shared.ts";
+export type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./api/google-shared.ts";
 export type { GoogleVertexOptions } from "./api/google-vertex.ts";
 export * from "./api/lazy.ts";
 export type { MistralOptions } from "./api/mistral-conversations.ts";
@@ -30,7 +30,6 @@ export type {
 	OAuthSelectOption,
 	OAuthSelectPrompt,
 } from "./compat/extension-oauth-types.ts";
-export * from "./images-models.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
 export * from "./providers/faux.ts";
@@ -38,10 +37,14 @@ export * from "./session-resources.ts";
 export * from "./types.ts";
 export * from "./utils/diagnostics.ts";
 export * from "./utils/event-stream.ts";
+export * from "./utils/identity.ts";
 export * from "./utils/json-parse.ts";
 export * from "./utils/overflow.ts";
 export * from "./utils/retry.ts";
-export { contentText } from "./utils/text.ts";
+export * from "./utils/streaming-json.ts";
+export { contentText, getSystemMessageText, renderSystemMessageUpdate } from "./utils/text.ts";
+export * from "./utils/transcript.ts";
 export * from "./utils/typebox-helpers.ts";
 export { uuidv7 } from "./utils/uuid.ts";
 export * from "./utils/validation.ts";
+export { PI_AI_VERSION } from "./utils/version.ts";
