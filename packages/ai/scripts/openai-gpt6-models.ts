@@ -6,9 +6,13 @@ import type { Api, Model } from "../src/types.ts";
 // https://developers.openai.com/api/docs/models/gpt-6-sol
 // https://developers.openai.com/api/docs/models/gpt-6-luna
 // https://developers.openai.com/codex/pricing
+// Terra checked 2026-10-27 (including none and the >272K pricing tier):
+// https://developers.openai.com/api/docs/models/gpt-6.1-terra
+// https://developers.openai.com/api/docs/pricing
 const GPT6_MODELS = [
 	{ id: "gpt-6-astra", name: "GPT-6 Astra", input: 10, cacheRead: 1, output: 50, supportsNone: false },
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", input: 2, cacheRead: 0.1, output: 10, supportsNone: false },
+	{ id: "gpt-6.1-terra", name: "GPT-6.1 Terra", input: 1, cacheRead: 0.05, output: 5, supportsNone: true },
 	{ id: "gpt-6-sol", name: "GPT-6 Sol", input: 2, cacheRead: 0.2, output: 10, supportsNone: true },
 	{ id: "gpt-6-luna", name: "GPT-6 Luna", input: 0.1, cacheRead: 0.01, output: 0.5, supportsNone: true },
 ] as const;

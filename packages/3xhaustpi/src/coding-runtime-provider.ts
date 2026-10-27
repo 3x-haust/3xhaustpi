@@ -11,6 +11,7 @@ import type {
 	ConversationResult,
 } from "./coding-runtime-contracts.ts";
 import { conversationCacheUsage } from "./conversation-cache-usage.ts";
+import { conversationReasoningOptions } from "./conversation-reasoning.ts";
 import {
 	createProviderRuntime,
 	DEFAULT_MODEL,
@@ -48,6 +49,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 	);
 	if (!(await models.checkAuth(provider))) throw new Error(`Provider is not authenticated: ${provider}`);
 	const model = resolveModel(models, provider, modelId);
+	const reasoningOptions = conversationReasoningOptions(model, input.reasoningEffort);
 	const promptCacheKey = clampOpenAIPromptCacheKey(input.promptCacheKey ?? (input.sessionId || undefined));
 	const cacheUsage = conversationCacheUsage();
 	try {
@@ -69,6 +71,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 				],
 			},
 			{
+				...reasoningOptions,
 				...(input.signal ? { signal: input.signal } : {}),
 				// Codex routes cache affinity by the session-id header, so it must carry the stable key.
 				...(promptCacheKey ? { sessionId: promptCacheKey } : input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -76,14 +79,18 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 				...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
 					? {
 							onPayload: (payload: unknown) => {
-								if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+								const request = reasoningOptions.onPayload?.(payload) ?? payload;
+								if (typeof request !== "object" || request === null || Array.isArray(request))
 									throw new Error("Invalid Codex conversation payload");
-								return { ...payload, prompt_cache_key: promptCacheKey };
+								return { ...request, prompt_cache_key: promptCacheKey };
 							},
 						}
 					: {}),
 				// SSE exposes the raw usage boundary; WebSocket usage is already normalized by pi-ai.
 				...(model.api === "openai-codex-responses" ? { transport: "sse" as const, fetch: cacheUsage.fetch } : {}),
+				...(model.api === "openai-responses" || model.api === "azure-openai-responses"
+					? { fetch: cacheUsage.fetch }
+					: {}),
 				cacheRetention: "long",
 				maxRetries: 0,
 				maxTokens: 4_096,
@@ -124,7 +131,11 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			stopReason: message.stopReason ?? null,
 			responseId: message.responseId ?? null,
 			provider: message.provider ?? null,
-			model: message.responseModel ?? message.model ?? null,
+			model: cacheUsage.responseModel ?? message.responseModel ?? message.model ?? null,
+			...((cacheUsage.responseModel ?? message.responseModel)
+				? { responseModel: cacheUsage.responseModel ?? message.responseModel }
+				: {}),
+			...(cacheUsage.reasoningEffort ? { reasoningEffort: cacheUsage.reasoningEffort } : {}),
 		};
 	} finally {
 		if (input.sessionId) cleanupSessionResources(input.sessionId);

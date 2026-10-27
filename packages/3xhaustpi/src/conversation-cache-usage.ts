@@ -1,6 +1,8 @@
-/** Observe Codex's raw SSE usage before pi-ai replaces missing counts with zero. */
+/** Observe Responses SSE metadata and raw usage before pi-ai normalizes missing fields. */
 export function conversationCacheUsage(request: typeof globalThis.fetch = globalThis.fetch) {
 	let cacheRead: number | null = null;
+	let responseModel: string | undefined;
+	let reasoningEffort: string | undefined;
 	const observe = (frame: string): void => {
 		const data = frame
 			.split("\n")
@@ -19,8 +21,21 @@ export function conversationCacheUsage(request: typeof globalThis.fetch = global
 		if (!["response.completed", "response.done", "response.incomplete"].includes(String(event.type))) return;
 		// Each terminal response replaces the previous observation, including missing usage.
 		cacheRead = null;
+		responseModel = undefined;
+		reasoningEffort = undefined;
 		if (!("response" in event) || typeof event.response !== "object" || event.response === null) return;
 		const response = event.response;
+		if ("model" in response && typeof response.model === "string" && response.model.length > 0)
+			responseModel = response.model;
+		if (
+			"reasoning" in response &&
+			typeof response.reasoning === "object" &&
+			response.reasoning !== null &&
+			"effort" in response.reasoning &&
+			typeof response.reasoning.effort === "string" &&
+			response.reasoning.effort.length > 0
+		)
+			reasoningEffort = response.reasoning.effort;
 		if (!("usage" in response) || typeof response.usage !== "object" || response.usage === null) return;
 		const usage = response.usage;
 		if (
@@ -70,6 +85,12 @@ export function conversationCacheUsage(request: typeof globalThis.fetch = global
 		fetch,
 		get cacheRead(): number | null {
 			return cacheRead;
+		},
+		get responseModel(): string | undefined {
+			return responseModel;
+		},
+		get reasoningEffort(): string | undefined {
+			return reasoningEffort;
 		},
 	};
 }

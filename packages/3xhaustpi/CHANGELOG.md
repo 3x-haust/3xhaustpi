@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-10-27
+
+### Added
+
+- Added GPT-6.1 Terra to the OpenAI and Codex catalogs with 1.05M context, official reasoning levels, and standard/long-context pricing.
+- Added optional conversation `reasoningEffort` with model-aware validation and provider-reported `responseModel`/`reasoningEffort` observations when available.
+
+### Fixed
+
+- Forward explicit conversation reasoning effort through the installed pi-ai adapter to the provider request while preserving stable cache routing and omitted-effort behavior.
+- Resolve case-mapped efforts such as Google `LOW` and reject efforts an installed adapter silently replaces or ignores before transport.
+- Accept conversation `none` only when the model declares an off level or the request body proves thinking is disabled. Gemini 2.5 Pro, Gemini 3 lowest-level substitutes, Responses models without a declared off level, and Mistral are rejected instead of dispatched with thinking still on.
+
 ## [0.2.10] - 2026-10-23
 
 ### Fixed

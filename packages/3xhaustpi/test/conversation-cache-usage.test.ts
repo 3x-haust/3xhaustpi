@@ -42,4 +42,19 @@ describe("raw conversation cache usage", () => {
 		// Then: no report is inferred.
 		expect(observation.cacheRead).toBeNull();
 	});
+
+	it.each(["response.done", "response.incomplete"])("resets observations on a later %s boundary", async (type) => {
+		// Given: an earlier terminal response reports fields the final response omits.
+		const events = [
+			{ type: "response.completed", response: { model: "reported-model", reasoning: { effort: "low" } } },
+			{ type, response: { model: null, reasoning: { effort: null } } },
+		];
+		const wire = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+		const observation = conversationCacheUsage(async () => new Response(wire));
+		// When: the downstream consumes both terminal frames.
+		await (await observation.fetch("https://example.invalid")).text();
+		// Then: absent final fields never inherit or guess earlier values.
+		expect(observation.responseModel).toBeUndefined();
+		expect(observation.reasoningEffort).toBeUndefined();
+	});
 });

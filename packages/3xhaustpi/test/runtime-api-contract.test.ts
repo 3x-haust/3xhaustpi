@@ -12,6 +12,9 @@ describe("published runtime declaration", () => {
 	it("publishes the optional conversation cache key through both entry points", () => {
 		expectTypeOf<EntryInput>().toEqualTypeOf<ShippedInput>();
 		expectTypeOf<ShippedInput["promptCacheKey"]>().toEqualTypeOf<string | undefined>();
+		expectTypeOf<ShippedInput["reasoningEffort"]>().toEqualTypeOf<
+			"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined
+		>();
 	});
 
 	it("matches the runtime event union in both directions", () => {
