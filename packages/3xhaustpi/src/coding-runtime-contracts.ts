@@ -125,7 +125,7 @@ export interface CodingTaskResult {
 export interface ConversationInput {
 	readonly provider?: string;
 	readonly model?: string;
-	/** Exact provider effort; unsupported values reject instead of being clamped. Omit for provider defaults. */
+	/** Model-supported effort, encoded with the provider's native controls. Omit for provider defaults. */
 	readonly reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	readonly credential?: string;
 	readonly system: string;

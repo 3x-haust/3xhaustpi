@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept model-supported conversation `none` across provider adapters, preserve native request controls, and resolve case-mapped efforts such as Google `LOW`. Reject efforts an installed adapter silently replaces or ignores before transport.
+
 ## [0.2.11] - 2026-10-27
 
 ### Added

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Models } from "@earendil-works/pi-ai";
-import { cleanupSessionResources, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 import type { SemanticTurnResult } from "../../pi-adapter/src/index.ts";
 import { type PiComplete, X3HAUST_SEMANTIC_STABLE_PREFIX } from "../../pi-adapter/src/index.ts";
@@ -11,6 +11,7 @@ import type {
 	ConversationResult,
 } from "./coding-runtime-contracts.ts";
 import { conversationCacheUsage } from "./conversation-cache-usage.ts";
+import { conversationReasoningOptions } from "./conversation-reasoning.ts";
 import {
 	createProviderRuntime,
 	DEFAULT_MODEL,
@@ -48,18 +49,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 	);
 	if (!(await models.checkAuth(provider))) throw new Error(`Provider is not authenticated: ${provider}`);
 	const model = resolveModel(models, provider, modelId);
-	const effort = input.reasoningEffort;
-	if (effort !== undefined) {
-		const supportsNone =
-			["openai-responses", "openai-codex-responses", "azure-openai-responses"].includes(model.api) &&
-			model.thinkingLevelMap?.off === "none";
-		const supported = getSupportedThinkingLevels(model).filter(
-			(level) => level !== "off" && (model.thinkingLevelMap?.[level] ?? level) === level,
-		);
-		if (!model.reasoning || (effort === "none" ? !supportsNone : !supported.some((level) => level === effort))) {
-			throw new RangeError(`Unsupported reasoning effort ${JSON.stringify(effort)} for ${provider}/${modelId}`);
-		}
-	}
+	const reasoningOptions = conversationReasoningOptions(model, input.reasoningEffort);
 	const promptCacheKey = clampOpenAIPromptCacheKey(input.promptCacheKey ?? (input.sessionId || undefined));
 	const cacheUsage = conversationCacheUsage();
 	try {
@@ -81,24 +71,18 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 				],
 			},
 			{
-				...(effort !== undefined && effort !== "none" ? { reasoning: effort } : {}),
+				...reasoningOptions,
 				...(input.signal ? { signal: input.signal } : {}),
 				// Codex routes cache affinity by the session-id header, so it must carry the stable key.
 				...(promptCacheKey ? { sessionId: promptCacheKey } : input.sessionId ? { sessionId: input.sessionId } : {}),
 				...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
-				...((model.api === "openai-codex-responses" && promptCacheKey !== undefined) || effort === "none"
+				...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
 					? {
 							onPayload: (payload: unknown) => {
-								if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+								const request = reasoningOptions.onPayload?.(payload) ?? payload;
+								if (typeof request !== "object" || request === null || Array.isArray(request))
 									throw new Error("Invalid Codex conversation payload");
-								return {
-									...payload,
-									...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
-										? { prompt_cache_key: promptCacheKey }
-										: {}),
-									// SimpleStreamOptions has no none value; preserve the exact provider effort here.
-									...(effort === "none" ? { reasoning: { effort: "none" } } : {}),
-								};
+								return { ...request, prompt_cache_key: promptCacheKey };
 							},
 						}
 					: {}),
