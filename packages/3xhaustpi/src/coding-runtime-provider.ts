@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Models } from "@earendil-works/pi-ai";
-import { cleanupSessionResources } from "@earendil-works/pi-ai";
+import { cleanupSessionResources, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 import type { SemanticTurnResult } from "../../pi-adapter/src/index.ts";
 import { type PiComplete, X3HAUST_SEMANTIC_STABLE_PREFIX } from "../../pi-adapter/src/index.ts";
@@ -48,6 +48,18 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 	);
 	if (!(await models.checkAuth(provider))) throw new Error(`Provider is not authenticated: ${provider}`);
 	const model = resolveModel(models, provider, modelId);
+	const effort = input.reasoningEffort;
+	if (effort !== undefined) {
+		const supportsNone =
+			["openai-responses", "openai-codex-responses", "azure-openai-responses"].includes(model.api) &&
+			model.thinkingLevelMap?.off === "none";
+		const supported = getSupportedThinkingLevels(model).filter(
+			(level) => level !== "off" && (model.thinkingLevelMap?.[level] ?? level) === level,
+		);
+		if (!model.reasoning || (effort === "none" ? !supportsNone : !supported.some((level) => level === effort))) {
+			throw new RangeError(`Unsupported reasoning effort ${JSON.stringify(effort)} for ${provider}/${modelId}`);
+		}
+	}
 	const promptCacheKey = clampOpenAIPromptCacheKey(input.promptCacheKey ?? (input.sessionId || undefined));
 	const cacheUsage = conversationCacheUsage();
 	try {
@@ -69,21 +81,32 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 				],
 			},
 			{
+				...(effort !== undefined && effort !== "none" ? { reasoning: effort } : {}),
 				...(input.signal ? { signal: input.signal } : {}),
 				// Codex routes cache affinity by the session-id header, so it must carry the stable key.
 				...(promptCacheKey ? { sessionId: promptCacheKey } : input.sessionId ? { sessionId: input.sessionId } : {}),
 				...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
-				...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
+				...((model.api === "openai-codex-responses" && promptCacheKey !== undefined) || effort === "none"
 					? {
 							onPayload: (payload: unknown) => {
 								if (typeof payload !== "object" || payload === null || Array.isArray(payload))
 									throw new Error("Invalid Codex conversation payload");
-								return { ...payload, prompt_cache_key: promptCacheKey };
+								return {
+									...payload,
+									...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
+										? { prompt_cache_key: promptCacheKey }
+										: {}),
+									// SimpleStreamOptions has no none value; preserve the exact provider effort here.
+									...(effort === "none" ? { reasoning: { effort: "none" } } : {}),
+								};
 							},
 						}
 					: {}),
 				// SSE exposes the raw usage boundary; WebSocket usage is already normalized by pi-ai.
 				...(model.api === "openai-codex-responses" ? { transport: "sse" as const, fetch: cacheUsage.fetch } : {}),
+				...(model.api === "openai-responses" || model.api === "azure-openai-responses"
+					? { fetch: cacheUsage.fetch }
+					: {}),
 				cacheRetention: "long",
 				maxRetries: 0,
 				maxTokens: 4_096,
@@ -124,7 +147,11 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			stopReason: message.stopReason ?? null,
 			responseId: message.responseId ?? null,
 			provider: message.provider ?? null,
-			model: message.responseModel ?? message.model ?? null,
+			model: cacheUsage.responseModel ?? message.responseModel ?? message.model ?? null,
+			...((cacheUsage.responseModel ?? message.responseModel)
+				? { responseModel: cacheUsage.responseModel ?? message.responseModel }
+				: {}),
+			...(cacheUsage.reasoningEffort ? { reasoningEffort: cacheUsage.reasoningEffort } : {}),
 		};
 	} finally {
 		if (input.sessionId) cleanupSessionResources(input.sessionId);

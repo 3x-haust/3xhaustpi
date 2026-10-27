@@ -155,6 +155,8 @@ export interface CodingTaskResult {
 export interface ConversationInput {
 	readonly provider?: string;
 	readonly model?: string;
+	/** Exact provider effort; unsupported values reject instead of being clamped. Omit for provider defaults. */
+	readonly reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	readonly credential?: string;
 	readonly system: string;
 	readonly prompt: string;
@@ -189,6 +191,9 @@ export interface ConversationResult {
 	readonly responseId?: string | null;
 	readonly provider?: string | null;
 	readonly model?: string | null;
+	/** Present only when the provider explicitly reports these response fields. */
+	readonly responseModel?: string;
+	readonly reasoningEffort?: string;
 }
 
 export function runCodingTask(input: CodingTaskInput): Promise<CodingTaskResult>;
