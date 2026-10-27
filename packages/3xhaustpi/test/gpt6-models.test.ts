@@ -5,6 +5,7 @@ describe("bundled GPT-6 catalog", () => {
 	const cases = [
 		["gpt-6-astra", 10, 1, 50, null],
 		["gpt-6.1-sol", 2, 0.1, 10, null],
+		["gpt-6.1-terra", 1, 0.05, 5, "none"],
 		["gpt-6-sol", 2, 0.2, 10, "none"],
 		["gpt-6-luna", 0.1, 0.01, 0.5, "none"],
 	] as const;

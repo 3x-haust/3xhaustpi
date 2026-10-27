@@ -5,14 +5,14 @@ import type { Api, Model } from "../src/types.ts";
 it("supplies both GPT-6 catalogs when external metadata is missing", () => {
 	const models: Model<Api>[] = [];
 	addOpenAiGpt6Models(models);
-	expect(models).toHaveLength(8);
+	expect(models).toHaveLength(10);
 	for (const model of models) {
 		expect(model.contextWindow).toBe(1050000);
 		expect(model.cost.tiers?.[0]?.inputTokensAbove).toBe(272000);
 		expect(model.thinkingLevelMap?.max).toBe("max");
 	}
 	addOpenAiGpt6Models(models);
-	expect(models).toHaveLength(8);
+	expect(models).toHaveLength(10);
 });
 
 it("keeps external model metadata while adding missing long-context pricing", () => {
