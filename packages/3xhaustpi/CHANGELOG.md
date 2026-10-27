@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-10-27
+
+### Added
+
+- Added GPT-6.1 Terra to the OpenAI and Codex catalogs with 1.05M context, official reasoning levels, and standard/long-context pricing.
+- Added optional conversation `reasoningEffort` with model-aware validation and provider-reported `responseModel`/`reasoningEffort` observations when available.
+
+### Fixed
+
+- Forward explicit conversation reasoning effort through the installed pi-ai adapter to the provider request while preserving stable cache routing and omitted-effort behavior.
+
 ## [0.2.10] - 2026-10-23
 
 ### Fixed
