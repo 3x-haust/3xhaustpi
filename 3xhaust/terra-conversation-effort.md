@@ -91,3 +91,13 @@ PR #20의 제품 단독 버전 관례대로 package version, product identity, C
 | 보조 no-excuse checker | 2 | 기존과 같은 TypeScript 7 API 요구/저장소 5.9.3 불일치; 필수 tsgo/Biome 검사와 구분 |
 
 설치 진행 중 도구가 아직 없는 시점에 시작된 vitest·npx는 각각 exit 1이었고, 설치 완료 후 다시 실행했다. 개발 중 타입 검사 exit 2는 helper 반환 타입을 명시해 해결했다. 위 표의 통과 결과는 수정된 최종 코드에 대한 결과다. 새 인증 내용·개인 경로는 기록하지 않았고 push·PR·tag·publish·rebase·amend는 수행하지 않았다.
+
+## 2차 리뷰 수정: 명시적 off만 허용
+
+재리뷰에서 `google/gemini-2.5-pro`의 `none`이 검증을 통과해 `thinkingBudget: 0`으로 전송되는 문제가 나왔다. Google 문서상 2.5 Pro는 thinking을 끌 수 없다. 같은 원인으로 off 메타데이터가 없는 모델을 지원으로 간주하던 경로를 전수 점검했다.
+
+- 카탈로그 reasoning 모델 874개 중 off 값이 명시된 모델은 30개(Responses 18, Completions 12), off 금지(`null`)는 167개, 메타데이터 없음은 677개였다.
+- `conversation-reasoning-off.ts`의 `declaresReasoningOff`: Responses 계열은 명시된 off 값이 있을 때만 허용한다(없으면 어댑터가 reasoning을 생략해 모델 기본 thinking이 켜진다). Google 2.5 Pro는 거부한다. Completions·Anthropic·Google·Bedrock Claude는 payload 검사로 넘긴다. Mistral 등 나머지는 거부한다.
+- `disabledReasoningPayload`: Google은 `thinkingBudget: 0`이고 `thinkingLevel`이 없어야 off로 인정한다(Gemini 3의 최저 level 대체는 거부). Anthropic은 `thinking.type: "disabled"`, Bedrock Claude는 thinking·effort 필드가 없어야 한다. Responses 계열은 모델의 off 매핑 값을 `reasoning.effort`로 보낸다.
+- 회귀: `test/conversation-effort-off.test.ts`. Gemini 2.5 Pro(google, vertex), Gemini 3 대체, Codex Sol·Astra off 금지, off 미선언 Codex 모델, Mistral 두 종류를 거부하고, Terra·Luna off와 Anthropic disabled를 허용한다. 메타몽 route 모델 Terra·Sol·Astra·Luna의 low/medium/high 12건이 그대로 전송되는지 확인한다. 기존 Mistral `none` 허용 사례는 거부로 바꿨다.
+- 검증(2차 수정 후): `npx tsgo --noEmit` 0, `npm run check` 0, 3xhaustpi vitest 102파일·581건 0, 3xhaustpi build 0. 의존성 변경이 없어 `npm ci`·lock 검사는 다시 돌리지 않았다.

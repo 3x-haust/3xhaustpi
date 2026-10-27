@@ -224,7 +224,6 @@ describe("conversation reasoning effort at the HTTP boundary", () => {
 			{ thinking: { type: "adaptive" }, output_config: { effort: "high" } },
 			"anthropic",
 		],
-		["mistral", "magistral-medium-latest", "none", {}, "completions"],
 		["mistral", "magistral-medium-latest", "high", { prompt_mode: "reasoning" }, "completions"],
 		["mistral", "mistral-small-2603", "high", { reasoning_effort: "high" }, "completions"],
 	] as const)(
@@ -246,10 +245,6 @@ describe("conversation reasoning effort at the HTTP boundary", () => {
 			expect(requests[0]?.payload).toMatchObject(expected);
 			if (provider !== "openrouter" && provider !== "ant-ling")
 				expect(requests[0]?.payload).not.toHaveProperty("reasoning.effort");
-			if (provider === "mistral" && reasoningEffort === "none") {
-				expect(requests[0]?.payload).not.toHaveProperty("prompt_mode");
-				expect(requests[0]?.payload).not.toHaveProperty("reasoning_effort");
-			}
 		},
 	);
 

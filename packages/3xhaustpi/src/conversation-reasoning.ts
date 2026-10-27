@@ -1,15 +1,7 @@
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ConversationInput } from "./coding-runtime-contracts.ts";
-
-function payloadField(payload: unknown, path: readonly string[]): unknown {
-	let value = payload;
-	for (const key of path) {
-		if (typeof value !== "object" || value === null || !(key in value)) return undefined;
-		value = Reflect.get(value, key);
-	}
-	return value;
-}
+import { declaresReasoningOff, disabledReasoningPayload, payloadField } from "./conversation-reasoning-off.ts";
 
 /** Resolve provider values back to pi levels; let each installed adapter encode its own wire format. */
 export function conversationReasoningOptions(
@@ -27,7 +19,12 @@ export function conversationReasoningOptions(
 					(candidate) =>
 						candidate !== "off" && (model.thinkingLevelMap?.[candidate] ?? candidate).toLowerCase() === effort,
 				);
-	if (!model.reasoning || (effort === "none" ? !supported.includes("off") : level === undefined || level === "off")) {
+	if (
+		!model.reasoning ||
+		(effort === "none"
+			? !supported.includes("off") || !declaresReasoningOff(model)
+			: level === undefined || level === "off")
+	) {
 		throw unsupported();
 	}
 	return {
@@ -35,23 +32,9 @@ export function conversationReasoningOptions(
 		onPayload: (payload: unknown) => {
 			if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw unsupported();
 			if (effort === "none") {
-				if (model.api === "openai-completions") {
-					const disabled = [
-						["reasoning_effort"],
-						["reasoning", "effort"],
-						["thinking"],
-						["thinking", "type"],
-					].some((path) => ["none", "off", "disabled"].includes(String(payloadField(payload, path))));
-					const disabledFlag = [
-						["enable_thinking"],
-						["reasoning", "enabled"],
-						["chat_template_args", "enable_thinking"],
-						["chat_template_kwargs", "enable_thinking"],
-					].some((path) => payloadField(payload, path) === false);
-					if (!disabled && !disabledFlag) throw unsupported();
-				}
-				// Other adapters already encode off using their native controls. Codex omits it by default.
-				return model.api === "openai-codex-responses" ? { ...payload, reasoning: { effort: "none" } } : payload;
+				const disabled = disabledReasoningPayload(model, payload);
+				if (disabled === undefined) throw unsupported();
+				return disabled;
 			}
 			const encoded = [
 				["reasoning_effort"],
