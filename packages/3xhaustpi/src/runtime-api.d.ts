@@ -164,6 +164,10 @@ export interface ConversationInput {
 	readonly sessionId?: string;
 	/** Stable cache affinity, clamped to 64 Unicode code points. Defaults to sessionId; does not own resources. */
 	readonly promptCacheKey?: string;
+	/** Lets OpenAI Responses models run the provider-hosted web search; ignored by other APIs. */
+	readonly webSearch?: boolean;
+	/** Output budget including reasoning tokens. Defaults to 4096. */
+	readonly maxOutputTokens?: number;
 	readonly signal?: AbortSignal;
 }
 
@@ -194,6 +198,14 @@ export interface ConversationResult {
 	/** Present only when the provider explicitly reports these response fields. */
 	readonly responseModel?: string;
 	readonly reasoningEffort?: string;
+	/** Sources the provider-hosted web search cited in the final answer. */
+	readonly citations?: readonly ConversationCitation[];
+	readonly webSearchCalls?: number;
+}
+
+export interface ConversationCitation {
+	readonly url: string;
+	readonly title?: string;
 }
 
 export function runCodingTask(input: CodingTaskInput): Promise<CodingTaskResult>;

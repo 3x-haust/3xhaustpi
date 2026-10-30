@@ -317,6 +317,23 @@ describe("conversation reasoning effort at the HTTP boundary", () => {
 		expect(requests[0]?.payload).not.toHaveProperty("reasoning");
 	});
 
+	it("adds the hosted web search tool only when a conversation asks for it", async () => {
+		// Given: one Codex conversation with search and one without.
+		const requests = wireFixture();
+		// When: both run through the installed adapter.
+		await runConversation({ ...input, reasoningEffort: "low", webSearch: true, maxOutputTokens: 20_000 });
+		await runConversation(input);
+		// Then: only the first request carries the tool; cache routing is unchanged.
+		expect(requests).toHaveLength(2);
+		expect(requests[0]?.payload).toMatchObject({
+			tools: [{ type: "web_search" }],
+			tool_choice: "auto",
+			prompt_cache_key: "stable-effort-key",
+			reasoning: expect.objectContaining({ effort: "low" }),
+		});
+		expect(requests[1]?.payload).not.toHaveProperty("tools");
+	});
+
 	it("returns provider-reported effort and model rather than echoing the selection", async () => {
 		// Given: a terminal response reporting a different effort and concrete model.
 		wireFixture({ reasoning: { effort: "medium" }, model: "gpt-6.1-terra-resolved" });
