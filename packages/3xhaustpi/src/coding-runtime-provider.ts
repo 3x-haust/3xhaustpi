@@ -52,6 +52,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 	const reasoningOptions = conversationReasoningOptions(model, input.reasoningEffort);
 	const promptCacheKey = clampOpenAIPromptCacheKey(input.promptCacheKey ?? (input.sessionId || undefined));
 	const cacheUsage = conversationCacheUsage();
+	const webSearch =
+		input.webSearch === true && (model.api === "openai-codex-responses" || model.api === "openai-responses");
 	try {
 		const message = await models.completeSimple(
 			model,
@@ -73,13 +75,17 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 			{
 				...reasoningOptions,
 				...(input.signal ? { signal: input.signal } : {}),
+				...(webSearch
+					? { onPayload: (payload: unknown) => withWebSearch(reasoningOptions.onPayload?.(payload) ?? payload) }
+					: {}),
 				// Codex routes cache affinity by the session-id header, so it must carry the stable key.
 				...(promptCacheKey ? { sessionId: promptCacheKey } : input.sessionId ? { sessionId: input.sessionId } : {}),
 				...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
 				...(model.api === "openai-codex-responses" && promptCacheKey !== undefined
 					? {
 							onPayload: (payload: unknown) => {
-								const request = reasoningOptions.onPayload?.(payload) ?? payload;
+								const reasoned = reasoningOptions.onPayload?.(payload) ?? payload;
+								const request = webSearch ? withWebSearch(reasoned) : reasoned;
 								if (typeof request !== "object" || request === null || Array.isArray(request))
 									throw new Error("Invalid Codex conversation payload");
 								return { ...request, prompt_cache_key: promptCacheKey };
@@ -93,7 +99,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 					: {}),
 				cacheRetention: "long",
 				maxRetries: 0,
-				maxTokens: 4_096,
+				maxTokens: input.maxOutputTokens ?? 4_096,
 			},
 		);
 		if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -136,10 +142,19 @@ export async function runConversation(input: ConversationInput): Promise<Convers
 				? { responseModel: cacheUsage.responseModel ?? message.responseModel }
 				: {}),
 			...(cacheUsage.reasoningEffort ? { reasoningEffort: cacheUsage.reasoningEffort } : {}),
+			...(webSearch ? { citations: cacheUsage.citations, webSearchCalls: cacheUsage.webSearchCalls } : {}),
 		};
 	} finally {
 		if (input.sessionId) cleanupSessionResources(input.sessionId);
 	}
+}
+
+/** Adds the provider-hosted search tool next to any declared function tools. */
+function withWebSearch(payload: unknown): unknown {
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+		throw new Error("Invalid Responses conversation payload");
+	const tools = "tools" in payload && Array.isArray(payload.tools) ? payload.tools : [];
+	return { ...payload, tools: [...tools, { type: "web_search" }], tool_choice: "auto" };
 }
 
 export function semanticUsage(result: Pick<SemanticTurnResult, "usage">): CodingTaskUsage {

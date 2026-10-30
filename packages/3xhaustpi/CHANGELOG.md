@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-10-30
+
+### Added
+
+- Added optional conversation `webSearch` for OpenAI Responses and Codex models. The provider-hosted `web_search` tool joins the request, and the result reports cited sources (`citations`) and `webSearchCalls` from the raw response.
+- Added optional conversation `maxOutputTokens` (default 4096) so long researched answers are not cut off by reasoning tokens.
+
 ## [0.2.11] - 2026-10-27
 
 ### Added
