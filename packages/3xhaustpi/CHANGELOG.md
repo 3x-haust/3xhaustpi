@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-11-02
+
+### Added
+
+- Exported `runAgentTask` from the runtime entry so hosts can run the native agent (read, bash, edit, write, delegate) headlessly.
+- Added optional `readableRoots` to agent tasks. The read tool, including delegated agents, then refuses any file whose real path is outside those directories.
+- Added optional `bashSpawnHook` to agent tasks so a host can rewrite each bash command, for example to run it in a stricter sandbox.
+
 ## [0.2.12] - 2026-10-30
 
 ### Added

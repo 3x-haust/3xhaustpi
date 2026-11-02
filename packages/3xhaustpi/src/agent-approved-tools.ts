@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import {
+	type BashSpawnHook,
 	createBashToolDefinition,
 	createEditToolDefinition,
 	createLocalBashOperations,
@@ -9,6 +10,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { approvedFileWrite } from "./agent-approved-file-write.ts";
+import { createScopedReadTool } from "./agent-scoped-read-tool.ts";
 
 export { approvedFileWrite } from "./agent-approved-file-write.ts";
 
@@ -75,11 +77,18 @@ export function createApprovedAgentTools(input: {
 	readonly projectRoot: string;
 	readonly requestApproval?: AgentToolApprovalCallback;
 	readonly signal?: AbortSignal;
+	readonly readableRoots?: readonly string[];
+	readonly bashSpawnHook?: BashSpawnHook;
 }): ToolDefinition[] {
+	const scopedRead = input.readableRoots ? [createScopedReadTool(input.projectRoot, input.readableRoots)] : [];
 	return [
+		...scopedRead,
 		lazySequentialTool("bash", () => {
 			const localBashOperations = createLocalBashOperations();
-			const bash = createBashToolDefinition(input.projectRoot, { operations: localBashOperations });
+			const bash = createBashToolDefinition(input.projectRoot, {
+				operations: localBashOperations,
+				...(input.bashSpawnHook ? { spawnHook: input.bashSpawnHook } : {}),
+			});
 			return {
 				...bash,
 				executionMode: "sequential",
