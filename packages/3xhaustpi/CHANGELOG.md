@@ -10,6 +10,10 @@
 - Added optional `readableRoots` to agent tasks. The read tool, including delegated agents, then refuses any file whose real path is outside those directories.
 - Added optional `bashSpawnHook` to agent tasks so a host can rewrite each bash command, for example to run it in a stricter sandbox.
 
+### Fixed
+
+- Native agent sessions now use the `SessionManager` of the installed `@earendil-works/pi-coding-agent`. The bundled source copy lacked `buildSessionProjection`, so packed installs failed after the first agent turn.
+
 ## [0.2.12] - 2026-10-30
 
 ### Added

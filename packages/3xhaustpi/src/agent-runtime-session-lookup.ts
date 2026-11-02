@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 export class AgentSessionNotFoundError extends Error {
 	readonly sessionId: string;

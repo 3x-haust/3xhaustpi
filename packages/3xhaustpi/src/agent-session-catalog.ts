@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import { type SessionInfo, SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agent";
 import { openAgentSessionManager } from "./agent-runtime-session-lookup.ts";
 import type { ThreeXhaustState } from "./state.ts";
 import type { TuiViewState } from "./tui-contract.ts";
