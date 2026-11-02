@@ -7,8 +7,10 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { AuthInteraction, OAuthAuth, OAuthCredential } from "../types.ts";
+import { sleep } from "../../utils/sleep.ts";
+import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
+import { trustedHttpUrl } from "./trusted-url.ts";
 
 const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const DEFAULT_OAUTH_HOST = "https://auth.kimi.com";
@@ -37,8 +39,8 @@ function getOauthHost(): string {
 	return (override || DEFAULT_OAUTH_HOST).replace(/\/+$/, "");
 }
 
-function requestSignal(signal?: AbortSignal): AbortSignal {
-	return AbortSignal.any([AbortSignal.timeout(REQUEST_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+function requestSignal(signal: AbortSignal): AbortSignal {
+	return AbortSignal.any([AbortSignal.timeout(REQUEST_TIMEOUT_MS), signal]);
 }
 
 function formUrlEncode(fields: Record<string, string>): string {
@@ -54,19 +56,7 @@ async function readJson(response: Response): Promise<Record<string, unknown> | n
 	}
 }
 
-/** The verification URI is opened in the user's browser; only http(s) URLs are trusted. */
-function trustedHttpUrl(value: unknown): string | null {
-	if (typeof value !== "string" || !value) return null;
-	try {
-		const url = new URL(value);
-		if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-		return url.href;
-	} catch {
-		return null;
-	}
-}
-
-async function startDeviceAuthorization(oauthHost: string, signal?: AbortSignal): Promise<DeviceAuthorization> {
+async function startDeviceAuthorization(oauthHost: string, signal: AbortSignal): Promise<DeviceAuthorization> {
 	const response = await fetch(`${oauthHost}/api/oauth/device_authorization`, {
 		method: "POST",
 		headers: {
@@ -85,16 +75,9 @@ async function startDeviceAuthorization(oauthHost: string, signal?: AbortSignal)
 	const json = await readJson(response);
 	const deviceCode = json?.device_code;
 	const userCode = json?.user_code;
-	const verificationUri = json?.verification_uri;
-	const verificationUriComplete = json?.verification_uri_complete;
-	if (
-		typeof deviceCode !== "string" ||
-		typeof userCode !== "string" ||
-		typeof verificationUri !== "string" ||
-		typeof verificationUriComplete !== "string" ||
-		!trustedHttpUrl(verificationUriComplete) ||
-		!trustedHttpUrl(verificationUri)
-	) {
+	const verificationUri = trustedHttpUrl(json?.verification_uri);
+	const verificationUriComplete = trustedHttpUrl(json?.verification_uri_complete);
+	if (typeof deviceCode !== "string" || typeof userCode !== "string" || !verificationUri || !verificationUriComplete) {
 		throw new Error(`Invalid Kimi Code device authorization response: ${JSON.stringify(json)}`);
 	}
 
@@ -141,7 +124,7 @@ function parseTokenResponse(json: Record<string, unknown> | null, operation: str
 async function pollForToken(
 	oauthHost: string,
 	device: DeviceAuthorization,
-	signal?: AbortSignal,
+	signal: AbortSignal,
 ): Promise<TokenResponse> {
 	return pollOAuthDeviceCodeFlow<TokenResponse>({
 		intervalSeconds: device.intervalSeconds,
@@ -206,25 +189,17 @@ async function pollForToken(
 	});
 }
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function isRetryableRefreshFailure(response: Response): boolean {
 	return response.status === 429 || response.status >= 500;
 }
 
-async function refreshToken(
-	oauthHost: string,
-	refreshTokenValue: string,
-	signal?: AbortSignal,
-): Promise<TokenResponse> {
+async function refreshToken(oauthHost: string, refreshTokenValue: string, signal: AbortSignal): Promise<TokenResponse> {
 	let lastError: Error | undefined;
 	for (let attempt = 0; attempt <= REFRESH_MAX_RETRIES; attempt++) {
 		if (attempt > 0) {
-			await sleep(1000 * 2 ** (attempt - 1));
+			await sleep(1000 * 2 ** (attempt - 1), signal);
 		}
-		if (signal?.aborted) {
+		if (signal.aborted) {
 			throw new Error("Kimi Code token refresh aborted");
 		}
 
@@ -271,7 +246,7 @@ async function refreshToken(
 	throw lastError ?? new Error("Kimi Code token refresh failed");
 }
 
-async function loginKimiCoding(interaction: AuthInteraction): Promise<OAuthCredential> {
+async function loginKimiCoding(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
 	const oauthHost = getOauthHost();
 	const device = await startDeviceAuthorization(oauthHost, interaction.signal);
 	interaction.notify({
@@ -287,6 +262,7 @@ async function loginKimiCoding(interaction: AuthInteraction): Promise<OAuthCrede
 
 export const kimiCodingOAuth: OAuthAuth = {
 	name: "Kimi Code (subscription)",
+	isSubscription: true,
 	loginLabel: "Sign in with Kimi Code",
 
 	login: loginKimiCoding,

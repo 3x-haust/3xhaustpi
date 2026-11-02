@@ -114,16 +114,18 @@ describe("SelectList", () => {
 		assert.equal(visibleIndexOf(rendered[0], "first"), visibleIndexOf(rendered[1], "second"));
 	});
 
-	it("renders selected rows with a leading marker and ANSI-safe reset", () => {
-		const list = new SelectList([{ value: "model", label: "model", description: "current" }], 5, {
-			...testTheme,
-			selectedPrefix: (text) => `\x1b[38;5;111m${text}\x1b[0m`,
-			selectedText: (text) => `\x1b[7m${text}\x1b[0m`,
-		});
+	it("moves by one visible page with selection page keys (#7629)", () => {
+		const items = Array.from({ length: 12 }, (_, index) => ({ value: `item-${index}`, label: `Item ${index}` }));
+		const list = new SelectList(items, 5, testTheme);
+		const selections: string[] = [];
+		list.onSelectionChange = (item) => selections.push(item.value);
 
-		const [row = ""] = list.render(40);
-		assert.ok(row.includes("› "));
-		assert.ok(row.includes("\x1b[7m"));
-		assert.ok(row.endsWith("\x1b[0m"));
+		for (const key of ["\x1b[6~", "\x1b[6~", "\x1b[6~", "\x1b[6~", "\x1b[5~"]) list.handleInput(key);
+
+		assert.deepStrictEqual(selections, ["item-5", "item-10", "item-11", "item-6"]);
+
+		list.setFilter("no match");
+		list.handleInput("\x1b[6~");
+		assert.deepStrictEqual(selections, ["item-5", "item-10", "item-11", "item-6"]);
 	});
 });
