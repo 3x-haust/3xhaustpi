@@ -90,6 +90,8 @@ export class ProjectAgentRuntime {
 			projectRoot: this.options.projectRoot,
 			requestApproval: request.requestToolApproval,
 			signal: request.signal,
+			...(request.readableRoots ? { readableRoots: request.readableRoots } : {}),
+			...(request.bashSpawnHook ? { bashSpawnHook: request.bashSpawnHook } : {}),
 		});
 		if (delegationDepth < 1) {
 			customTools.push(
@@ -103,6 +105,7 @@ export class ProjectAgentRuntime {
 							...(activeModel ? { provider: activeModel.provider, model: activeModel.id } : {}),
 							...(request.accountId ? { accountId: request.accountId } : {}),
 							thinkingLevel: "low",
+							...(request.readableRoots ? { readableRoots: request.readableRoots } : {}),
 							delegationDepth: delegationDepth + 1,
 							signal: request.signal,
 							onEvent: childEvents.onEvent,

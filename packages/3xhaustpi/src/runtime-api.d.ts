@@ -208,6 +208,51 @@ export interface ConversationCitation {
 	readonly title?: string;
 }
 
+export interface AgentToolApprovalRequest {
+	readonly approvalId: string;
+	readonly toolName: "bash" | "edit" | "write";
+	readonly summary: string;
+	readonly targetPath?: string;
+	readonly beforeSha256?: string;
+	readonly afterSha256?: string;
+	readonly preview: string;
+}
+
+export interface AgentBashSpawnContext {
+	readonly command: string;
+	readonly cwd: string;
+	readonly env: NodeJS.ProcessEnv;
+}
+
+/** One native agent turn with read, bash, edit, write and delegate tools in projectRoot. */
+export interface AgentTaskRequest {
+	readonly projectRoot: string;
+	readonly objective: string;
+	readonly provider?: string;
+	readonly model?: string;
+	readonly accountId?: string;
+	readonly images?: readonly CodingTaskImage[];
+	/** Continue this saved agent session instead of starting a new one. */
+	readonly sessionId?: string;
+	readonly thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	readonly signal?: AbortSignal;
+	readonly onEvent: (event: CodingTaskEvent) => void;
+	/** Every bash, edit and write call waits for this; without it those tools fail. */
+	readonly requestToolApproval?: (request: AgentToolApprovalRequest) => Promise<boolean>;
+	readonly recordEffectBoundary?: (effect: CodingTaskEffectBoundary) => Promise<void>;
+	/** When set, the read tool only opens files beneath these directories, for this task and its delegates. */
+	readonly readableRoots?: readonly string[];
+	/** Rewrites each bash command before it runs, for example to wrap it in a stricter sandbox. */
+	readonly bashSpawnHook?: (context: AgentBashSpawnContext) => AgentBashSpawnContext;
+}
+
+export interface AgentTaskResult {
+	readonly sessionId: string;
+	readonly outcome: "completed" | "aborted";
+	readonly usage: CodingTaskUsage;
+}
+
 export function runCodingTask(input: CodingTaskInput): Promise<CodingTaskResult>;
+export function runAgentTask(request: AgentTaskRequest): Promise<AgentTaskResult>;
 export function runConversation(input: ConversationInput): Promise<ConversationResult>;
 export function resumeCodingTask(input: ResumeCodingTaskInput): Promise<CodingTaskResult | undefined>;

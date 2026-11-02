@@ -1,3 +1,4 @@
+import type { BashSpawnHook } from "@earendil-works/pi-coding-agent";
 import type { AgentToolApprovalRequest } from "./agent-approved-tools.ts";
 import type { CacheWarmResult } from "./cache-warm-controller.ts";
 import type { CodingTaskEvent, CodingTaskImage, CodingTaskPatchProposal, CodingTaskUsage } from "./coding-runtime.ts";
@@ -67,6 +68,10 @@ export interface AgentTaskRequest {
 	readonly delegationDepth?: number;
 	readonly recordEffectBoundary?: (request: AgentProviderEffectBoundaryRequest) => Promise<void>;
 	readonly onProviderPayload?: (payload: unknown) => void;
+	/** When set, the read tool only opens files beneath these directories, for this task and its delegates. */
+	readonly readableRoots?: readonly string[];
+	/** Rewrites each bash command before it runs, for example to wrap it in a stricter sandbox. */
+	readonly bashSpawnHook?: BashSpawnHook;
 }
 
 export interface AgentTaskResult {
