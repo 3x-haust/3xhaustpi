@@ -12,6 +12,7 @@ export const SETTINGS_DEFAULTS = {
 		reserveTokens: 16384,
 		keepRecentTokens: 20000,
 		maxContextTokens: 300000,
+		reuseCache: true,
 	},
 	branchSummary: {
 		reserveTokens: 16384,

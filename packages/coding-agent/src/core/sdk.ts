@@ -419,7 +419,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			messages: existingSession.messages,
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		streamFn: async (model, context, options) => {
+		streamFn: async (model, context, agentOptions) => {
+			// sideRequest is an agent marker, not a provider option.
+			const { sideRequest, ...rest } = agentOptions ?? {};
+			const options = agentOptions ? rest : undefined;
 			// Summaries and other standalone requests use their own routing ids; only session
 			// requests share the prefix key.
 			const promptCacheKey =
@@ -428,12 +431,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					? transcriptPrefixCacheKey(context)
 					: undefined);
 			const requestOptions = buildRequestOptions(promptCacheKey ? { ...options, promptCacheKey } : options);
-			// Compaction and summaries use their own routing ids; only session requests
-			// replace the cache entry, so warming restarts from them. Keep warming while
-			// the current transcript still extends the request's prefix. Agent state may
-			// shallow-copy the messages array or refresh the model object without changing
-			// the provider request, so top-level object identity is not a valid cache key.
-			if (options?.sessionId === sessionManager.getSessionId()) {
+			// Only session requests replace the cache entry, so warming restarts from them. Standalone
+			// summaries use their own routing ids. Side requests share the session id but end in a
+			// turn nobody continues (a warm-up's placeholder message or a summary instruction), so
+			// refreshing them would keep alive an entry the next prompt does not read. Keep warming
+			// while the current transcript still extends the request's prefix. Agent state may
+			// shallow-copy the messages array or refresh the model object without changing the
+			// provider request, so top-level object identity is not a valid cache key.
+			if (options?.sessionId === sessionManager.getSessionId() && sideRequest === undefined) {
 				cacheWarmer.start({ model, context, options: requestOptions }, cacheContextIsCurrent(model));
 			}
 			return modelRuntime.streamSimple(model, context, requestOptions);

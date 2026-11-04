@@ -80,6 +80,7 @@ import {
 	prepareCompaction,
 	SummarizationAbortedError,
 	type SummarizationResponseCallback,
+	type SummaryCacheReuse,
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
@@ -2852,6 +2853,23 @@ export class AgentSession {
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
 		const request = await this._getSummarizationRequestAuth(model, signal);
+		// The provider cache holds the session model's requests only. Overflow recovery uses the
+		// standalone request: the cached conversation may itself be what overflowed, while the
+		// standalone request truncates tool results.
+		const sessionModel = this.agent.state.model;
+		const cacheReuse: SummaryCacheReuse | undefined =
+			reason !== "overflow" &&
+			this.settingsManager.getCompactionReuseCache() &&
+			request.model.provider === sessionModel.provider &&
+			request.model.id === sessionModel.id
+				? {
+						convertMessages: async (messages: AgentMessage[]) =>
+							this.agent.convertToLlm(
+								this.agent.transformContext ? await this.agent.transformContext(messages, signal) : messages,
+							),
+						sessionId: this.sessionManager.getSessionId(),
+					}
+				: undefined;
 		return compact(
 			preparation,
 			request.model,
@@ -2866,6 +2884,7 @@ export class AgentSession {
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
 			undefined, // sessionId
 			onResponse,
+			cacheReuse,
 		);
 	}
 

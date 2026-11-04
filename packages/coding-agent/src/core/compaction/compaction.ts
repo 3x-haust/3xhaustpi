@@ -5,7 +5,7 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentStreamOptions, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	contentText,
 	getCurrentSystemMessage,
@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
+	Message,
 	Model,
 	SimpleStreamOptions,
 	SystemMessage,
@@ -687,6 +688,34 @@ const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation mes
 
 ${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
 
+const CACHED_SUMMARY_PREAMBLE = `Pause the task. Do not call any tools and do not continue the work in this reply.
+The conversation above will be removed from your context and replaced by the summary you write now. Later messages are kept verbatim, and the work will resume from your summary.`;
+
+const CACHED_SUMMARIZATION_PROMPT = `${CACHED_SUMMARY_PREAMBLE}
+
+${SUMMARIZATION_PROMPT.replace("The messages above are a conversation to summarize. ", "")}`;
+
+const CACHED_UPDATE_SUMMARIZATION_PROMPT = `${CACHED_SUMMARY_PREAMBLE}
+The conversation starts with the summary of an earlier compaction. Merge it with the messages that follow it.
+
+${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
+
+/**
+ * How a summary request can reuse the provider's prompt cache. Instead of a fresh request that
+ * repeats the conversation as text, the summary request sends the conversation exactly as the
+ * session sent it, with the same tools and system prompt, and appends one instruction. The provider
+ * then reads the whole conversation from cache, so the summary costs about a tenth of its input.
+ */
+export interface SummaryCacheReuse {
+	/** Convert session messages the way session requests do, so the request prefix is byte-identical. */
+	convertMessages: (messages: AgentMessage[]) => Promise<Message[]>;
+	/** Session routing ID. OpenAI-compatible providers key their prompt cache on it. */
+	sessionId: string;
+}
+
+/** The model answered the cached summary request with something other than a summary. */
+export class CachedSummaryRejectedError extends Error {}
+
 /**
  * The provider ended a summary request as aborted without the caller cancelling it. Compaction
  * treats it as a cancellation (history stays, no error is shown), unlike other AbortErrors.
@@ -746,11 +775,13 @@ export async function completeSummarization(
 	onResponse?: SummarizationResponseCallback,
 ): Promise<AssistantMessage> {
 	// Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available;
-	// callers without a session ID, including branch summaries, receive a fresh routing ID.
-	const requestOptions: SimpleStreamOptions = {
+	// callers without a session ID, including branch summaries, receive a fresh routing ID. A
+	// summary is never the request a session stream function keeps warm.
+	const requestOptions: AgentStreamOptions = {
 		...options,
 		cacheRetention: "none",
 		sessionId: options.sessionId ?? uuidv7(),
+		sideRequest: "summary",
 	};
 	const produce = async (): Promise<AssistantMessage> => {
 		const response = await (streamFn
@@ -1020,6 +1051,11 @@ export interface CompactionPreparation {
 	turnPrefixMessages: AgentMessage[];
 	/** Whether this is a split turn (cut point in middle of turn) */
 	isSplitTurn: boolean;
+	/**
+	 * Every model-visible message before the first kept entry, as session requests sent them,
+	 * including system messages and the previous summary. Used to reuse the prompt cache.
+	 */
+	prefixMessages?: AgentMessage[];
 	tokensBefore: number;
 	/** Summary from previous compaction, for iterative update */
 	previousSummary?: string;
@@ -1181,6 +1217,7 @@ export function prepareCompaction(
 		messagesToSummarize,
 		turnPrefixMessages,
 		isSplitTurn: cutPoint.isSplitTurn,
+		prefixMessages: projectedEntries.slice(0, cutPoint.firstKeptEntryIndex).flatMap((entry) => entry.messages),
 		tokensBefore,
 		previousSummary,
 		fileOps,
@@ -1230,6 +1267,7 @@ export async function compact(
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
 	onResponse?: SummarizationResponseCallback,
+	cacheReuse?: SummaryCacheReuse,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -1244,10 +1282,40 @@ export async function compact(
 	const previousSummary = storedPreviousSummary === undefined ? undefined : stripUserRequests(storedPreviousSummary);
 
 	// Generate summaries and merge into one
-	let summary: string;
-	let summaryUsage: Usage;
+	let summary: string | undefined;
+	let summaryUsage: Usage | undefined;
 
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
+	if (cacheReuse && preparation.prefixMessages && preparation.prefixMessages.length > 0) {
+		try {
+			const result = await generateCachedPrefixSummary(
+				preparation.prefixMessages,
+				storedPreviousSummary !== undefined,
+				model,
+				apiKey,
+				headers,
+				env,
+				signal,
+				thinkingLevel,
+				streamFn,
+				retry,
+				callbacks,
+				onResponse,
+				customInstructions,
+				cacheReuse,
+			);
+			summary = result.text;
+			summaryUsage = result.usage;
+		} catch (error) {
+			// Provider errors would fail the standalone request the same way, so only a reply that
+			// ignored the instruction falls back to it.
+			if (!(error instanceof CachedSummaryRejectedError)) throw error;
+		}
+	}
+
+	// The cached request, when it succeeded, summarized every message before the cut, including a
+	// split turn's prefix.
+	const cached = summary !== undefined && summaryUsage !== undefined;
+	if (!cached && isSplitTurn && turnPrefixMessages.length > 0) {
 		// Reuse is safe only when the checkpoint fits the summary budget even under the byte upper bound.
 		const resizeHistory =
 			previousSummary !== undefined && Buffer.byteLength(previousSummary, "utf8") > summaryOutputBudget(model);
@@ -1295,7 +1363,7 @@ export async function compact(
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
 		summaryUsage = historyResult ? combineUsage(historyResult.usage, turnPrefixResult.usage) : turnPrefixResult.usage;
-	} else {
+	} else if (!cached) {
 		// Just generate history summary
 		const result = await generateSummaryWithUsage(
 			messagesToSummarize,
@@ -1318,6 +1386,7 @@ export async function compact(
 		summaryUsage = result.usage;
 	}
 
+	if (summary === undefined || summaryUsage === undefined) throw new Error("Compaction produced no summary");
 	// The model's copy (or the reused previous checkpoint's) is replaced by the code-built one.
 	summary = stripUserRequests(summary);
 	summary += formatUserRequestsSection(storedPreviousSummary, [...messagesToSummarize, ...turnPrefixMessages]);
@@ -1337,6 +1406,68 @@ export async function compact(
 		usage: summaryUsage,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	};
+}
+
+/** Summarize the cached conversation prefix by appending one instruction to it. See {@link SummaryCacheReuse}. */
+async function generateCachedPrefixSummary(
+	prefixMessages: AgentMessage[],
+	hasPreviousSummary: boolean,
+	model: Model<any>,
+	apiKey: string | undefined,
+	headers: Record<string, string> | undefined,
+	env: Record<string, string> | undefined,
+	signal: AbortSignal | undefined,
+	thinkingLevel: ThinkingLevel | undefined,
+	streamFn: StreamFn | undefined,
+	retry: RetryPolicy | undefined,
+	callbacks: RetryCallbacks | undefined,
+	onResponse: SummarizationResponseCallback | undefined,
+	customInstructions: string | undefined,
+	cacheReuse: SummaryCacheReuse,
+): Promise<{ text: string; usage: Usage }> {
+	let instruction = hasPreviousSummary ? CACHED_UPDATE_SUMMARIZATION_PROMPT : CACHED_SUMMARIZATION_PROMPT;
+	if (customInstructions) instruction = `${instruction}\n\nAdditional focus: ${customInstructions}`;
+	const llmMessages = await cacheReuse.convertMessages(prefixMessages);
+	const context = normalizeContext({
+		messages: [
+			...llmMessages,
+			{ role: "user", content: [{ type: "text", text: instruction }], timestamp: Date.now() },
+		],
+	});
+	// Changing thinking settings normally invalidates the cached messages. Models that take effort
+	// changes as mid-conversation messages keep the cache, so they summarize at low effort, which
+	// is faster.
+	const summaryLevel =
+		(model.compat as { supportsMidConvoEffort?: boolean } | undefined)?.supportsMidConvoEffort === true &&
+		thinkingLevel &&
+		thinkingLevel !== "off"
+			? "low"
+			: thinkingLevel;
+	// The request reads the session's cache: same routing ID and prefix, and retention is left to
+	// the session stream function. It ends in an instruction no later request repeats, so it must
+	// not become the request cache warming refreshes. No output cap: the provider sizes it from
+	// the request, as for session turns.
+	const options: AgentStreamOptions = { signal, apiKey, headers, env, sessionId: cacheReuse.sessionId };
+	if (model.reasoning && summaryLevel && summaryLevel !== "off") options.reasoning = summaryLevel;
+	options.sideRequest = "summary";
+	const produce = async (): Promise<AssistantMessage> => {
+		const response = await (streamFn
+			? (await streamFn(model, context, options)).result()
+			: completeSimple(model, context, options));
+		onResponse?.(response);
+		return response;
+	};
+	const response = await retryAssistantCall(produce, retry, signal, callbacks);
+	if (signal?.aborted) throw new DOMException("Compaction cancelled", "AbortError");
+	if (response.stopReason === "aborted") throw new SummarizationAbortedError("Cached summarization aborted");
+	const failure = getSummarizationFailure(response, "Cached summarization");
+	if (failure) throw new Error(failure);
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new CachedSummaryRejectedError("Cached summarization attempted to call a tool");
+	}
+	const text = contentText(response.content).trim();
+	if (!text) throw new CachedSummaryRejectedError("Cached summarization returned no text");
+	return { text, usage: response.usage };
 }
 
 /**

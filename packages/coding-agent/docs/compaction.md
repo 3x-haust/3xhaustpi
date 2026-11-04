@@ -127,6 +127,10 @@ For split user-message spans, Pi generates two summaries concurrently and merges
 1. **History summary**: Previous context (if any). If there are no newly compacted history messages, reuse the previous checkpoint verbatim when its UTF-8 byte upper bound fits the summary allowance; otherwise re-summarize it
 2. **User-message-span prefix summary**: The early part of the split user-message span, including any custom compaction focus
 
+### Cached-Prefix Summaries
+
+With `compaction.reuseCache` (default `true`), threshold and manual compaction first summarize on the session's own request: every message before the first kept entry, converted and transformed exactly as session requests send them, followed by one instruction to write the checkpoint without calling tools. The provider then reads the conversation from its prompt cache. The request keeps the session routing ID and cache retention and is marked as a side request, so cache warming keeps refreshing the session request instead. It runs only when the summarizing model is the session model; overflow recovery always uses the standalone request. When the reply calls a tool or has no text, compaction falls back to the standalone request described below; provider errors and aborts fail as they would there.
+
 ### Summary Budgets and Failure Safety
 
 Summary requests reserve the model's output limit, capped at half of its context window (a quarter for the split-span prefix summary), so long reasoning does not truncate the summary. The prompt asks for a compact checkpoint; the allowance is a ceiling, not a target.

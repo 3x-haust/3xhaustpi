@@ -74,6 +74,7 @@ CLI tool options override this setting for one invocation. `--tools` with only `
 | `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts. |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
 | `compaction.maxContextTokens` | number | `300000` | Compact at this context size even on larger windows; `0` disables the cap. |
+| `compaction.reuseCache` | boolean | `true` | Summarize threshold and manual compactions by appending an instruction to the conversation as the session sent it, so the provider reads it from prompt cache. Falls back to the standalone summary request when the reply is not a summary. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
 
 <a id="per-model-compaction-overrides"></a>

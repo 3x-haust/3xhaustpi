@@ -25,6 +25,13 @@ const CompactionSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.compaction.maxContextTokens,
 		}),
 	),
+	reuseCache: Type.Optional(
+		Type.Boolean({
+			description:
+				"Summarize by appending an instruction to the conversation as the session sent it, so the provider reads it from prompt cache. Falls back to a standalone summary request when the model does not answer with a summary.",
+			default: SETTINGS_DEFAULTS.compaction.reuseCache,
+		}),
+	),
 	modelOverrides: Type.Optional(
 		Type.Record(Type.String(), CompactionModelOverrideSchema, {
 			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',

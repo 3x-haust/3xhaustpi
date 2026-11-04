@@ -175,7 +175,8 @@ describe("request cache usage and session totals", () => {
 	it("persists individual successful split-summary requests without adding their aggregate twice", async () => {
 		const harness = await createHarness({
 			persistSession: true,
-			settings: { compaction: { enabled: false, keepRecentTokens: 1 } },
+			// The standalone split summary sends the history and the turn prefix as two requests.
+			settings: { compaction: { enabled: false, keepRecentTokens: 1, reuseCache: false } },
 		});
 		harnesses.push(harness);
 		const requests = [usage(1, 10, 100), usage(2, 20, 200), usage(3, 30, 300), usage(4, 40, 400)];

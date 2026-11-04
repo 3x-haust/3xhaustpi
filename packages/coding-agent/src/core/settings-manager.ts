@@ -902,6 +902,11 @@ export class SettingsManager {
 		};
 	}
 
+	/** Whether compaction summarizes on the session's cached request prefix first. */
+	getCompactionReuseCache(): boolean {
+		return this.settings.compaction?.reuseCache ?? SETTINGS_DEFAULTS.compaction.reuseCache;
+	}
+
 	/** Absolute context size that triggers compaction on large windows; read only by the threshold check. */
 	getCompactionMaxContextTokens(): number {
 		return this.settings.compaction?.maxContextTokens ?? SETTINGS_DEFAULTS.compaction.maxContextTokens;

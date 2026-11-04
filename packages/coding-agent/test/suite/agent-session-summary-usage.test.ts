@@ -267,6 +267,8 @@ describe("AgentSession summarization usage accounting", () => {
 
 	it("retains a late parallel split-turn response after the other summarization has failed", async () => {
 		const harness = await setup();
+		// Parallel history and turn-prefix requests exist only on the standalone summary path.
+		harness.settingsManager.applyOverrides({ compaction: { reuseCache: false } });
 		seedSession(harness);
 		appendAssistant(harness, "turn prefix work");
 		appendAssistant(harness, "recent turn suffix to retain");

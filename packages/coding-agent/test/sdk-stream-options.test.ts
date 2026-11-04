@@ -9,8 +9,9 @@ import {
 	normalizeContext,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { CacheWarmer } from "../src/core/cache-warmer.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -200,6 +201,36 @@ describe("createAgentSession stream options", () => {
 			expect(fixture.session.cacheWarmingStatus?.nextWarmAt).toBeGreaterThan(Date.now());
 			fixture.session.agent.state.messages = fixture.session.agent.state.messages.slice(1);
 			expect(fixture.session.cacheWarmingStatus?.reason).toBe("conversation context changed");
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	it("does not hand side requests on the session's routing id to cache warming", async () => {
+		const fixture = await createCacheWarmingSession();
+		try {
+			await fixture.session.prompt("test");
+			const warmer = (fixture.session as unknown as { _cacheWarmer: CacheWarmer })._cacheWarmer;
+			const start = vi.spyOn(warmer, "start");
+			const { model } = fixture.session.agent.state;
+			const context = normalizeContext({
+				messages: [{ role: "user", content: "summarize", timestamp: Date.now() }],
+			});
+			const send = async (sideRequest?: "warm" | "summary") =>
+				(
+					await fixture.session.agent.streamFunction(model, context, {
+						sessionId: fixture.session.sessionId,
+						sideRequest,
+					})
+				).result();
+
+			// A cached-prefix summary and a warm-up end in a turn no later request repeats.
+			await send("summary");
+			await send("warm");
+			expect(start).not.toHaveBeenCalled();
+			expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled");
+			await send();
+			expect(start).toHaveBeenCalledTimes(1);
 		} finally {
 			fixture.dispose();
 		}
