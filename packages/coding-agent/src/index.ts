@@ -57,6 +57,7 @@ export type {
 	AgentEndEvent,
 	AgentSettledEvent,
 	AgentStartEvent,
+	AgentToolExecutionMode,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	AppKeybinding,

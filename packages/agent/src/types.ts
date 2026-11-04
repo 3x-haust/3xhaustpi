@@ -42,6 +42,13 @@ export type StreamFn = (
 export type ToolExecutionMode = "sequential" | "parallel";
 
 /**
+ * Per-tool execution mode. "exclusive" waits for the earlier calls of its batch, runs alone,
+ * and holds back the later ones, which still run in parallel with each other. Use it for tools
+ * with unknown side effects, such as shell commands, so they never race a file edit.
+ */
+export type AgentToolExecutionMode = ToolExecutionMode | "exclusive";
+
+/**
  * Controls how many queued user messages are injected when the agent loop reaches a queue drain point.
  *
  * - "all": drain and inject every queued message at that point.
@@ -396,10 +403,11 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * Per-tool execution mode override.
 	 * - "sequential": this tool must execute one at a time with other tool calls.
 	 * - "parallel": this tool can execute concurrently with other tool calls.
+	 * - "exclusive": this tool runs alone between the calls before and after it.
 	 *
 	 * If omitted, the default execution mode applies.
 	 */
-	executionMode?: ToolExecutionMode;
+	executionMode?: AgentToolExecutionMode;
 }
 
 /** Context snapshot passed into the low-level agent loop. */

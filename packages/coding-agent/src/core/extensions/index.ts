@@ -24,6 +24,8 @@ export type {
 	AgentEndEvent,
 	AgentSettledEvent,
 	AgentStartEvent,
+	// Tool execution mode
+	AgentToolExecutionMode,
 	// Re-exports
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -150,7 +152,6 @@ export type {
 	ToolDefinition,
 	// Events - Tool Execution
 	ToolExecutionEndEvent,
-	// Tool execution mode
 	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
