@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import type { AuthEvent, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -72,7 +72,45 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// Auth (for clients that draw their own login UI)
+	| { id?: string; type: "get_login_providers" }
+	| { id?: string; type: "login"; provider: string; authType: "oauth" | "api_key" }
+	| { id?: string; type: "login_cancel"; loginId: string }
+	| { id?: string; type: "logout"; provider: string };
+
+/** One provider a client can offer in its own login UI. */
+export interface RpcLoginProvider {
+	id: string;
+	name: string;
+	authType: "oauth" | "api_key";
+	/** Label of the login method, e.g. "Claude Pro/Max" or "Anthropic API key" */
+	label?: string;
+	/** OAuth that signs in to a paid subscription (Claude Pro, ChatGPT Plus...) */
+	subscription: boolean;
+	/** Already logged in (any method) */
+	configured: boolean;
+}
+
+/**
+ * Emitted while a `login` command runs. `login_event` is progress to show
+ * (open this URL, enter this device code); `login_prompt` needs an answer,
+ * sent back as an `extension_ui_response` with the same `id`.
+ */
+export type RpcLoginOutput =
+	| { type: "login_event"; loginId: string; event: AuthEvent }
+	| {
+			type: "login_prompt";
+			loginId: string;
+			id: string;
+			prompt: {
+				type: "text" | "secret" | "select" | "manual_code";
+				message: string;
+				placeholder?: string;
+				options?: readonly { id: string; label: string; description?: string }[];
+			};
+	  };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -204,6 +242,24 @@ export type RpcResponse =
 			data: { warmed: boolean; cacheWrite?: number };
 	  }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
+
+	// Auth
+	| {
+			id?: string;
+			type: "response";
+			command: "get_login_providers";
+			success: true;
+			data: { providers: RpcLoginProvider[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "login";
+			success: true;
+			data: { provider: string; authType: "oauth" | "api_key" };
+	  }
+	| { id?: string; type: "response"; command: "login_cancel"; success: true; data: { cancelled: boolean } }
+	| { id?: string; type: "response"; command: "logout"; success: true }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
