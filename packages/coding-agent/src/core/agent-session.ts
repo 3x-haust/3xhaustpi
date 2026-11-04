@@ -395,6 +395,11 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+/** Share of the compaction threshold at which the summary starts in the background. */
+const SPECULATIVE_COMPACTION_RATIO = 0.85;
+/** A background summary is used only if the entries it keeps stay below this share of the threshold. */
+const SPECULATIVE_MAX_KEPT_RATIO = 0.6;
+
 /** Usage kinds of requests sent only to write the prompt cache (CacheWarmer, AgentSession.warm). */
 const CACHE_WRITE_USAGE_KINDS = new Set(["cache_warm", "cache_prewarm"]);
 
@@ -524,6 +529,14 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
+	/** A threshold summary started early in the background; see `_maybeStartSpeculativeCompaction`. */
+	private _speculativeCompaction?: {
+		branchIds: string[];
+		modelKey: string;
+		abortController: AbortController;
+		result: Promise<CompactionResult | undefined>;
+		usageTracker: ReturnType<typeof createSummarizationUsageTracker>;
+	};
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 
 	// Tool registry for extension getTools/setTools
@@ -908,6 +921,13 @@ export class AgentSession {
 		// A virtual selection is checked in prepareRequest, against the model the request is routed to.
 		const model = this.model;
 		if (!model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
+			if (model && !isVirtualModel(model) && model.contextWindow > 0) {
+				this._maybeStartSpeculativeCompaction(
+					estimateProjectedContextTokens(projection, this.sessionManager.getBranch()).tokens,
+					model.contextWindow,
+					this.settingsManager.getCompactionSettings(model),
+				);
+			}
 			return { ...context, messages: projection.messages };
 		}
 		await this._runAutoCompaction("threshold", false);
@@ -3130,6 +3150,7 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
+			this._cancelSpeculativeCompaction();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
@@ -3203,6 +3224,7 @@ export class AgentSession {
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
+		this._cancelSpeculativeCompaction();
 	}
 
 	/**
@@ -3366,7 +3388,107 @@ export class AgentSession {
 		if (shouldCompact(contextTokens, contextWindow, this._thresholdCompactionSettings(settings))) {
 			return await this._runAutoCompaction("threshold", false);
 		}
+		this._maybeStartSpeculativeCompaction(contextTokens, contextWindow, settings);
 		return false;
+	}
+
+	/**
+	 * Start the threshold summary in the background once context reaches
+	 * `SPECULATIVE_COMPACTION_RATIO` of the threshold, so the agent does not wait for it when the
+	 * threshold is reached. The session is append-only, so the summary of the prefix stays valid
+	 * as long as the branch still starts with the entries it saw. Skipped when extensions handle
+	 * compaction, because they may need to see the final preparation.
+	 */
+	private _maybeStartSpeculativeCompaction(
+		contextTokens: number,
+		contextWindow: number,
+		settings: CompactionSettings,
+	): void {
+		const model = this.model;
+		if (!model || isVirtualModel(model) || this._speculativeCompaction) return;
+		if (!settings.enabled || this._extensionRunner.hasHandlers("session_before_compact")) return;
+		const threshold = getCompactionThreshold(contextWindow, this._thresholdCompactionSettings(settings));
+		if (contextTokens < threshold * SPECULATIVE_COMPACTION_RATIO) return;
+		const branch = this.sessionManager.getBranch();
+		const preparation = prepareCompaction(branch, settings);
+		if (!preparation) return;
+		const abortController = new AbortController();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
+		const result = this._runDefaultCompaction(
+			preparation,
+			model,
+			undefined,
+			abortController.signal,
+			"threshold",
+			usageTracker.onResponse,
+		).catch(() => undefined);
+		this._speculativeCompaction = {
+			branchIds: branch.map((entry) => entry.id),
+			modelKey: `${model.provider}/${model.id}`,
+			abortController,
+			result,
+			usageTracker,
+		};
+	}
+
+	/**
+	 * Take the background summary if it still matches the branch and model, and drop it either way.
+	 * Waiting for it ends when `signal` aborts (Esc, dispose), which also aborts the summary.
+	 */
+	private async _takeSpeculativeCompaction(
+		model: Model<any>,
+		signal: AbortSignal,
+	): Promise<
+		{ result: CompactionResult; usageTracker: ReturnType<typeof createSummarizationUsageTracker> } | undefined
+	> {
+		const speculative = this._speculativeCompaction;
+		if (!speculative) return undefined;
+		this._speculativeCompaction = undefined;
+		const branch = this.sessionManager.getBranch();
+		const matches =
+			speculative.modelKey === `${model.provider}/${model.id}` &&
+			speculative.branchIds.length <= branch.length &&
+			speculative.branchIds.every((id, index) => branch[index]?.id === id) &&
+			!branch.slice(speculative.branchIds.length).some((entry) => entry.type === "compaction");
+		if (!matches || signal.aborted) {
+			this._dropSpeculativeCompaction(speculative);
+			return undefined;
+		}
+		let onAbort: (() => void) | undefined;
+		const aborted = new Promise<undefined>((resolve) => {
+			onAbort = () => resolve(undefined);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		try {
+			const result = await Promise.race([speculative.result, aborted]);
+			if (!result || signal.aborted) {
+				this._dropSpeculativeCompaction(speculative);
+				return undefined;
+			}
+			return { result, usageTracker: speculative.usageTracker };
+		} finally {
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+		}
+	}
+
+	/** Abort a background summary and record what its requests cost once they settle. */
+	private _dropSpeculativeCompaction(speculative: NonNullable<AgentSession["_speculativeCompaction"]>): void {
+		speculative.abortController.abort();
+		void speculative.result.then(() => speculative.usageTracker.finish());
+	}
+
+	private _cancelSpeculativeCompaction(): void {
+		const speculative = this._speculativeCompaction;
+		this._speculativeCompaction = undefined;
+		if (speculative) this._dropSpeculativeCompaction(speculative);
+	}
+
+	/** Estimated context tokens of the projection from `entryId` to the end of the branch. */
+	private _estimateTokensFrom(entryId: string): number {
+		const entries = this.sessionManager.buildSessionProjection().entries;
+		const start = entries.findIndex((entry) => entry.sourceEntry.id === entryId);
+		if (start === -1) return Number.POSITIVE_INFINITY;
+		return estimateMessagesTokens(entries.slice(start).flatMap((entry) => entry.messages));
 	}
 
 	/**
@@ -3384,6 +3506,7 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
 		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
+		let committedTracker = usageTracker;
 		let started = false;
 		let fromExtension = false;
 		let cancelledByExtension = false;
@@ -3444,28 +3567,48 @@ export class AgentSession {
 				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
+				// A background summary of an earlier prefix keeps more recent entries verbatim, which is
+				// fine as long as they fit; otherwise summarize now.
+				const speculative =
+					reason === "threshold"
+						? await this._takeSpeculativeCompaction(model, abortController.signal)
+						: undefined;
+				const speculativeFits =
+					speculative !== undefined &&
+					this._estimateTokensFrom(speculative.result.firstKeptEntryId) <
+						getCompactionThreshold(model.contextWindow, this._thresholdCompactionSettings(settings)) *
+							SPECULATIVE_MAX_KEPT_RATIO;
+				if (speculative && !speculativeFits) speculative.usageTracker.finish();
+				const tracker = speculative && speculativeFits ? speculative.usageTracker : usageTracker;
+				// Its successful requests are stored on the compaction entry, or recorded on failure.
+				committedTracker = tracker;
+				abortController.signal.throwIfAborted();
 				// Shared default summary generator, also used by manual compaction.
-				const compactResult = await this._runDefaultCompaction(
-					preparation,
-					model,
-					undefined,
-					abortController.signal,
-					reason,
-					usageTracker.onResponse,
-				);
+				const compactResult =
+					speculative && speculativeFits
+						? speculative.result
+						: await this._runDefaultCompaction(
+								preparation,
+								model,
+								undefined,
+								abortController.signal,
+								reason,
+								usageTracker.onResponse,
+							);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
 				details = {
 					...(compactResult.details && typeof compactResult.details === "object" ? compactResult.details : {}),
-					usageRequests: usageTracker.getSuccessfulResponses(),
+					usageRequests: tracker.getSuccessfulResponses(),
 				};
 			}
 			abortController.signal.throwIfAborted();
 
+			this._cancelSpeculativeCompaction();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			usageTracker.commit();
+			committedTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
@@ -3502,6 +3645,7 @@ export class AgentSession {
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
 			usageTracker.finish();
+			committedTracker.finish();
 			const message = error instanceof Error ? error.message : "compaction failed";
 			const aborted = abortController?.signal.aborted === true || cancelledByExtension || isAbortError(error);
 			if (started) {
@@ -3529,6 +3673,7 @@ export class AgentSession {
 			return false;
 		} finally {
 			usageTracker.finish();
+			committedTracker.finish();
 			if (this._autoCompactionAbortController === abortController) {
 				this._autoCompactionAbortController = undefined;
 			}

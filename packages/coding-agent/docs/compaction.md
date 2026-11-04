@@ -131,6 +131,10 @@ For split user-message spans, Pi generates two summaries concurrently and merges
 
 With `compaction.reuseCache` (default `true`), threshold and manual compaction first summarize on the session's own request: every message before the first kept entry, converted and transformed exactly as session requests send them, followed by one instruction to write the checkpoint without calling tools. The provider then reads the conversation from its prompt cache. The request keeps the session routing ID and cache retention and is marked as a side request, so cache warming keeps refreshing the session request instead. It runs only when the summarizing model is the session model; overflow recovery always uses the standalone request. When the reply calls a tool or has no text, compaction falls back to the standalone request described below; provider errors and aborts fail as they would there.
 
+### Background Summaries
+
+Once context reaches 85% of the compaction threshold, Pi starts the threshold summary in the background while the agent keeps working. When the threshold is reached, that summary is used if the branch still starts with the entries it saw, the model is unchanged, and the entries it keeps verbatim stay below 60% of the threshold; otherwise Pi summarizes again. Waiting for it ends on Esc or dispose, which also aborts it. It is skipped when an extension handles `session_before_compact`. The request usage of a summary that goes unused is recorded like that of a failed one.
+
 ### Summary Budgets and Failure Safety
 
 Summary requests reserve the model's output limit, capped at half of its context window (a quarter for the split-span prefix summary), so long reasoning does not truncate the summary. The prompt asks for a compact checkpoint; the allowance is a ceiling, not a target.
