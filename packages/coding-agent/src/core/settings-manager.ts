@@ -86,6 +86,7 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	transport?: TransportSetting; // default: "auto"
+	sharedPromptCache?: boolean; // default: false - key session requests by a hash of system prompt + tools so sessions with the same prefix share one provider cache entry
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -754,6 +755,16 @@ export class SettingsManager {
 	setTransport(transport: TransportSetting): void {
 		this.globalSettings.transport = transport;
 		this.markModified("transport");
+		this.save();
+	}
+
+	getSharedPromptCache(): boolean {
+		return this.settings.sharedPromptCache ?? false;
+	}
+
+	setSharedPromptCache(enabled: boolean): void {
+		this.globalSettings.sharedPromptCache = enabled;
+		this.markModified("sharedPromptCache");
 		this.save();
 	}
 

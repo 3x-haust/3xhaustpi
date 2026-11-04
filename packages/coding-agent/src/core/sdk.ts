@@ -10,6 +10,7 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import { prefixCacheKey } from "./prompt-cache-key.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -82,6 +83,14 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Share the prompt cache with every session that opens with the same system prompt and tools:
+	 * session requests carry a `promptCacheKey` derived from that prefix instead of the session id,
+	 * so a new session's first call can read the cache another one wrote on providers that route
+	 * their cache by key (OpenAI `prompt_cache_key`). Keep what differs between the sessions out of
+	 * the system prompt or nothing is shared. Default: the `sharedPromptCache` setting (false).
+	 */
+	sharedPromptCache?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -290,6 +299,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const sharedPromptCache = options.sharedPromptCache ?? settingsManager.getSharedPromptCache();
 
 	agent = new Agent({
 		initialState: {
@@ -309,8 +319,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const websocketConnectTimeoutMs =
 				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 			const headerRunner = extensionRunnerRef.current;
+			// Summaries and other standalone requests use their own routing ids; only session
+			// requests share the prefix key.
+			const promptCacheKey =
+				options?.promptCacheKey ??
+				(sharedPromptCache && options?.sessionId === sessionManager.getSessionId()
+					? prefixCacheKey(context)
+					: undefined);
 			return modelRuntime.streamSimple(model, context, {
 				...options,
+				...(promptCacheKey ? { promptCacheKey } : {}),
 				timeoutMs,
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
