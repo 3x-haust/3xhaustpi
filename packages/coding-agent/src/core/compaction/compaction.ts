@@ -817,7 +817,7 @@ async function summarizeInBatches(
 			onResponse,
 		);
 		if (options.signal?.aborted || response.stopReason === "aborted") {
-			throw new DOMException(`${label} aborted`, "AbortError");
+			throw new DOMException(options.signal?.aborted ? "Compaction cancelled" : `${label} aborted`, "AbortError");
 		}
 		if (response.stopReason === "error") {
 			throw new Error(`${label} failed: ${response.errorMessage || "Unknown error"}`);

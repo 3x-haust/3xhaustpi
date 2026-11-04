@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type FauxResponseStep, fauxAssistantMessage, type Usage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CompactionPreparation, compact, generateSummaryWithUsage } from "../../src/core/compaction/index.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -17,6 +17,15 @@ const durableMemory = `## Constraints & Preferences
 - childSessionId=child-7; npm run check failed.
 ## Next Steps
 1. Close the read transaction and rerun checks.`;
+
+const summaryUsage: Usage = {
+	input: 11,
+	output: 7,
+	cacheRead: 3,
+	cacheWrite: 5,
+	totalTokens: 26,
+	cost: { input: 0.11, output: 0.07, cacheRead: 0.03, cacheWrite: 0.05, total: 0.26 },
+};
 
 function preparation(overrides: Partial<CompactionPreparation> = {}): CompactionPreparation {
 	return {
@@ -51,8 +60,9 @@ describe("compaction memory and budget", () => {
 		while (harnesses.length) harnesses.pop()?.cleanup();
 	});
 
-	async function setup(contextWindow = 200_000): Promise<Harness> {
+	async function setup(contextWindow = 200_000, persistSession = false): Promise<Harness> {
 		const harness = await createHarness({
+			persistSession,
 			models: [{ id: "memory-faux", contextWindow, maxTokens: 128_000 }],
 			settings: { compaction: { keepRecentTokens: 100 } },
 		});
@@ -136,7 +146,11 @@ describe("compaction memory and budget", () => {
 				expect(prompt).toContain(`retained-round-${round - 1}`);
 				expect(prompt).toContain("silence is not resolution");
 			}
-			expect(result.details).toEqual({ readFiles: ["src/store.ts"], modifiedFiles: ["src/migration.ts"] });
+			expect(result.details).toMatchObject({
+				readFiles: ["src/store.ts"],
+				modifiedFiles: ["src/migration.ts"],
+				usageRequests: [expect.objectContaining({ source: "compaction", stopReason: "stop" })],
+			});
 			expect(result.summary.match(/<read-files>/g)).toHaveLength(1);
 			expect(result.summary.match(/<modified-files>/g)).toHaveLength(1);
 			expect(harness.session.messages[0]?.role).toBe("compactionSummary");
@@ -200,6 +214,48 @@ describe("compaction memory and budget", () => {
 		expect(result.usage.totalTokens).toBe(
 			result.usage.input + result.usage.output + result.usage.cacheRead + result.usage.cacheWrite,
 		);
+	});
+
+	it("counts batch and retry usage once across reload without exposing intermediate checkpoints", async () => {
+		const harness = await setup(16_000, true);
+		harness.settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 } });
+		for (let index = 0; index < 40; index++) {
+			appendUser(harness, `instruction-${index} ${"unfinished work ".repeat(50)}`);
+			appendAssistant(harness, "Pending.");
+		}
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+		const response: FauxResponseStep = () => fauxAssistantMessage(durableMemory, { usage: summaryUsage });
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated", usage: summaryUsage }),
+			...Array.from({ length: 40 }, () => response),
+		]);
+		const result = await harness.session.compact();
+		const calls = harness.faux.state.callCount;
+		expect(calls).toBeGreaterThan(2);
+		expect(result.usage?.input).toBe((calls - 1) * summaryUsage.input);
+		expect(harness.eventsOfType("summarization_retry_scheduled")).toHaveLength(1);
+		const entries = harness.sessionManager.getEntries();
+		const summaries = entries.filter((entry) => entry.type === "compaction");
+		expect(summaries).toHaveLength(1);
+		const details = summaries[0].details as { usageRequests: Array<{ usage: Usage }> };
+		expect(details.usageRequests).toHaveLength(calls - 1);
+		expect(details.usageRequests.every((request) => request.usage.input === summaryUsage.input)).toBe(true);
+		expect(entries.filter((entry) => entry.type === "custom")).toMatchObject([
+			{ customType: "pi.summarization_usage", data: { stopReason: "error", usage: summaryUsage } },
+		]);
+		const tokens = {
+			input: calls * summaryUsage.input,
+			output: calls * summaryUsage.output,
+			cacheRead: calls * summaryUsage.cacheRead,
+			cacheWrite: calls * summaryUsage.cacheWrite,
+			total: calls * summaryUsage.totalTokens,
+		};
+		expect(harness.session.getSessionStats().tokens).toEqual(tokens);
+		const messages = structuredClone(harness.session.messages);
+		harness.sessionManager.setSessionFile(harness.session.sessionFile!);
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+		expect(harness.session.getSessionStats().tokens).toEqual(tokens);
+		expect(harness.session.messages).toEqual(messages);
 	});
 
 	it("continues batching after a valid output expands to many UTF-8 bytes", async () => {
@@ -269,6 +325,7 @@ describe("compaction memory and budget", () => {
 		const previous = `CHECKPOINT_START ${"중요한 지시🙂 pending ".repeat(1500)} CHECKPOINT_END`;
 		const sources: string[] = [];
 		const fragments = new Map<number, string>();
+		const observed: AssistantMessage[] = [];
 		const response: FauxResponseStep = (context, options) => {
 			const prompt = getMessageText(context.messages[0]);
 			expect(
@@ -295,7 +352,15 @@ describe("compaction memory and budget", () => {
 			undefined,
 			undefined,
 			previous,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			(message) => observed.push(message),
 		);
+		expect(observed).toHaveLength(harness.faux.state.callCount);
+		expect(result.usage.input).toBe(observed.reduce((sum, message) => sum + message.usage.input, 0));
 		expect(sources.join("\n")).toContain("CHECKPOINT_START");
 		expect(sources.join("\n")).toContain("CHECKPOINT_END");
 		expect(sources.filter((source) => source.includes("Previous checkpoint fragment")).length).toBeGreaterThan(1);
@@ -476,11 +541,18 @@ describe("compaction memory and budget", () => {
 		appendAssistant(harness, "Recent work.");
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 		const before = structuredClone(harness.session.messages);
-		const entriesBefore = harness.sessionManager.getEntries().length;
-		harness.setResponses([fauxAssistantMessage(stopReason === "stop" ? " " : "partial checkpoint", { stopReason })]);
+		const entriesBefore = structuredClone(harness.sessionManager.getEntries());
+		harness.setResponses([
+			fauxAssistantMessage(stopReason === "stop" ? " " : "partial checkpoint", { stopReason, usage: summaryUsage }),
+		]);
 		await expect(harness.session.compact()).rejects.toThrow(/truncated|aborted|empty/);
-		expect(harness.sessionManager.getEntries()).toHaveLength(entriesBefore);
+		const entriesAfter = harness.sessionManager.getEntries();
+		expect(entriesAfter.slice(0, entriesBefore.length)).toEqual(entriesBefore);
+		expect(entriesAfter.slice(entriesBefore.length)).toMatchObject([
+			{ type: "custom", customType: "pi.summarization_usage", data: { stopReason, usage: summaryUsage } },
+		]);
 		expect(harness.session.messages).toEqual(before);
+		expect(harness.sessionManager.buildSessionContext().messages).toEqual(before);
 		if (stopReason === "aborted") {
 			expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
 				aborted: true,
@@ -515,15 +587,25 @@ describe("compaction memory and budget", () => {
 		}
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 		const before = structuredClone(harness.session.messages);
-		const entriesBefore = harness.sessionManager.getEntries().length;
+		const entriesBefore = structuredClone(harness.sessionManager.getEntries());
 		harness.setResponses([
-			fauxAssistantMessage("intermediate checkpoint"),
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "insufficient_quota" }),
+			fauxAssistantMessage("intermediate checkpoint", { usage: summaryUsage }),
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "insufficient_quota", usage: summaryUsage }),
 		]);
 		await expect(harness.session.compact()).rejects.toThrow("insufficient_quota");
 		expect(harness.faux.state.callCount).toBe(2);
-		expect(harness.sessionManager.getEntries()).toHaveLength(entriesBefore);
+		const entriesAfter = harness.sessionManager.getEntries();
+		expect(entriesAfter.slice(0, entriesBefore.length)).toEqual(entriesBefore);
+		expect(entriesAfter.slice(entriesBefore.length)).toMatchObject([
+			{ type: "custom", customType: "pi.summarization_usage", data: { stopReason: "error", usage: summaryUsage } },
+			{ type: "custom", customType: "pi.summarization_usage", data: { stopReason: "stop", usage: summaryUsage } },
+		]);
+		expect(harness.session.getSessionStats()).toMatchObject({
+			tokens: { input: 22, output: 14, cacheRead: 6, cacheWrite: 10, total: 52 },
+			cost: 0.52,
+		});
 		expect(harness.session.messages).toEqual(before);
+		expect(harness.sessionManager.buildSessionContext().messages).toEqual(before);
 	});
 
 	it("rejects a single oversized instruction without a provider call or destructive truncation", async () => {

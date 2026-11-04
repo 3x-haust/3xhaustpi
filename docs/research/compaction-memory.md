@@ -57,7 +57,7 @@ fork는 session ID가 바뀌며 리소스를 다시 읽을 수 있어 캐시 적
 - 긴 도구 기록에서 호출·명령과 결과를 같은 배치로 유지.
 - 압축 뒤 메인에 변경분만 보내는 두 요청의 시스템·체크포인트·기존 메시지 접두가 그대로 유지되는지 확인.
 - 기본 출력 상한, 작은 reserve, 작은 모델 출력 한도 확인.
-- 빈 응답·길이 중단·취소 및 뒤쪽 배치 실패 시 원본 문맥과 세션 엔트리 불변.
+- 빈 응답·길이 중단·취소 및 뒤쪽 배치 실패 시 원본 메시지·기존 세션 엔트리와 활성 문맥 불변. 통계 통합 뒤에는 실제 발생한 요약 사용량 메타데이터만 추가한다.
 - 단일 초대형 지시는 조용히 자르지 않고 provider 호출 전 실패.
 - 12,000바이트의 정상 중간 요약 뒤에도 입력·출력 배분을 조절하여 후속 배치 처리.
 - 큰 이전 체크포인트는 원문을 먼저 재압축하고, 새 모델 문맥 자체를 넘으면 UTF-8 안전한 조각을 시간순으로 접어 처리. 재압축은 새 원문 소비 없이 최대 두 번이며, 진전이 없으면 안전하게 실패.
@@ -77,6 +77,33 @@ env -u ANTHROPIC_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u PI_PACKAGE_DIR \
   test/branch-summary-extensions.test.ts test/interactive-mode-compaction.test.ts
 cd ../..
 npm run check
+```
+
+## 통계 변경과 통합 검증
+
+기억·압축 커밋 4개를 통계 브랜치 `task/tmw1je5kim1n8`의 `a8556c5` 위로 리베이스했다. 시작 시 작업 트리는 깨끗했고 이전 끝점 `a3f252f`는 `refs/backup/compaction-memory-before-stats-rebase`에 보존했다. 충돌 파일은 기존 작업 소유인 `src/core/compaction/compaction.ts`뿐이다.
+
+- 통계의 `completeSummarization()` 응답 콜백을 그대로 유지하고 history·분할 prefix·각 배치·체크포인트 재압축과 조각 재귀 호출까지 전달한다. 실패와 재시도를 포함한 실제 응답만 관찰하고, retry backoff가 만드는 가상 취소 응답은 중복 기록하지 않는다.
+- 성공한 배치의 합계는 압축 엔트리 `usage`에, 개별 요청은 `details.usageRequests`에 저장한다. 실패·취소·버려진 중간 요약은 기존 통계 추적기가 `pi.summarization_usage` 메타데이터로 기록한다. 합계와 개별 요청을 이중 합산하지 않는 통계 구현 및 fork 동작은 변경하지 않았다.
+- 실패 시 원본 보존 검증은 메타데이터까지 금지하는 대신 기존 엔트리와 활성 모델 문맥이 그대로이고 새 엔트리는 요청 사용량 기록뿐인지 확인한다. 새 통합 회귀는 긴 대화의 여러 배치 + 재시도 + 디스크 재로딩에서 요청별 합계가 한 번만 집계되는지, 큰 체크포인트의 재귀 조각 요약도 응답 콜백에 빠짐없이 도달하는지 확인한다.
+- 통계의 자동 압축 테스트는 새 지시문보다 작았던 가상 문맥 1,000을 16,000으로 늘리고 사용량도 자동 압축 임계값 이상으로 조정했다. 실제 요약 성공 및 호출 횟수를 추가 검증한다. 취소된 signal의 오류 문구 `Compaction cancelled`를 보존하고 `AbortError` 분류도 유지한다.
+- 사용량 메타데이터는 모델 문맥에 들어가지 않으므로 압축 뒤 prefix 안정성 설명은 그대로다. 프롬프트 캐시 브랜치는 이번에 합치지 않았고 캐시 라우팅 및 통계 계산기는 수정하지 않았다.
+
+최종 실행 결과: coding-agent 65개 테스트 파일 통과, 309개 테스트 통과, 실제 API 요약 테스트 2개 제외. 요청한 `compaction-memory`, `summarization-usage`, `rpc-session-cache-stats`를 모두 포함한다. `npm run check`의 lint·의존성·타입·browser smoke 및 별도 패키지 타입 검사와 `git diff --check`도 통과했다. npm의 기존 로컬 설정 미지원 경고는 발생하지만 코드 검사 진단은 없다. 실제 API 요청·빌드·main 병합·푸시·PR은 실행하지 않았다.
+
+```sh
+cd packages/coding-agent
+env -u ANTHROPIC_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u PI_PACKAGE_DIR \
+  node ../../node_modules/vitest/dist/cli.js --run test/suite \
+  test/compaction.test.ts test/compaction-serialization.test.ts \
+  test/compaction-summary-reasoning.test.ts test/compaction-extensions-example.test.ts \
+  test/compaction-benchmark-score.test.ts test/agent-session-auto-compaction-queue.test.ts \
+  test/branch-summary-extensions.test.ts test/interactive-mode-compaction.test.ts \
+  test/summarization-usage.test.ts test/cache-stats.test.ts
+cd ../..
+npm run check
+node_modules/.bin/tsgo --noEmit -p packages/coding-agent/tsconfig.build.json
+git diff --check
 ```
 
 ## 남은 한계

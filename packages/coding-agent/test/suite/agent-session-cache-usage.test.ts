@@ -214,14 +214,15 @@ describe("request cache usage and session totals", () => {
 	it("includes failed auto-compaction attempts and the successful summary once at completion", async () => {
 		const harness = await createHarness({
 			persistSession: true,
-			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 200 }],
+			// Include room for the checkpoint instructions while still triggering automatic compaction.
+			models: [{ id: "faux-1", contextWindow: 16_000, maxTokens: 200 }],
 			settings: {
 				compaction: { enabled: true, reserveTokens: 300, keepRecentTokens: 1 },
 				retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
 			},
 		});
 		harnesses.push(harness);
-		const attempts = [usage(600, 200, 0), usage(20, 30, 40), usage(10, 0, 50)];
+		const attempts = [usage(15_600, 200, 0), usage(20, 30, 40), usage(10, 0, 50)];
 		harness.setResponses([
 			fauxAssistantMessage("response", { usage: attempts[0] }),
 			fauxAssistantMessage("", { usage: attempts[1], stopReason: "error", errorMessage: "terminated" }),
@@ -231,7 +232,12 @@ describe("request cache usage and session totals", () => {
 			if (event.type === "compaction_end") expectTotals(harness.session.getSessionStats(), attempts);
 		});
 		await harness.session.prompt("automatic compaction");
-		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ reason: "threshold", aborted: false });
+		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
+			reason: "threshold",
+			aborted: false,
+			result: { summary: expect.stringContaining("summary") },
+		});
 		expectTotals(harness.session.getSessionStats(), attempts);
 		reload(harness);
 		expectTotals(harness.session.getSessionStats(), attempts);
