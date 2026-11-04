@@ -10,10 +10,13 @@
 ### Changed
 
 - Changed split-turn compaction to generate history and turn-prefix summaries concurrently.
+- Bounded compaction summary output independently of the overflow reserve and folded oversized histories in context-budgeted batches, preserving tool exchanges and aggregating successful summary usage.
 - Changed compaction summaries to preserve operational evidence, including commands, validation outcomes, unresolved root causes, and delegated session lineage.
 
 ### Fixed
 
+- Fixed split-turn compaction dropping the previous checkpoint when no new history messages need summarizing; active instructions, decisions, and unfinished work are now prioritized on repeated updates.
+- Fixed repeated compaction duplicating generated file-list footers and accepting empty, aborted, or truncated summaries in place of intact history.
 - Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
 - Fixed compaction serialization to preserve tool identities, operational arguments, failure status, and both ends of truncated output while omitting assistant reasoning and replacing oversized payloads with stable digests.
 - Fixed self-update detection for already-identifiable pnpm install paths so it does not synchronously probe an ambient package manager.

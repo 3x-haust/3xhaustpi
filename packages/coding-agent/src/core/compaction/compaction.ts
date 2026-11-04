@@ -499,17 +499,21 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
+Prioritize durable user instructions, explicit prohibitions, decisions and their rationale, unresolved work, and exact paths/tool identifiers needed to resume. Distinguish verified results from plans; never mark unverified work as done. Deduplicate repeated facts and collapse completed work that no longer affects continuation. Do not copy file-list metadata tags: file tracking is appended separately.
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
+- CARRY FORWARD every still-active user instruction, prohibition, decision, unresolved task/blocker, and continuation-critical fact from the previous summary, even when the new messages do not mention it
 - ADD new progress, decisions, and context from the new messages
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
+- Remove constraints or unresolved work ONLY when the new messages explicitly supersede or resolve them; silence is not resolution
+- Deduplicate facts and collapse completed historical detail before shortening active instructions or unresolved work
+- Distinguish observed tool outcomes from plans and retain exact identifiers needed to resume
+- Do not copy file-list metadata tags: file tracking is appended separately
 
 Use this EXACT format:
 
@@ -543,6 +547,19 @@ Use this EXACT format:
 - [Preserve important context, add new if needed]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+
+/** Bound generated memory independently of the much larger overflow reserve. */
+function summaryOutputBudget(model: Model<string>, reserveTokens: number, splitPrefix = false): number {
+	return Math.max(
+		1,
+		Math.min(
+			Math.floor((splitPrefix ? 0.5 : 0.8) * reserveTokens),
+			splitPrefix ? 2048 : 4096,
+			Math.max(1, Math.floor(model.contextWindow / 4)),
+			model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+		),
+	);
+}
 
 function createSummarizationOptions(
 	model: Model<any>,
@@ -652,59 +669,99 @@ export async function generateSummaryWithUsage(
 	callbacks?: RetryCallbacks,
 	onResponse?: SummarizationResponseCallback,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.8 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
-
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-	if (customInstructions) {
-		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
-	}
-
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel);
-
-	const response = await completeSummarization(
+	const maxTokens = summaryOutputBudget(model, reserveTokens);
+	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
+	return summarizeInBatches(
+		currentMessages,
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		completionOptions,
+		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		SUMMARIZATION_PROMPT + focus,
+		UPDATE_SUMMARIZATION_PROMPT + focus,
+		previousSummary,
+		"Summarization",
 		streamFn,
 		retry,
 		callbacks,
 		onResponse,
 	);
+}
 
-	if (response.stopReason === "aborted") {
-		throw new Error("Compaction cancelled");
+/**
+ * Fold oversized histories at message boundaries instead of silently dropping old instructions.
+ * UTF-8 bytes are an intentionally conservative token upper bound (including CJK/base64).
+ * No intermediate checkpoint is persisted: any failure leaves the original history intact.
+ */
+async function summarizeInBatches(
+	messages: AgentMessage[],
+	model: Model<string>,
+	options: SimpleStreamOptions,
+	initialPrompt: string,
+	updatePrompt: string,
+	previousSummary: string | undefined,
+	label: string,
+	streamFn?: StreamFn,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
+): Promise<{ text: string; usage: Usage }> {
+	const serialized: string[] = [];
+	for (const message of convertToLlm(messages)) {
+		const text = serializeConversation([message]);
+		if (!text) continue;
+		// Keep a tool call and its results together so the outcome retains its command/path context.
+		if (message.role === "toolResult" && serialized.length > 0) {
+			serialized[serialized.length - 1] += `\n\n${text}`;
+		} else {
+			serialized.push(text);
+		}
 	}
-	if (response.stopReason === "error") {
-		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	const textContent = contentText(response.content);
-
-	return { text: textContent, usage: response.usage };
+	let index = 0;
+	let summary = previousSummary;
+	let usage: Usage | undefined;
+	// Leave framing headroom in addition to the explicit output allowance.
+	const inputBudget = model.contextWindow - (options.maxTokens ?? 0) - 256;
+	do {
+		if (options.signal?.aborted) throw new DOMException(`${label} aborted`, "AbortError");
+		const instructions = `${summary ? updatePrompt : initialPrompt}\n\nKeep the checkpoint compact; target at most ${options.maxTokens} output tokens. Prefer active constraints and unfinished work over historical detail.`;
+		const previous = summary ? `<previous-summary>\n${summary}\n</previous-summary>\n\n` : "";
+		const framing = `<conversation>\n\n</conversation>\n\n${previous}${instructions}`;
+		let bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + framing, "utf8");
+		const batch: string[] = [];
+		while (index < serialized.length) {
+			const nextBytes = Buffer.byteLength(serialized[index], "utf8") + (batch.length > 0 ? 2 : 0);
+			if (bytes + nextBytes > inputBudget) break;
+			batch.push(serialized[index++]);
+			bytes += nextBytes;
+		}
+		if (bytes > inputBudget || (batch.length === 0 && index < serialized.length)) {
+			throw new Error(`${label} failed: a message or previous summary exceeds the summarization context budget`);
+		}
+		const promptText = `<conversation>\n${batch.join("\n\n")}\n</conversation>\n\n${previous}${instructions}`;
+		const response = await completeSummarization(
+			model,
+			{
+				systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
+				messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
+			},
+			options,
+			streamFn,
+			retry,
+			callbacks,
+			onResponse,
+		);
+		if (options.signal?.aborted || response.stopReason === "aborted") {
+			throw new DOMException(`${label} aborted`, "AbortError");
+		}
+		if (response.stopReason === "error") {
+			throw new Error(`${label} failed: ${response.errorMessage || "Unknown error"}`);
+		}
+		if (response.stopReason === "length") throw new Error(`${label} failed: summary was truncated`);
+		const text = contentText(response.content);
+		if (!text.trim()) throw new Error(`${label} failed: summary was empty`);
+		summary = text;
+		usage = usage ? combineUsage(usage, response.usage) : response.usage;
+	} while (index < serialized.length);
+	return { text: summary!, usage: usage! };
 }
 
 // ============================================================================
@@ -750,6 +807,16 @@ export function prepareCompaction(
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
+		// The generated footer is carried deterministically in details, not rewritten by the LLM.
+		if (!prevCompaction.fromHook && prevCompaction.details) {
+			const details = prevCompaction.details as Partial<CompactionDetails>;
+			if (Array.isArray(details.readFiles) && Array.isArray(details.modifiedFiles)) {
+				const footer = formatFileOperations(details.readFiles, details.modifiedFiles);
+				if (footer && previousSummary.endsWith(footer)) {
+					previousSummary = previousSummary.slice(0, -footer.length);
+				}
+			}
+		}
 		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
@@ -827,6 +894,7 @@ Summarize the prefix to provide context for the retained suffix:
 ## Context for Suffix
 - [Information needed to understand the retained recent work]
 
+Preserve the user's active instructions and prohibitions, decisions and rationale, unfinished tasks, blockers, and exact file/tool identifiers needed for the suffix. Separate verified outcomes from planned work. Do not copy file-list metadata tags; tracking is appended separately.
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
 /**
@@ -866,12 +934,13 @@ export async function compact(
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
+		// Allocate 50% of the reserve to history (0.625 * 0.8), 30% to the prefix (0.6 * 0.5).
 		const historyPromise =
 			messagesToSummarize.length > 0
 				? generateSummaryWithUsage(
 						messagesToSummarize,
 						model,
-						settings.reserveTokens,
+						Math.floor(settings.reserveTokens * 0.625),
 						apiKey,
 						headers,
 						signal,
@@ -890,7 +959,7 @@ export async function compact(
 			generateTurnPrefixSummary(
 				turnPrefixMessages,
 				model,
-				settings.reserveTokens,
+				Math.floor(settings.reserveTokens * 0.6),
 				apiKey,
 				headers,
 				env,
@@ -900,9 +969,11 @@ export async function compact(
 				retry,
 				callbacks,
 				onResponse,
+				customInstructions,
 			),
 		]);
-		const historyText = historyResult?.text ?? "No prior history.";
+		// With no newly compacted history, reuse the previous checkpoint verbatim.
+		const historyText = historyResult?.text ?? previousSummary ?? "No prior history.";
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
 		summaryUsage = historyResult ? combineUsage(historyResult.usage, turnPrefixResult.usage) : turnPrefixResult.usage;
@@ -961,41 +1032,21 @@ async function generateTurnPrefixSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	onResponse?: SummarizationResponseCallback,
+	customInstructions?: string,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
+	const maxTokens = summaryOutputBudget(model, reserveTokens, true);
+	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
+	return summarizeInBatches(
+		messages,
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		TURN_PREFIX_SUMMARIZATION_PROMPT + focus,
+		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\n${UPDATE_SUMMARIZATION_PROMPT}${focus}`,
+		undefined,
+		"Turn prefix summarization",
 		streamFn,
 		retry,
 		callbacks,
 		onResponse,
 	);
-
-	if (response.stopReason === "aborted") {
-		throw new Error("Compaction cancelled");
-	}
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	return {
-		text: contentText(response.content),
-		usage: response.usage,
-	};
 }

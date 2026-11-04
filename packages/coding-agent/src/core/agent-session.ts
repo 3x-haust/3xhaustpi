@@ -2218,14 +2218,18 @@ export class AgentSession {
 			usageTracker.finish();
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			if (started) {
+				const aborted =
+					this._autoCompactionAbortController?.signal.aborted === true ||
+					(error instanceof Error && error.name === "AbortError");
 				this._emit({
 					type: "compaction_end",
 					reason,
 					result: undefined,
-					aborted: false,
+					aborted,
 					willRetry: false,
-					errorMessage:
-						reason === "overflow"
+					errorMessage: aborted
+						? undefined
+						: reason === "overflow"
 							? `Context overflow recovery failed: ${errorMessage}`
 							: `Auto-compaction failed: ${errorMessage}`,
 				});

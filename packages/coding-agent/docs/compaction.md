@@ -40,7 +40,7 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
+3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present. Preserve active instructions, prohibitions, decisions, unfinished tasks, blockers, and operational identifiers; deduplicate historical detail first
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
 5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
 
@@ -102,9 +102,23 @@ Split turn (one huge turn exceeds budget):
   turnPrefixMessages = [usr, ass, tool, ass, tool, tool]
 ```
 
-For split turns, pi generates two summaries and merges them:
-1. **History summary**: Previous context (if any)
-2. **Turn prefix summary**: The early part of the split turn
+For split turns, pi generates two summaries concurrently and merges them:
+1. **History summary**: Previous context (if any). If there are no newly compacted history messages, reuse the previous checkpoint verbatim rather than discarding or re-summarizing it
+2. **Turn prefix summary**: The early part of the split turn, including any custom compaction focus
+
+### Summary Budgets and Failure Safety
+
+History-summary output is capped at 4096 tokens and turn-prefix output at 2048 tokens, further limited by the model output cap, one quarter of its context window, and the overflow reserve. For split turns, history receives at most 50% of `reserveTokens` and the prefix at most 30%, rather than each using the full reserve independently. With defaults, the combined output allowance is 6144 tokens instead of 21299. These are output **limits**, not measured savings or recall guarantees; reasoning tokens may consume the allowance.
+
+Summarization accounts for the system prompt, instructions, previous checkpoint, output allowance, and 256 tokens of framing headroom. UTF-8 byte length is used as a deliberately conservative input-token upper bound, including multilingual text and opaque payloads. Oversized histories are folded in chronological batches, keeping tool calls and their results together. Each batch receives the preceding checkpoint and the same custom focus. Usage from successful batches is aggregated into the final compaction result.
+
+No intermediate checkpoint is persisted. Aborted, empty, or length-truncated responses fail compaction without replacing the original history. A single message/tool exchange or previous checkpoint that cannot fit is rejected rather than silently truncated; reduce that input or switch to a larger-context model. Conservative batching can require additional requests and repeated checkpoint input, so it is a safety trade-off, not a promise of lower cost for every transcript.
+
+### Prompt Prefix Stability
+
+Compaction necessarily replaces the old conversation prefix with a new summary. The first request after compaction cannot reuse the replaced portion of the old prompt cache; unchanged system/tool prefixes may still be reusable depending on the provider. The committed summary and retained messages are not rewritten between compactions, so subsequent delta-only turns can extend the same prefix. No rolling memory is injected on every turn.
+
+This change does not alter `PI_CACHE_RETENTION=long`, provider cache routing, main-conversation session IDs, delta submission, or fork/rewind behavior. Summarization remains a separate request path; cache policy and session-statistics changes are intentionally out of scope.
 
 ### Cut Point Rules
 
@@ -182,7 +196,7 @@ Both compaction and branch summarization track files cumulatively. When generati
 - Tool calls in the messages being summarized
 - Previous compaction or branch summary `details` (if any)
 
-This means file tracking accumulates across multiple compactions or nested branch summaries, preserving the full history of read and modified files.
+This means file tracking accumulates across multiple compactions or nested branch summaries, preserving the full history of read and modified files. Before updating a built-in compaction summary, its exact generated trailing file-list footer is removed from the LLM input and regenerated from `details`; this avoids repeatedly summarizing and duplicating metadata. Extension-owned summaries are not stripped.
 
 ### BranchSummaryEntry Structure
 
@@ -258,7 +272,6 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 
 ```
 [User]: What they said
-[Assistant thinking]: Internal reasoning
 [Assistant]: Response text
 [Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
 [Tool result]: Output from tool
@@ -266,7 +279,7 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 
 This prevents the model from treating it as a conversation to continue.
 
-Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
+Tool results keep their first and last 1000 characters during serialization. The middle is replaced with a marker indicating how many characters were omitted. Tool names, call IDs, and success/error status are included; assistant reasoning is omitted, and oversized tool payload arguments use stable digests. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
 
 ## Custom Summarization via Extensions
 
