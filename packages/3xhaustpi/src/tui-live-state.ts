@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type Editor, ProcessTerminal, Text, TUI } from "@earendil-works/pi-tui";
+import { type Editor, ProcessTerminal, Text, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import type { AgentToolApprovalRequest } from "./agent-runtime.ts";
 import type { AgentConversationSummary } from "./agent-session-catalog.ts";
 import { CacheWarmController } from "./cache-warm-controller.ts";
@@ -124,7 +124,7 @@ export function createTuiLiveCore(input: RunTuiInput): TuiLiveCore {
 	database.recoverInterruptedTuiRequests(projectRoot);
 	const workspace = database.inspectWorkspace(projectRoot);
 	const agentSessionId = database.findTuiAgentSession(projectRoot);
-	const ui = new TUI(new ProcessTerminal());
+	const ui = new TuiMainScreen(new ProcessTerminal());
 	const composer = new TuiComposer(ui, editorTheme(), {
 		paddingX: 1,
 		autocompletePresentation: "overlay",

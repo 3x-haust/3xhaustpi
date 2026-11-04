@@ -1,7 +1,6 @@
 import {
 	type AssistantMessage,
-	type AssistantMessageEvent,
-	EventStream,
+	createAssistantMessageEventStream,
 	type Message,
 	type Model,
 	type ToolResultMessage,
@@ -117,14 +116,7 @@ function convertToLlm(messages: AgentMessage[]): Message[] {
 function createProviderStream(toolCalls: AssistantMessage["content"]): StreamFn {
 	let turn = 0;
 	return () => {
-		const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new ToolCallBenchmarkError("Provider stream ended without a final event");
-			},
-		);
+		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
 			if (turn === 0) {
 				turn++;
@@ -172,7 +164,7 @@ async function runBatch(mode: ToolCallExecutionMode, batchSize: number): Promise
 			};
 		},
 	};
-	const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+	const context: AgentContext = { messages: [], tools: [tool] };
 	const config: AgentLoopConfig = {
 		model: createModel(),
 		convertToLlm,

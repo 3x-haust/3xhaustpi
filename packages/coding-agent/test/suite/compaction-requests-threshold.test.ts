@@ -33,10 +33,8 @@ describe("compaction threshold cap", () => {
 
 	it("defaults to a 300k cap in code and in settings, and 0 disables it", () => {
 		expect(DEFAULT_COMPACTION_SETTINGS.maxContextTokens).toBe(300_000);
-		expect(SettingsManager.inMemory().getCompactionSettings().maxContextTokens).toBe(300_000);
-		expect(
-			SettingsManager.inMemory({ compaction: { maxContextTokens: 0 } }).getCompactionSettings().maxContextTokens,
-		).toBe(0);
+		expect(SettingsManager.inMemory().getCompactionMaxContextTokens()).toBe(300_000);
+		expect(SettingsManager.inMemory({ compaction: { maxContextTokens: 0 } }).getCompactionMaxContextTokens()).toBe(0);
 	});
 });
 
@@ -143,11 +141,11 @@ describe("compact() appends verbatim user requests", () => {
 		const prompts: string[] = [];
 		harness.setResponses([
 			(context) => {
-				prompts.push(getMessageText(context.messages[0]));
+				prompts.push(getMessageText(context.messages.find((message) => message.role === "user")));
 				return fauxAssistantMessage('## Goal\nRename loader\n\n## User Requests (verbatim)\n- "paraphrased"');
 			},
 			(context) => {
-				prompts.push(getMessageText(context.messages[0]));
+				prompts.push(getMessageText(context.messages.find((message) => message.role === "user")));
 				return fauxAssistantMessage("## Goal\nRename loader and test it");
 			},
 		]);

@@ -40,7 +40,8 @@ export interface CustomMessage<T = unknown> {
 export interface BranchSummaryMessage {
 	role: "branchSummary";
 	summary: string;
-	fromId: string;
+	/** Null when the summarized branch started at the session root (matches pi-coding-agent). */
+	fromId: string | null;
 	timestamp: number;
 }
 
@@ -78,7 +79,11 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 	return text;
 }
 
-export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {
+export function createBranchSummaryMessage(
+	summary: string,
+	fromId: string | null,
+	timestamp: string,
+): BranchSummaryMessage {
 	return {
 		role: "branchSummary",
 		summary,
@@ -152,6 +157,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						],
 						timestamp: m.timestamp,
 					};
+				case "system":
 				case "user":
 				case "assistant":
 				case "toolResult":

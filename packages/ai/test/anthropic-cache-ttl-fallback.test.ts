@@ -6,7 +6,7 @@ import {
 	stream as streamAnthropic,
 } from "../src/api/anthropic-messages.ts";
 import { getModel } from "../src/compat.ts";
-import type { Context } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 function sseResponse(): Response {
 	const events = [
@@ -43,29 +43,26 @@ function apiError(status: number, type: string, message: string): Error {
 /** A client whose first `failures` requests throw `error`, recording each request's cache TTLs. */
 function fakeClient(failures: number, error: Error) {
 	const ttls: Array<Array<string | undefined>> = [];
-	const client = {
-		messages: {
-			create: (params: unknown) => ({
-				asResponse: async () => {
-					const found: Array<string | undefined> = [];
-					JSON.stringify(params, (key, value) => {
-						if (key === "cache_control") found.push((value as { ttl?: string }).ttl);
-						return value;
-					});
-					ttls.push(found);
-					if (ttls.length <= failures) throw error;
-					return sseResponse();
-				},
-			}),
+	const create = (params: unknown) => ({
+		asResponse: async () => {
+			const found: Array<string | undefined> = [];
+			JSON.stringify(params, (key, value) => {
+				if (key === "cache_control") found.push((value as { ttl?: string }).ttl);
+				return value;
+			});
+			ttls.push(found);
+			if (ttls.length <= failures) throw error;
+			return sseResponse();
 		},
-	} as unknown as Anthropic;
+	});
+	const client = { messages: { create }, beta: { messages: { create } } } as unknown as Anthropic;
 	return { client, ttls };
 }
 
-const context: Context = {
+const context = normalizeContext({
 	systemPrompt: "system",
 	messages: [{ role: "user", content: "hi", timestamp: 0 }],
-};
+});
 
 const ttlError = () =>
 	apiError(400, "invalid_request_error", "cache_control.ttl: Extra inputs are not permitted (ttl=1h)");

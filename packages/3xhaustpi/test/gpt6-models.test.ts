@@ -19,7 +19,9 @@ describe("bundled GPT-6 catalog", () => {
 				provider,
 				api: provider === "openai" ? "openai-responses" : "openai-codex-responses",
 				reasoning: true,
-				contextWindow: 1050000,
+				// The upstream catalog caps these at the window the API serves (272k, or 500k for
+				// GPT-6.1 on Codex); long-context pricing tiers stay for providers that allow more.
+				contextWindow: provider === "openai-codex" && id.startsWith("gpt-6.1") ? 500000 : 272000,
 				maxTokens: 128000,
 				cost: {
 					input,
@@ -29,7 +31,7 @@ describe("bundled GPT-6 catalog", () => {
 				},
 				thinkingLevelMap: { off, xhigh: "xhigh", max: "max" },
 			});
-			expect(modelContextWindow(provider, id)).toBe(1050000);
+			expect(modelContextWindow(provider, id)).toBe(model.contextWindow);
 		});
 	}
 });

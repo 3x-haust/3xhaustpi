@@ -1,8 +1,6 @@
-// Core Agent
-export { uuidv7 } from "@earendil-works/pi-ai";
 export * from "./agent.ts";
-// Loop functions
 export * from "./agent-loop.ts";
+// 3xhaustPi keeps the experimental harness that upstream removed in 1.x; pi-session embeds it.
 export * from "./harness/agent-harness.ts";
 export {
 	type BranchPreparation,
@@ -42,9 +40,6 @@ export * from "./harness/tools/index.ts";
 export * from "./harness/types.ts";
 export * from "./harness/utils/shell-output.ts";
 export * from "./harness/utils/truncate.ts";
-// Proxy utilities
 export * from "./proxy.ts";
-// Stream defaults
 export { setDefaultStreamFn } from "./stream-fn.ts";
-// Types
 export * from "./types.ts";

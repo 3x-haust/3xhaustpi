@@ -4,6 +4,8 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
+	getCurrentSystemPrompt,
+	getCurrentTools,
 	type RegisterFauxProviderOptions,
 	type Usage,
 } from "@earendil-works/pi-ai";
@@ -326,8 +328,8 @@ describe("AgentHarness", () => {
 				captured.push({
 					modelId: model.id,
 					reasoning: getReasoning(options),
-					systemPrompt: context.systemPrompt ?? "",
-					tools: context.tools?.map((tool) => tool.name) ?? [],
+					systemPrompt: getCurrentSystemPrompt(context.messages),
+					tools: getCurrentTools(context.messages).map((tool) => tool.name),
 				});
 				return fauxAssistantMessage(fauxToolCall("calculate", { expression: "1 + 1" }, { id: "call-1" }), {
 					stopReason: "toolUse",
@@ -337,8 +339,8 @@ describe("AgentHarness", () => {
 				captured.push({
 					modelId: model.id,
 					reasoning: getReasoning(options),
-					systemPrompt: context.systemPrompt ?? "",
-					tools: context.tools?.map((tool) => tool.name) ?? [],
+					systemPrompt: getCurrentSystemPrompt(context.messages),
+					tools: getCurrentTools(context.messages).map((tool) => tool.name),
 				});
 				return fauxAssistantMessage("done");
 			},

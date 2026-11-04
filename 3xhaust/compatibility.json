@@ -5,7 +5,7 @@
     "name": "3x-haust/3xhaustpi",
     "lineage": "standalone-source-port",
     "importedFrom": "earendil-works/pi",
-    "upstreamCommit": "e9e86e1c832de1edfff2d42041c8f9087d72a0cf",
+    "upstreamCommit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
     "syncStrategy": "reviewed-source-candidate-pr",
     "stablePromotionRequiresExactCommitReceipt": true
   },
@@ -23,13 +23,13 @@
     {
       "name": "@earendil-works/pi-ai",
       "workspace": "packages/ai",
-      "version": "0.82.1",
+      "version": "1.5.0",
       "requiredExports": [".", "./oauth"]
     },
     {
       "name": "@earendil-works/pi-agent-core",
       "workspace": "packages/agent",
-      "version": "0.82.1",
+      "version": "1.5.0",
       "requiredExports": [".", "./node"]
     },
     {

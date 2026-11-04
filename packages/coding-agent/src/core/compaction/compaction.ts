@@ -6,16 +6,34 @@
  */
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
-import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import {
+	contentText,
+	getCurrentSystemMessage,
+	normalizeContext,
+	type RetryCallbacks,
+	type RetryPolicy,
+	retryAssistantCall,
+	uuidv7,
+} from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	Model,
+	SimpleStreamOptions,
+	SystemMessage,
+	TranscriptContext,
+	Usage,
+} from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.ts";
 import {
-	buildSessionContext,
+	buildSessionProjection,
 	type CompactionEntry,
+	type ProjectedSessionEntry,
 	type SessionEntry,
+	type SessionProjection,
 	sessionEntryToContextMessages,
 } from "../session-manager.ts";
+import { combineUsage } from "../usage-totals.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -77,11 +95,10 @@ function extractFileOperations(
  * Extract AgentMessage from an entry if it produces one.
  * Returns undefined for entries that don't contribute to LLM context.
  */
-function getMessageFromEntryForCompaction(entry: SessionEntry): AgentMessage | undefined {
-	if (entry.type === "compaction") {
-		return undefined;
-	}
-	return sessionEntryToContextMessages(entry)[0];
+function getMessagesFromProjectedEntryForCompaction(entry: ProjectedSessionEntry): AgentMessage[] {
+	if (entry.sourceEntry.type === "compaction") return [];
+	// System messages are prompt state, not conversation; the compaction entry carries their replay.
+	return entry.messages.filter((message) => message.role !== "system");
 }
 
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
@@ -94,29 +111,6 @@ export interface CompactionResult<T = unknown> {
 	usage?: Usage;
 	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
 	details?: T;
-}
-
-function combineUsage(first: Usage, second: Usage): Usage {
-	return {
-		input: first.input + second.input,
-		output: first.output + second.output,
-		cacheRead: first.cacheRead + second.cacheRead,
-		cacheWrite: first.cacheWrite + second.cacheWrite,
-		...(first.cacheWrite1h !== undefined || second.cacheWrite1h !== undefined
-			? { cacheWrite1h: (first.cacheWrite1h ?? 0) + (second.cacheWrite1h ?? 0) }
-			: {}),
-		...(first.reasoning !== undefined || second.reasoning !== undefined
-			? { reasoning: (first.reasoning ?? 0) + (second.reasoning ?? 0) }
-			: {}),
-		totalTokens: first.totalTokens + second.totalTokens,
-		cost: {
-			input: first.cost.input + second.cost.input,
-			output: first.cost.output + second.cost.output,
-			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
-			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
-			total: first.cost.total + second.cost.total,
-		},
-	};
 }
 
 // ============================================================================
@@ -232,6 +226,44 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 	};
 }
 
+/** Estimate projected context without trusting usage captured before a later edit or compaction. */
+export function estimateProjectedContextTokens(
+	projection: SessionProjection,
+	branchEntries: SessionEntry[],
+): ContextUsageEstimate {
+	const estimate = estimateContextTokens(projection.messages);
+	if (estimate.lastUsageIndex !== null) {
+		let projectedMessageIndex = 0;
+		let usageEntryId: string | undefined;
+		for (const entry of projection.entries) {
+			const nextMessageIndex = projectedMessageIndex + entry.messages.length;
+			if (estimate.lastUsageIndex < nextMessageIndex) {
+				usageEntryId = entry.sourceEntry.id;
+				break;
+			}
+			projectedMessageIndex = nextMessageIndex;
+		}
+
+		const usageEntryIndex = usageEntryId ? branchEntries.findIndex((entry) => entry.id === usageEntryId) : -1;
+		let latestInvalidatingEntryIndex = -1;
+		for (let i = branchEntries.length - 1; i >= 0; i--) {
+			const entry = branchEntries[i];
+			if (entry.type === "context_edit" || entry.type === "compaction") {
+				latestInvalidatingEntryIndex = i;
+				break;
+			}
+		}
+		if (usageEntryIndex > latestInvalidatingEntryIndex) return estimate;
+	}
+
+	const currentSystem = getCurrentSystemMessage(projection.messages);
+	let tokens = currentSystem ? estimateTokens(currentSystem) : 0;
+	for (const message of projection.messages) {
+		if (message.role !== "system") tokens += estimateTokens(message);
+	}
+	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
+}
+
 /**
  * Check if compaction should trigger based on context usage.
  */
@@ -298,6 +330,17 @@ export function estimateTokens(message: AgentMessage): number {
 	let chars = 0;
 
 	switch (message.role) {
+		case "system": {
+			const system = message as SystemMessage;
+			chars = estimateTextAndImageContentChars(system.content);
+			if (system.sections) {
+				for (const section of Object.values(system.sections)) {
+					if (section) chars += section.length;
+				}
+			}
+			if (system.toolsAdded) chars += JSON.stringify(system.toolsAdded).length;
+			return Math.ceil(chars / 4);
+		}
 		case "user": {
 			chars = estimateTextAndImageContentChars(
 				(message as { content: string | Array<{ type: string; text?: string }> }).content,
@@ -458,13 +501,10 @@ export function findCutPoint(
 
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
-					cutIndex = cutPoints[c];
-					break;
-				}
-			}
+			// Prefer the closest valid cut point at or after this entry. If trailing
+			// tool results exceed the budget by themselves, keep their preceding
+			// assistant tool call instead of falling back to the first message.
+			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
 			break;
 		}
 	}
@@ -533,9 +573,7 @@ Use this EXACT format:
 Prioritize durable user instructions, explicit prohibitions, decisions and their rationale, unresolved work, and exact paths/tool identifiers needed to resume. Distinguish verified results from plans; never mark unverified work as done. Deduplicate repeated facts and collapse completed work that no longer affects continuation. Do not copy file-list metadata tags: file tracking is appended separately.
 Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
 
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing structured summary with new information. RULES:
+const UPDATE_SUMMARIZATION_INSTRUCTIONS = `Update the existing structured summary with new information. RULES:
 - CARRY FORWARD every still-active user instruction, prohibition, decision, unresolved task/blocker, and continuation-critical fact from the previous summary, even when the new messages do not mention it
 - ADD new progress, decisions, and context from the new messages
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
@@ -635,17 +673,40 @@ export function stripUserRequests(summary: string): string {
 	return `${summary.slice(0, start).trimEnd()}\n\n${rest.slice(end + 1)}`.trimEnd();
 }
 
-/** Bound generated memory independently of the much larger overflow reserve. */
-function summaryOutputBudget(model: Model<string>, reserveTokens: number, splitPrefix = false): number {
-	return Math.max(
-		1,
-		Math.min(
-			Math.floor((splitPrefix ? 0.5 : 0.8) * reserveTokens),
-			splitPrefix ? 2048 : 4096,
-			Math.max(1, Math.floor(model.contextWindow / 4)),
-			model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-		),
-	);
+/**
+ * Output reservation for one summary request. It follows the model's output limit, so long
+ * reasoning does not truncate the summary (#9512), and leaves at least half the context window
+ * for the summarized input. The prompt asks for a compact checkpoint, not for this many tokens.
+ */
+function summaryOutputBudget(model: Model<string>, splitPrefix = false): number {
+	const contextShare = Math.max(1, Math.floor(model.contextWindow / (splitPrefix ? 4 : 2)));
+	return Math.max(1, Math.min(model.maxTokens > 0 ? model.maxTokens : contextShare, contextShare));
+}
+
+const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
+
+/**
+ * The provider ended a summary request as aborted without the caller cancelling it. Compaction
+ * treats it as a cancellation (history stays, no error is shown), unlike other AbortErrors.
+ */
+export class SummarizationAbortedError extends Error {
+	override name = "AbortError";
+}
+
+/**
+ * Returns an error message when a summarization response cannot safely be persisted.
+ * A length stop contains partial text and must not become a session checkpoint.
+ */
+export function getSummarizationFailure(response: AssistantMessage, label: string): string | undefined {
+	if (response.stopReason === "error") {
+		return `${label} failed: ${response.errorMessage || "Unknown error"}`;
+	}
+	if (response.stopReason === "length") {
+		return `${label} failed: generation hit the token cap and the summary is incomplete`;
+	}
+	return undefined;
 }
 
 function createSummarizationOptions(
@@ -656,8 +717,9 @@ function createSummarizationOptions(
 	env: Record<string, string> | undefined,
 	signal: AbortSignal | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
+	sessionId: string | undefined,
 ): SimpleStreamOptions {
-	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env };
+	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env, sessionId };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		options.reasoning = thinkingLevel;
 	}
@@ -676,18 +738,19 @@ export type SummarizationResponseCallback = (response: AssistantMessage) => void
  */
 export async function completeSummarization(
 	model: Model<any>,
-	context: Context,
+	context: TranscriptContext,
 	options: SimpleStreamOptions,
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	onResponse?: SummarizationResponseCallback,
 ): Promise<AssistantMessage> {
-	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
+	// Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available;
+	// callers without a session ID, including branch summaries, receive a fresh routing ID.
 	const requestOptions: SimpleStreamOptions = {
 		...options,
 		cacheRetention: "none",
-		sessionId: uuidv7(),
+		sessionId: options.sessionId ?? uuidv7(),
 	};
 	const produce = async (): Promise<AssistantMessage> => {
 		const response = await (streamFn
@@ -706,7 +769,8 @@ export async function completeSummarization(
 export async function generateSummary(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
-	reserveTokens: number,
+	// Unused. Kept for existing callers; summaries use the model's output limit (#9512).
+	_reserveTokens: number | undefined,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
@@ -717,13 +781,14 @@ export async function generateSummary(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 	onResponse?: SummarizationResponseCallback,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
 			currentMessages,
 			model,
-			reserveTokens,
+			_reserveTokens,
 			apiKey,
 			headers,
 			signal,
@@ -734,16 +799,32 @@ export async function generateSummary(
 			env,
 			retry,
 			callbacks,
+			sessionId,
 			onResponse,
 		)
 	).text;
+}
+
+/** Build the provider context for a standalone summary request. */
+function buildSummarizationContext(promptText: string): TranscriptContext {
+	return normalizeContext({
+		systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
+		messages: [
+			{
+				role: "user",
+				content: [{ type: "text", text: promptText }],
+				timestamp: Date.now(),
+			},
+		],
+	});
 }
 
 /** Generate or update a conversation summary and return its provider usage. */
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
-	reserveTokens: number,
+	// Unused. Kept for existing callers; summaries use the model's output limit (#9512).
+	_reserveTokens: number | undefined,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
@@ -754,14 +835,15 @@ export async function generateSummaryWithUsage(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 	onResponse?: SummarizationResponseCallback,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = summaryOutputBudget(model, reserveTokens);
+	const maxTokens = summaryOutputBudget(model);
 	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
 	return summarizeInBatches(
 		currentMessages,
 		model,
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
 		SUMMARIZATION_PROMPT + focus,
 		UPDATE_SUMMARIZATION_PROMPT + focus,
 		previousSummary,
@@ -893,10 +975,7 @@ async function summarizeInBatches(
 		const promptText = summaryPrompt(batch.join("\n\n"), summary, instructions);
 		const response = await completeSummarization(
 			model,
-			{
-				systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
-				messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
-			},
+			buildSummarizationContext(promptText),
 			{ ...options, maxTokens },
 			streamFn,
 			retry,
@@ -904,12 +983,14 @@ async function summarizeInBatches(
 			onResponse,
 		);
 		if (options.signal?.aborted || response.stopReason === "aborted") {
-			throw new DOMException(options.signal?.aborted ? "Compaction cancelled" : `${label} aborted`, "AbortError");
+			if (options.signal?.aborted) throw new DOMException("Compaction cancelled", "AbortError");
+			throw new SummarizationAbortedError(`${label} aborted`);
 		}
-		if (response.stopReason === "error") {
-			throw new Error(`${label} failed: ${response.errorMessage || "Unknown error"}`);
+		const failure = getSummarizationFailure(response, label);
+		if (failure) throw new Error(failure);
+		if (response.content.some((block) => block.type === "toolCall")) {
+			throw new Error(`${label} attempted to call a tool`);
 		}
-		if (response.stopReason === "length") throw new Error(`${label} failed: summary was truncated`);
 		const text = contentText(response.content);
 		if (!text.trim()) throw new Error(`${label} failed: summary was empty`);
 		if (resizeOnly) {
@@ -948,6 +1029,88 @@ export interface CompactionPreparation {
 	settings: CompactionSettings;
 }
 
+function isProjectedTurnStart(entry: ProjectedSessionEntry): boolean {
+	if (entry.sourceEntry.type === "compaction") return false;
+	return entry.messages.some(isTurnStartMessage);
+}
+
+function findProjectedTurnStartIndex(entries: ProjectedSessionEntry[], entryIndex: number, startIndex: number): number {
+	for (let i = entryIndex; i >= startIndex; i--) {
+		if (isProjectedTurnStart(entries[i])) return i;
+	}
+	return -1;
+}
+
+function findProjectedCutPoint(
+	entries: ProjectedSessionEntry[],
+	startIndex: number,
+	endIndex: number,
+	keepRecentTokens: number,
+): CutPointResult {
+	const cutPoints: number[] = [];
+	for (let i = startIndex; i < endIndex; i++) {
+		const entry = entries[i];
+		if (entry.sourceEntry.type !== "compaction" && entry.messages.some(isCutPointMessage)) cutPoints.push(i);
+	}
+	if (cutPoints.length === 0) {
+		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
+	}
+
+	let accumulatedTokens = 0;
+	let exceededBudget = false;
+	let cutIndex = cutPoints[0];
+	for (let i = endIndex - 1; i >= startIndex; i--) {
+		const messageTokens = entries[i].messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		if (messageTokens === 0) continue;
+		accumulatedTokens += messageTokens;
+		if (accumulatedTokens >= keepRecentTokens) {
+			exceededBudget = true;
+			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
+			break;
+		}
+	}
+
+	// A recovery attempt and its omission edits are context-invisible after the last
+	// visible input. Advance only for a closed suffix containing an omitted assistant
+	// attempt; arbitrary metadata must not move the cut past unsent input.
+	const suffix = entries.slice(cutIndex + 1, endIndex);
+	const isIntrinsicallyVisible = (entry: ProjectedSessionEntry): boolean =>
+		entry.sourceEntry.type !== "context_edit" && sessionEntryToContextMessages(entry.sourceEntry).length > 0;
+	const isOmitted = (entry: ProjectedSessionEntry): boolean =>
+		isIntrinsicallyVisible(entry) && entry.messages.length === 0;
+	const omittedSuffixIds = new Set(suffix.filter(isOmitted).map((entry) => entry.sourceEntry.id));
+	const hasExternalReplacement = suffix.some(
+		(entry) =>
+			entry.sourceEntry.type === "context_edit" &&
+			entry.sourceEntry.replacement !== null &&
+			!omittedSuffixIds.has(entry.sourceEntry.targetId),
+	);
+	const isRecoveryOmissionSuffix =
+		exceededBudget &&
+		!hasExternalReplacement &&
+		suffix.some(
+			(entry) =>
+				entry.sourceEntry.type === "message" && entry.sourceEntry.message.role === "assistant" && isOmitted(entry),
+		) &&
+		suffix.every(
+			(entry) => entry.sourceEntry.type !== "compaction" && (!isIntrinsicallyVisible(entry) || isOmitted(entry)),
+		);
+	if (isRecoveryOmissionSuffix) cutIndex++;
+
+	while (cutIndex > startIndex) {
+		const previous = entries[cutIndex - 1];
+		if (previous.sourceEntry.type === "compaction" || previous.messages.length > 0) break;
+		cutIndex--;
+	}
+	const startsTurn = isProjectedTurnStart(entries[cutIndex]);
+	const turnStartIndex = startsTurn ? -1 : findProjectedTurnStartIndex(entries, cutIndex, startIndex);
+	return {
+		firstKeptEntryIndex: cutIndex,
+		turnStartIndex,
+		isSplitTurn: !startsTurn && turnStartIndex !== -1,
+	};
+}
+
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
@@ -956,18 +1119,19 @@ export function prepareCompaction(
 		return undefined;
 	}
 
-	let prevCompactionIndex = -1;
-	for (let i = pathEntries.length - 1; i >= 0; i--) {
-		if (pathEntries[i].type === "compaction") {
-			prevCompactionIndex = i;
-			break;
-		}
-	}
+	const projection = buildSessionProjection(pathEntries);
+	const projectedEntries = projection.entries;
+	const sourceEntries = projectedEntries.map((entry) => entry.sourceEntry);
+	// The newest compaction is projected first. Older compaction entries can still
+	// occur in its retained raw range, but their projected contribution is empty.
+	const prevCompactionIndex = projectedEntries.findIndex(
+		(entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0,
+	);
 
 	let previousSummary: string | undefined;
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
-		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
+		const prevCompaction = projectedEntries[prevCompactionIndex].sourceEntry as CompactionEntry;
 		previousSummary = prevCompaction.summary;
 		// The generated footer is carried deterministically in details, not rewritten by the LLM.
 		if (!prevCompaction.fromHook && prevCompaction.details) {
@@ -979,46 +1143,31 @@ export function prepareCompaction(
 				}
 			}
 		}
-		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
-		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
+		// The canonical projection has already selected the previous compaction's retained tail.
+		boundaryStart = prevCompactionIndex + 1;
 	}
-	const boundaryEnd = pathEntries.length;
+	const boundaryEnd = projectedEntries.length;
+	const tokensBefore = estimateProjectedContextTokens(projection, pathEntries).tokens;
+	const cutPoint = findProjectedCutPoint(projectedEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
 
-	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
-
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
-
-	// Get UUID of first kept entry
-	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
-	if (!firstKeptEntry?.id) {
-		return undefined; // Session needs migration
-	}
+	const firstKeptEntry = projectedEntries[cutPoint.firstKeptEntryIndex]?.sourceEntry;
+	if (!firstKeptEntry?.id) return undefined;
 	const firstKeptEntryId = firstKeptEntry.id;
-
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 
-	// Messages to summarize (will be discarded after summary)
-	const messagesToSummarize: AgentMessage[] = [];
-	for (let i = boundaryStart; i < historyEnd; i++) {
-		const msg = getMessageFromEntryForCompaction(pathEntries[i]);
-		if (msg) messagesToSummarize.push(msg);
-	}
+	const messagesToSummarize = projectedEntries
+		.slice(boundaryStart, historyEnd)
+		.flatMap(getMessagesFromProjectedEntryForCompaction);
+	const turnPrefixMessages = cutPoint.isSplitTurn
+		? projectedEntries
+				.slice(cutPoint.turnStartIndex, cutPoint.firstKeptEntryIndex)
+				.flatMap(getMessagesFromProjectedEntryForCompaction)
+		: [];
 
-	// Messages for turn prefix summary (if splitting a turn)
-	const turnPrefixMessages: AgentMessage[] = [];
-	if (cutPoint.isSplitTurn) {
-		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const msg = getMessageFromEntryForCompaction(pathEntries[i]);
-			if (msg) turnPrefixMessages.push(msg);
-		}
-	}
+	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
 
-	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) {
-		return undefined;
-	}
-
-	// Extract file operations from messages and previous compaction
-	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
+	// Extract file operations from edited model-visible messages and the previous compaction.
+	const fileOps = extractFileOperations(messagesToSummarize, sourceEntries, prevCompactionIndex);
 
 	// Also extract file ops from turn prefix if splitting
 	if (cutPoint.isSplitTurn) {
@@ -1043,21 +1192,21 @@ export function prepareCompaction(
 // Main compaction function
 // ============================================================================
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+const TURN_PREFIX_SUMMARIZATION_PROMPT = `The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
 
-Summarize the prefix to provide context for the retained suffix:
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
 ## Original Request
-[What did the user ask for in this turn?]
+[What did the user ask for?]
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+## Progress So Far
+- [Key decisions and work completed in these messages]
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
 
-Preserve the user's active instructions and prohibitions, decisions and rationale, unfinished tasks, blockers, and exact file/tool identifiers needed for the suffix. Separate verified outcomes from planned work. Do not copy file-list metadata tags; tracking is appended separately.
-Be concise. Focus on what's needed to understand the kept suffix.`;
+Only summarize information explicitly present above. Do not infer or recreate later messages.
+Preserve the user's active instructions and prohibitions, decisions and rationale, unfinished tasks, blockers, and exact file/tool identifiers needed to continue. Separate verified outcomes from planned work. Do not copy file-list metadata tags; tracking is appended separately.`;
 
 /**
  * Generate summaries for compaction using prepared data.
@@ -1065,6 +1214,7 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
  *
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
+ * @param sessionId - Optional routing session ID forwarded without enabling prompt caching
  */
 export async function compact(
 	preparation: CompactionPreparation,
@@ -1078,6 +1228,7 @@ export async function compact(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 	onResponse?: SummarizationResponseCallback,
 ): Promise<CompactionResult> {
 	const {
@@ -1088,7 +1239,6 @@ export async function compact(
 		tokensBefore,
 		previousSummary: storedPreviousSummary,
 		fileOps,
-		settings,
 	} = preparation;
 	// The verbatim requests are rebuilt by code below, so the model never reads or rewrites them.
 	const previousSummary = storedPreviousSummary === undefined ? undefined : stripUserRequests(storedPreviousSummary);
@@ -1098,18 +1248,15 @@ export async function compact(
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		// Allocate 50% of the reserve to history (0.625 * 0.8), 30% to the prefix (0.6 * 0.5).
-		const historyReserve = Math.floor(settings.reserveTokens * 0.625);
-		// Reuse is safe only when the checkpoint fits its allocation even under the byte upper bound.
+		// Reuse is safe only when the checkpoint fits the summary budget even under the byte upper bound.
 		const resizeHistory =
-			previousSummary !== undefined &&
-			Buffer.byteLength(previousSummary, "utf8") > summaryOutputBudget(model, historyReserve);
+			previousSummary !== undefined && Buffer.byteLength(previousSummary, "utf8") > summaryOutputBudget(model);
 		const historyPromise =
 			messagesToSummarize.length > 0 || resizeHistory
 				? generateSummaryWithUsage(
 						messagesToSummarize,
 						model,
-						historyReserve,
+						undefined,
 						apiKey,
 						headers,
 						signal,
@@ -1120,15 +1267,16 @@ export async function compact(
 						env,
 						retry,
 						callbacks,
+						sessionId,
 						onResponse,
 					)
 				: Promise.resolve(undefined);
+		// History and turn-prefix summaries are independent, so they run concurrently.
 		const [historyResult, turnPrefixResult] = await Promise.all([
 			historyPromise,
 			generateTurnPrefixSummary(
 				turnPrefixMessages,
 				model,
-				Math.floor(settings.reserveTokens * 0.6),
 				apiKey,
 				headers,
 				env,
@@ -1137,6 +1285,7 @@ export async function compact(
 				streamFn,
 				retry,
 				callbacks,
+				sessionId,
 				onResponse,
 				customInstructions,
 			),
@@ -1151,7 +1300,7 @@ export async function compact(
 		const result = await generateSummaryWithUsage(
 			messagesToSummarize,
 			model,
-			settings.reserveTokens,
+			undefined,
 			apiKey,
 			headers,
 			signal,
@@ -1162,6 +1311,7 @@ export async function compact(
 			env,
 			retry,
 			callbacks,
+			sessionId,
 			onResponse,
 		);
 		summary = result.text;
@@ -1195,7 +1345,6 @@ export async function compact(
 async function generateTurnPrefixSummary(
 	messages: AgentMessage[],
 	model: Model<any>,
-	reserveTokens: number,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
 	env?: Record<string, string>,
@@ -1204,17 +1353,18 @@ async function generateTurnPrefixSummary(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 	onResponse?: SummarizationResponseCallback,
 	customInstructions?: string,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = summaryOutputBudget(model, reserveTokens, true);
+	const maxTokens = summaryOutputBudget(model, true);
 	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
 	return summarizeInBatches(
 		messages,
 		model,
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
 		TURN_PREFIX_SUMMARIZATION_PROMPT + focus,
-		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nMerge new prefix messages into <previous-summary> using only the Original Request, Early Progress, and Context for Suffix sections above. Carry forward all active instructions, prohibitions, decisions, blockers, exact operational evidence, and unfinished work even when not repeated. Remove them only when explicitly superseded or resolved; silence is not resolution. Deduplicate completed historical detail.${focus}`,
+		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nMerge new prefix messages into <previous-summary> using only the Original Request, Progress So Far, and Context Needed to Continue sections above. Carry forward all active instructions, prohibitions, decisions, blockers, exact operational evidence, and unfinished work even when not repeated. Remove them only when explicitly superseded or resolved; silence is not resolution. Deduplicate completed historical detail.${focus}`,
 		undefined,
 		"Turn prefix summarization",
 		streamFn,

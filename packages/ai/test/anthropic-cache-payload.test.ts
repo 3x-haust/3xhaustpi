@@ -1,4 +1,7 @@
-import type { CacheControlEphemeral, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
+import type {
+	BetaCacheControlEphemeral as CacheControlEphemeral,
+	MessageCreateParamsStreaming,
+} from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { buildAnthropicParams } from "../src/api/anthropic-messages.ts";
@@ -63,7 +66,9 @@ describe("Anthropic production request builder (pure construction, faux transcri
 				...(oauth ? ["You are Claude Code, Anthropic's official CLI for Claude."] : []),
 				"Stable system instructions",
 			]);
-			expect(params.tools?.map((tool) => tool.name)).toEqual(oauth ? ["Read", "Bash"] : ["read", "bash"]);
+			expect(params.tools?.map((tool) => ("name" in tool ? tool.name : undefined))).toEqual(
+				oauth ? ["Read", "Bash"] : ["read", "bash"],
+			);
 			expect(controls(params)).toEqual(
 				retention === "none"
 					? []

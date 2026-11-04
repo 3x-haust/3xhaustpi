@@ -1,5 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, type FauxResponseStep, fauxAssistantMessage, type Usage } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type FauxResponseStep,
+	fauxAssistantMessage,
+	getCurrentSystemPrompt,
+	type Usage,
+} from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CompactionPreparation, compact, generateSummaryWithUsage } from "../../src/core/compaction/index.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -75,7 +81,7 @@ describe("compaction memory and budget", () => {
 		const prompts: string[] = [];
 		harness.setResponses([
 			(context) => {
-				prompts.push(getMessageText(context.messages[0]));
+				prompts.push(getMessageText(context.messages.find((message) => message.role === "user")));
 				return fauxAssistantMessage("## Original Request\nContinue the migration; do not push.");
 			},
 		]);
@@ -132,7 +138,7 @@ describe("compaction memory and budget", () => {
 			let prompt = "";
 			harness.setResponses([
 				(context) => {
-					prompt = getMessageText(context.messages[0]);
+					prompt = getMessageText(context.messages.find((message) => message.role === "user"));
 					return fauxAssistantMessage(durableMemory);
 				},
 			]);
@@ -172,7 +178,7 @@ describe("compaction memory and budget", () => {
 		const systems: Array<string | undefined> = [];
 		const response: FauxResponseStep = (context) => {
 			payloads.push(context.messages.map((message) => JSON.stringify(message)));
-			systems.push(context.systemPrompt);
+			systems.push(getCurrentSystemPrompt(context.messages));
 			return fauxAssistantMessage("Awaiting validation.");
 		};
 		harness.setResponses([response, response]);
@@ -194,9 +200,11 @@ describe("compaction memory and budget", () => {
 		const seen: string[] = [];
 		let calls = 0;
 		const response: FauxResponseStep = (context, options) => {
-			const prompt = getMessageText(context.messages[0]);
+			const prompt = getMessageText(context.messages.find((message) => message.role === "user"));
 			expect(
-				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+				Buffer.byteLength(getCurrentSystemPrompt(context.messages) + prompt, "utf8") +
+					(options?.maxTokens ?? 0) +
+					256,
 			).toBeLessThanOrEqual(harness.getModel().contextWindow);
 			if (calls > 0) expect(prompt).toContain(`<previous-summary>\ncheckpoint-${calls}\n</previous-summary>`);
 			seen.push(prompt.slice(prompt.indexOf("<conversation>"), prompt.indexOf("</conversation>")));
@@ -269,9 +277,11 @@ describe("compaction memory and budget", () => {
 		const seen: string[] = [];
 		let calls = 0;
 		const response: FauxResponseStep = (context, options) => {
-			const prompt = getMessageText(context.messages[0]);
+			const prompt = getMessageText(context.messages.find((message) => message.role === "user"));
 			expect(
-				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+				Buffer.byteLength(getCurrentSystemPrompt(context.messages) + prompt, "utf8") +
+					(options?.maxTokens ?? 0) +
+					256,
 			).toBeLessThanOrEqual(16_000);
 			seen.push(prompt.slice(0, prompt.indexOf("</conversation>")));
 			return fauxAssistantMessage(calls++ === 0 ? longCheckpoint : durableMemory);
@@ -291,11 +301,13 @@ describe("compaction memory and budget", () => {
 		const prompts: string[] = [];
 		const limits: number[] = [];
 		const response: FauxResponseStep = (context, options) => {
-			const prompt = getMessageText(context.messages[0]);
+			const prompt = getMessageText(context.messages.find((message) => message.role === "user"));
 			prompts.push(prompt);
 			limits.push(options?.maxTokens ?? 0);
 			expect(
-				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+				Buffer.byteLength(getCurrentSystemPrompt(context.messages) + prompt, "utf8") +
+					(options?.maxTokens ?? 0) +
+					256,
 			).toBeLessThanOrEqual(16_000);
 			return fauxAssistantMessage(durableMemory);
 		};
@@ -327,9 +339,11 @@ describe("compaction memory and budget", () => {
 		const fragments = new Map<number, string>();
 		const observed: AssistantMessage[] = [];
 		const response: FauxResponseStep = (context, options) => {
-			const prompt = getMessageText(context.messages[0]);
+			const prompt = getMessageText(context.messages.find((message) => message.role === "user"));
 			expect(
-				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+				Buffer.byteLength(getCurrentSystemPrompt(context.messages) + prompt, "utf8") +
+					(options?.maxTokens ?? 0) +
+					256,
 			).toBeLessThanOrEqual(16_000);
 			sources.push(prompt.slice(0, prompt.indexOf("</conversation>")));
 			const conversation = prompt.slice("<conversation>\n".length, prompt.indexOf("\n</conversation>"));
@@ -352,6 +366,7 @@ describe("compaction memory and budget", () => {
 			undefined,
 			undefined,
 			previous,
+			undefined,
 			undefined,
 			undefined,
 			undefined,
@@ -400,7 +415,7 @@ describe("compaction memory and budget", () => {
 		const response: FauxResponseStep = (context, options) => {
 			limits.push(options?.maxTokens ?? 0);
 			return fauxAssistantMessage(
-				getMessageText(context.messages[0]).includes(longCheckpoint)
+				getMessageText(context.messages.find((message) => message.role === "user")).includes(longCheckpoint)
 					? durableMemory
 					: "## Original Request\nContinue the migration.",
 			);
@@ -414,10 +429,11 @@ describe("compaction memory and budget", () => {
 				turnPrefixMessages: [{ role: "user", content: "Continue the migration.", timestamp: 1 }],
 				settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 100 },
 			}),
-			harness.getModel(),
+			// The checkpoint is oversized relative to the model's output allowance.
+			{ ...harness.getModel(), maxTokens: 1000 },
 			"faux-key",
 		);
-		expect(limits).toEqual([1000, 600]);
+		expect(limits).toEqual([1000, 1000]);
 		expect(result.summary).toContain(durableMemory);
 		expect(result.summary).not.toContain(longCheckpoint);
 	});
@@ -426,7 +442,7 @@ describe("compaction memory and budget", () => {
 		const harness = await setup(16_000);
 		const prompts: string[] = [];
 		const response: FauxResponseStep = (context) => {
-			prompts.push(getMessageText(context.messages[0]));
+			prompts.push(getMessageText(context.messages.find((message) => message.role === "user")));
 			return fauxAssistantMessage(
 				"## Original Request\nMigration\n## Early Progress\nPending\n## Context for Suffix\nNo push.",
 			);
@@ -453,7 +469,7 @@ describe("compaction memory and budget", () => {
 					: prompt.indexOf("</conversation>"),
 			);
 			expect(instructions).toContain("## Original Request");
-			expect(instructions).toContain("## Context for Suffix");
+			expect(instructions).toContain("## Context Needed to Continue");
 			expect(instructions).not.toContain("## Goal");
 		}
 	});
@@ -486,7 +502,7 @@ describe("compaction memory and budget", () => {
 		}
 		let calls = 0;
 		const response: FauxResponseStep = (context) => {
-			const prompt = getMessageText(context.messages[0]);
+			const prompt = getMessageText(context.messages.find((message) => message.role === "user"));
 			const conversation = prompt.slice(0, prompt.indexOf("</conversation>"));
 			for (let index = 0; index < 15; index++) {
 				expect(conversation.includes(`bash#call-${index}(`)).toBe(conversation.includes(`result-${index}:`));
@@ -499,7 +515,7 @@ describe("compaction memory and budget", () => {
 		expect(calls).toBeGreaterThan(1);
 	});
 
-	it("bounds combined split output below the reserve and respects smaller model caps", async () => {
+	it("sizes split output from the model output limit and context window, not the reserve", async () => {
 		const harness = await setup();
 		const limits: number[] = [];
 		const response: FauxResponseStep = (_context, options) => {
@@ -515,8 +531,13 @@ describe("compaction memory and budget", () => {
 			harness.getModel(),
 			"faux-key",
 		);
-		expect(limits).toEqual([4096, 2048]);
-		expect(limits.reduce((sum, value) => sum + value, 0)).toBeLessThan(16_384);
+		// History may use half the context window, the split-turn prefix a quarter, both capped by maxTokens.
+		const model = harness.getModel();
+		const expected = [
+			Math.min(model.maxTokens, Math.floor(model.contextWindow / 2)),
+			Math.min(model.maxTokens, Math.floor(model.contextWindow / 4)),
+		];
+		expect(limits).toEqual(expected);
 		harness.setResponses([response]);
 		await generateSummaryWithUsage([], { ...harness.getModel(), maxTokens: 128 }, 16_384, "faux-key");
 		expect(limits.at(-1)).toBe(128);
@@ -530,7 +551,7 @@ describe("compaction memory and budget", () => {
 			harness.getModel(),
 			"faux-key",
 		);
-		expect(limits.slice(-2)).toEqual([500, 300]);
+		expect(limits.slice(-2)).toEqual(expected);
 	});
 
 	it.each(["length", "aborted", "stop"] as const)("does not persist a %s or empty checkpoint", async (stopReason) => {
@@ -545,7 +566,7 @@ describe("compaction memory and budget", () => {
 		harness.setResponses([
 			fauxAssistantMessage(stopReason === "stop" ? " " : "partial checkpoint", { stopReason, usage: summaryUsage }),
 		]);
-		await expect(harness.session.compact()).rejects.toThrow(/truncated|aborted|empty/);
+		await expect(harness.session.compact()).rejects.toThrow(/token cap|aborted|empty/);
 		const entriesAfter = harness.sessionManager.getEntries();
 		expect(entriesAfter.slice(0, entriesBefore.length)).toEqual(entriesBefore);
 		expect(entriesAfter.slice(entriesBefore.length)).toMatchObject([

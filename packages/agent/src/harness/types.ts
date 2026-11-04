@@ -8,11 +8,11 @@ import type {
 	Transport,
 	Usage,
 } from "@earendil-works/pi-ai";
-import type { Static, TSchema } from "typebox";
 import type {
 	AgentEvent,
 	AgentMessage,
 	AgentTool,
+	AgentToolParams,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	QueueMode,
@@ -98,13 +98,13 @@ export interface AgentHarnessResources<
 /** Tool definition executed by an {@link AgentHarness} with an application-defined context. */
 export type AgentHarnessTool<
 	TContext extends object | undefined,
-	TParameters extends TSchema = TSchema,
+	TParameters extends object = object,
 	TDetails = unknown,
 > = Omit<AgentTool<TParameters, TDetails>, "execute"> & {
 	/** Execute the tool call with the context resolved for the current turn snapshot. */
 	execute(
 		toolCallId: string,
-		params: Static<TParameters>,
+		params: AgentToolParams<TParameters>,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
 		context: TContext,
