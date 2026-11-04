@@ -438,6 +438,13 @@ export const SettingsSchema = Type.Object(
 				default: SETTINGS_DEFAULTS.cacheWarming,
 			}),
 		),
+		cacheRetention: Type.Optional(
+			Type.Union([Type.Literal("auto"), Type.Literal("short"), Type.Literal("long")], {
+				description:
+					'Prompt cache lifetime for session requests. "auto" uses the long (1h) tier on subscription logins, where cache writes cost no extra money, and the provider default otherwise.',
+				default: SETTINGS_DEFAULTS.cacheRetention,
+			}),
+		),
 		websocketConnectTimeoutMs: Type.Optional(
 			timeoutSetting({
 				description: 'WebSocket connect or open handshake timeout in milliseconds; 0 or "disabled" disables it.',
@@ -508,6 +515,7 @@ export type PackageSource = Static<typeof PackageSourceSchema>;
 export type FullscreenExitOutput = NonNullable<SettingsInput["fullscreenExitOutput"]>;
 export type TuiMode = NonNullable<SettingsInput["tuiMode"]>;
 export type CacheWarmingMode = NonNullable<SettingsInput["cacheWarming"]>;
+export type CacheRetentionSetting = NonNullable<SettingsInput["cacheRetention"]>;
 export interface Settings extends Omit<SettingsInput, "queueMode" | "retry" | "skills" | "websockets"> {
 	retry?: RetrySettings;
 	skills?: string[];

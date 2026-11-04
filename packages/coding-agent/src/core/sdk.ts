@@ -6,7 +6,7 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession, markRuntimeStreamFunction } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import { CacheWarmer } from "./cache-warmer.ts";
+import { CacheWarmer, resolveSessionCacheRetention } from "./cache-warmer.ts";
 import { getClientIdentity } from "./client-identity.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -430,7 +430,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				(sharedPromptCache && options?.sessionId === sessionManager.getSessionId()
 					? transcriptPrefixCacheKey(context)
 					: undefined);
-			const requestOptions = buildRequestOptions(promptCacheKey ? { ...options, promptCacheKey } : options);
+			// Explicit retention (summaries send "none") wins over the session setting.
+			const cacheRetention =
+				options?.cacheRetention ??
+				resolveSessionCacheRetention(settingsManager.getCacheRetention(), model, modelRuntime);
+			const requestOptions = buildRequestOptions({
+				...options,
+				...(promptCacheKey ? { promptCacheKey } : {}),
+				...(cacheRetention ? { cacheRetention } : {}),
+			});
 			// Only session requests replace the cache entry, so warming restarts from them. Standalone
 			// summaries use their own routing ids. Side requests share the session id but end in a
 			// turn nobody continues (a warm-up's placeholder message or a summary instruction), so

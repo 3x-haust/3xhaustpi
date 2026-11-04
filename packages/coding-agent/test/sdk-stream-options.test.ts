@@ -303,6 +303,23 @@ describe("createAgentSession stream options", () => {
 		expect(options?.maxRetryDelayMs).toBe(3000);
 	});
 
+	it("applies the cacheRetention setting to session requests unless the caller sets one", async () => {
+		const fromSetting = await captureStreamOptions(
+			"anthropic-messages",
+			{ cacheRetention: "short" },
+			(sessionId) => ({
+				sessionId,
+			}),
+		);
+		const explicit = await captureStreamOptions("anthropic-messages", { cacheRetention: "long" }, (sessionId) => ({
+			sessionId,
+			cacheRetention: "none",
+		}));
+
+		expect(fromSetting?.cacheRetention).toBe("short");
+		expect(explicit?.cacheRetention).toBe("none");
+	});
+
 	it("leaves promptCacheKey unset unless the shared prompt cache is enabled", async () => {
 		const options = await captureStreamOptions("openai-responses", {}, (sessionId) => ({ sessionId }));
 

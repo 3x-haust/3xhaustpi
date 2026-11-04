@@ -704,6 +704,24 @@
       "description": "Cache-warming profile. \"idle\" also warms between agent runs. Global only because each refresh costs money.",
       "default": "streaming"
     },
+    "cacheRetention": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "type": "string",
+          "const": "short"
+        },
+        {
+          "type": "string",
+          "const": "long"
+        }
+      ],
+      "description": "Prompt cache lifetime for session requests. \"auto\" uses the long (1h) tier on subscription logins, where cache writes cost no extra money, and the provider default otherwise.",
+      "default": "auto"
+    },
     "websocketConnectTimeoutMs": {
       "anyOf": [
         {
