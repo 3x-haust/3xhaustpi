@@ -93,6 +93,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { formatLoopWarning, LoopGuard } from "./loop-guard.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -339,6 +340,8 @@ export class AgentSession {
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
+	/** Notices the model rerunning an identical call that keeps returning an identical result. */
+	private readonly _loopGuard = new LoopGuard();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -493,30 +496,33 @@ export class AgentSession {
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
 			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_result")) {
-				return undefined;
-			}
+			const hookResult = runner.hasHandlers("tool_result")
+				? await runner.emitToolResult({
+						type: "tool_result",
+						toolName: toolCall.name,
+						toolCallId: toolCall.id,
+						input: args as Record<string, unknown>,
+						content: result.content,
+						details: result.details,
+						isError,
+						usage: result.usage,
+					})
+				: undefined;
 
-			const hookResult = await runner.emitToolResult({
-				type: "tool_result",
-				toolName: toolCall.name,
-				toolCallId: toolCall.id,
-				input: args as Record<string, unknown>,
-				content: result.content,
-				details: result.details,
-				isError,
-				usage: result.usage,
-			});
+			// The guard sees the result the model will see, after extension rewrites.
+			const content = hookResult?.content ?? result.content ?? [];
+			const resultText = content.map((block) => (block.type === "text" ? block.text : block.type)).join("\n");
+			const warning = formatLoopWarning(toolCall.name, this._loopGuard.record(toolCall.name, args, resultText));
 
-			if (!hookResult) {
+			if (!hookResult && !warning) {
 				return undefined;
 			}
 
 			return {
-				content: hookResult.content,
-				details: hookResult.details,
-				isError: hookResult.isError ?? isError,
-				usage: hookResult.usage,
+				content: warning ? [...content, { type: "text", text: warning }] : content,
+				details: hookResult?.details,
+				isError: hookResult?.isError ?? isError,
+				usage: hookResult?.usage,
 			};
 		};
 	}
