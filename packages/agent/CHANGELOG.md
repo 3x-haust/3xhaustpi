@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added the `"exclusive"` per-tool execution mode: the call waits for the earlier calls of its batch, runs alone, and holds back later calls, which still run in parallel with each other.
 - Added a deterministic agent-loop tool-call benchmark for parallel and sequential execution, with execution and contract success rates, orphaned calls, throughput, p50/p95/p99 batch latency, and optional acceptance checks.
 
 ### Changed

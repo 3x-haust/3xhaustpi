@@ -4,16 +4,27 @@
 
 ### Added
 
+- Added the `sharedPromptCache` setting and `createAgentSession({ sharedPromptCache })` option, which key session requests by a hash of the system prompt and tool definitions so sessions with the same prefix share one provider cache entry (off by default).
+- Added `compaction.maxContextTokens` (default 300000) so large context windows compact before every request resends close to the full window; `0` disables the cap.
+- Added prompt-cache hit rates (`cache.hitRate`, `cache.reusableHitRate`) for the current branch to `getSessionStats()` and the `get_session_stats` RPC response.
+- Added a loop guard that appends a warning to a tool result when the same call returned the same result three times recently.
 - Added a local compaction benchmark that measures continuation-critical context retention, stale-data leakage, token reduction, and serialization latency.
 - Added public managed-tool resolution exports for consumers that invoke bundled `rg` or `fd`.
 
 ### Changed
 
+- Changed compaction summaries to end with the user's requests quoted verbatim by code (carried across compactions, size-bounded) and asked the model to keep summaries under 800 words.
+- Changed truncated bash output to keep the first 100 lines alongside the tail, and changed bash to run exclusively within a tool batch so it never races file edits.
 - Changed split-turn compaction to generate history and turn-prefix summaries concurrently.
+- Bounded compaction summary output independently of the overflow reserve and folded oversized histories in context-budgeted batches, preserving tool exchanges and aggregating successful summary usage.
 - Changed compaction summaries to preserve operational evidence, including commands, validation outcomes, unresolved root causes, and delegated session lineage.
 
 ### Fixed
 
+- Fixed compaction triggering late for Korean, CJK, and other non-ASCII text by weighting multi-byte characters in the token estimate.
+- Fixed large generated checkpoints blocking subsequent summary batches, oversized reused checkpoints bypassing split-turn allocations, and conflicting formats in multi-batch turn-prefix summaries.
+- Fixed split-turn compaction dropping the previous checkpoint when no new history messages need summarizing; active instructions, decisions, and unfinished work are now prioritized on repeated updates.
+- Fixed repeated compaction duplicating generated file-list footers and accepting empty, aborted, or truncated summaries in place of intact history.
 - Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
 - Fixed compaction serialization to preserve tool identities, operational arguments, failure status, and both ends of truncated output while omitting assistant reasoning and replacing oversized payloads with stable digests.
 - Fixed self-update detection for already-identifiable pnpm install paths so it does not synchronously probe an ambient package manager.

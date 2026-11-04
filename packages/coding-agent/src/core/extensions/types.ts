@@ -10,6 +10,7 @@
 
 import type {
 	AgentMessage,
+	AgentToolExecutionMode,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
@@ -85,7 +86,7 @@ import type {
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";
-export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
+export type { AgentToolExecutionMode, AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 
 // ============================================================================
@@ -471,10 +472,11 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 * Per-tool execution mode override.
 	 * - "sequential": this tool must execute one at a time with other tool calls.
 	 * - "parallel": this tool can execute concurrently with other tool calls.
+	 * - "exclusive": this tool runs alone between the calls before and after it.
 	 *
 	 * If omitted, the default execution mode applies.
 	 */
-	executionMode?: ToolExecutionMode;
+	executionMode?: AgentToolExecutionMode;
 
 	/** Execute the tool. */
 	execute(

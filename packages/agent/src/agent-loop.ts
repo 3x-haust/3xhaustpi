@@ -422,7 +422,27 @@ async function executeToolCalls(
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
 	}
-	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+	const isExclusive = (toolCall: AgentToolCall) =>
+		currentContext.tools?.find((t) => t.name === toolCall.name)?.executionMode === "exclusive";
+	if (!toolCalls.some(isExclusive)) {
+		return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+	}
+	// Run parallel segments separated by exclusive calls, in source order.
+	const segments: AgentToolCall[][] = [];
+	for (const toolCall of toolCalls) {
+		const last = segments.at(-1);
+		if (isExclusive(toolCall) || !last || isExclusive(last[0])) segments.push([toolCall]);
+		else last.push(toolCall);
+	}
+	const messages: ToolResultMessage[] = [];
+	let terminate = true;
+	for (const segment of segments) {
+		const batch = await executeToolCallsParallel(currentContext, assistantMessage, segment, config, signal, emit);
+		messages.push(...batch.messages);
+		terminate &&= batch.terminate;
+		if (signal?.aborted) break;
+	}
+	return { messages, terminate: messages.length > 0 && terminate };
 }
 
 type ExecutedToolCallBatch = {

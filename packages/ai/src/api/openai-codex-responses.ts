@@ -670,6 +670,7 @@ async function processStream(
 	options?: OpenAICodexResponsesOptions,
 ): Promise<void> {
 	await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal)), output, stream, model, {
+		createResponseError: createCodexResponseError,
 		serviceTier: options?.serviceTier,
 		grammarToolInputProperties,
 		resolveServiceTier: resolveCodexServiceTier,
@@ -699,6 +700,13 @@ class CodexProtocolError extends Error {
 		this.payload = options?.payload;
 		this.cause = options?.cause;
 	}
+}
+
+function createCodexResponseError(event: Extract<ResponseStreamEvent, { type: "response.failed" }>): Error {
+	return new CodexApiError(event.response?.error?.message || "Codex response failed", {
+		code: event.response?.error?.code,
+		payload: { ...event },
+	});
 }
 
 function isCodexNonTransportError(error: unknown): boolean {
@@ -737,13 +745,6 @@ async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): 
 				code,
 				payload: event,
 			});
-		}
-
-		if (type === "response.failed") {
-			const response = (event as { response?: { error?: { code?: string; message?: string } } }).response;
-			const code = response?.error?.code;
-			const message = response?.error?.message;
-			throw new CodexApiError(message || "Codex response failed", { code, payload: event });
 		}
 
 		if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {
@@ -1504,6 +1505,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
+				createResponseError: createCodexResponseError,
 				serviceTier: options?.serviceTier,
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,

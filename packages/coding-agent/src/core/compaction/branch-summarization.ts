@@ -16,7 +16,7 @@ import {
 	createCustomMessage,
 } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
-import { completeSummarization, estimateTokens } from "./compaction.ts";
+import { completeSummarization, estimateTokens, type SummarizationResponseCallback } from "./compaction.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -87,6 +87,8 @@ export interface GenerateBranchSummaryOptions {
 	retry?: RetryPolicy;
 	/** Optional callbacks for retry reporting (e.g. TUI retry indicators). */
 	callbacks?: RetryCallbacks;
+	/** Observes actual provider attempts, including failed and aborted responses. */
+	onResponse?: SummarizationResponseCallback;
 }
 
 // ============================================================================
@@ -306,6 +308,7 @@ export async function generateBranchSummary(
 		streamFn,
 		retry,
 		callbacks,
+		onResponse,
 	} = options;
 
 	// Token budget = context window minus reserved space for prompt + response
@@ -348,7 +351,7 @@ export async function generateBranchSummary(
 	// so transient stream drops reuse the configured retry policy.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
-	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
+	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks, onResponse);
 
 	// Check if aborted or errored
 	if (response.stopReason === "aborted") {

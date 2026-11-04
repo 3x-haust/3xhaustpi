@@ -77,8 +77,9 @@ describe("createAgentSession stream options", () => {
 	async function captureStreamOptions(
 		api: Api,
 		settings: Partial<Settings>,
-		requestOptions: SimpleStreamOptions = {},
+		requestOptions: SimpleStreamOptions | ((sessionId: string) => SimpleStreamOptions) = {},
 		extensionSource?: string,
+		sessionOptions: { sharedPromptCache?: boolean } = {},
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
@@ -111,10 +112,17 @@ describe("createAgentSession stream options", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
+			...sessionOptions,
 		});
 
 		try {
-			const stream = await session.agent.streamFunction(model, { messages: [] }, requestOptions);
+			const options =
+				typeof requestOptions === "function" ? requestOptions(sessionManager.getSessionId()) : requestOptions;
+			const stream = await session.agent.streamFunction(
+				model,
+				{ systemPrompt: "Shared system prompt", messages: [] },
+				options,
+			);
 			await stream.result();
 			return capturedOptions;
 		} finally {
@@ -168,6 +176,41 @@ describe("createAgentSession stream options", () => {
 
 		expect(options?.maxRetries).toBe(2);
 		expect(options?.maxRetryDelayMs).toBe(3000);
+	});
+
+	it("leaves promptCacheKey unset unless the shared prompt cache is enabled", async () => {
+		const options = await captureStreamOptions("openai-responses", {}, (sessionId) => ({ sessionId }));
+
+		expect(options?.promptCacheKey).toBeUndefined();
+	});
+
+	it("derives a prefix promptCacheKey for session requests when sharedPromptCache is set", async () => {
+		const fromSetting = await captureStreamOptions("openai-responses", { sharedPromptCache: true }, (sessionId) => ({
+			sessionId,
+		}));
+		const fromOption = await captureStreamOptions("openai-responses", {}, (sessionId) => ({ sessionId }), undefined, {
+			sharedPromptCache: true,
+		});
+
+		expect(fromSetting?.promptCacheKey).toMatch(/^pfx-[0-9a-f]{40}$/);
+		// Two sessions with the same system prompt and tools share the key.
+		expect(fromOption?.promptCacheKey).toBe(fromSetting?.promptCacheKey);
+		expect(fromSetting?.sessionId).not.toBe(fromOption?.sessionId);
+	});
+
+	it("keeps standalone requests and explicit keys out of the shared prefix key", async () => {
+		const standalone = await captureStreamOptions(
+			"openai-responses",
+			{ sharedPromptCache: true },
+			{ sessionId: "summary-request" },
+		);
+		const explicit = await captureStreamOptions("openai-responses", { sharedPromptCache: true }, (sessionId) => ({
+			sessionId,
+			promptCacheKey: "caller-key",
+		}));
+
+		expect(standalone?.promptCacheKey).toBeUndefined();
+		expect(explicit?.promptCacheKey).toBe("caller-key");
 	});
 
 	it("runs before_provider_headers on assembled headers without forwarding the transform", async () => {

@@ -77,6 +77,7 @@ export function fauxAssistantMessage(
 		errorMessage?: string;
 		responseId?: string;
 		timestamp?: number;
+		usage?: Usage;
 	} = {},
 ): AssistantMessage {
 	return {
@@ -85,7 +86,7 @@ export function fauxAssistantMessage(
 		api: DEFAULT_API,
 		provider: DEFAULT_PROVIDER,
 		model: DEFAULT_MODEL_ID,
-		usage: DEFAULT_USAGE,
+		usage: options.usage ?? DEFAULT_USAGE,
 		stopReason: options.stopReason ?? "stop",
 		errorMessage: options.errorMessage,
 		responseId: options.responseId,
@@ -229,11 +230,10 @@ function withUsageEstimate(
 		if (previousPrompt) {
 			const cachedChars = commonPrefixLength(previousPrompt, promptText);
 			cacheRead = estimateTokens(previousPrompt.slice(0, cachedChars));
-			cacheWrite = estimateTokens(promptText.slice(cachedChars));
-			input = Math.max(0, promptTokens - cacheRead);
-		} else {
-			cacheWrite = promptTokens;
 		}
+		// Partition the prompt estimate so cache writes and rounding never count tokens twice.
+		cacheWrite = promptTokens - cacheRead;
+		input = 0;
 		promptCache.set(sessionId, promptText);
 	}
 
@@ -465,8 +465,12 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 
 				const resolved =
 					typeof step === "function" ? await step(context, streamOptions, state, requestModel) : step;
+				// Only the helper's default usage is a placeholder; explicit usage can be all zeros.
+				const estimateUsage = resolved.usage === DEFAULT_USAGE;
 				let message = cloneMessage(resolved, api, provider, requestModel.id);
-				message = withUsageEstimate(message, context, streamOptions, promptCache);
+				if (estimateUsage) {
+					message = withUsageEstimate(message, context, streamOptions, promptCache);
+				}
 				await streamWithDeltas(outer, message, minTokenSize, maxTokenSize, tokensPerSecond, streamOptions?.signal);
 			} catch (error) {
 				const message = createErrorMessage(error, api, provider, requestModel.id);

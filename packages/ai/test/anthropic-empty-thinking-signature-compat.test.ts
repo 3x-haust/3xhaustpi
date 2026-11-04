@@ -68,6 +68,8 @@ async function capturePayload(model: Model<"anthropic-messages">, context: Conte
 	let capturedPayload: AnthropicPayload | undefined;
 	const stream = streamSimple(model, context, {
 		apiKey: "fake-key",
+		// Cache markers on the converted assistant block are unrelated to signature handling.
+		cacheRetention: "none",
 		onPayload: (payload) => {
 			capturedPayload = payload as AnthropicPayload;
 			throw new PayloadCaptured();

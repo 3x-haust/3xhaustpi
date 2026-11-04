@@ -26,6 +26,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { getEntryUsage } from "./usage-totals.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -1015,12 +1016,14 @@ export class SessionManager {
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 
-		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
+		const hasAssistantOrUsage = this.fileEntries.some(
+			(e) => e.type !== "session" && ((e.type === "message" && e.message.role === "assistant") || getEntryUsage(e)),
+		);
+		if (!hasAssistantOrUsage) {
 			if (this.flushed) {
 				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 			} else {
-				// Mark as not flushed so when assistant arrives, all entries get written
+				// Mark as not flushed so when an assistant or usage arrives, all entries get written
 				this.flushed = false;
 			}
 			return;
@@ -1404,6 +1407,15 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Copy a selected branch into an independent in-memory manager without replacing the source. */
+	forkInMemory(leafId: string): SessionManager {
+		const fork = SessionManager.inMemory(this.cwd);
+		fork.fileEntries = this.fileEntries.slice();
+		fork._buildIndex();
+		fork.createBranchedSession(leafId);
+		return fork;
+	}
+
 	/**
 	 * Create a new session file containing only the path from root to the specified leaf.
 	 * Useful for extracting a single conversation path from a branched session.
@@ -1474,13 +1486,14 @@ export class SessionManager {
 			this.sessionFile = newSessionFile;
 			this._buildIndex();
 
-			// Only write the file now if it contains an assistant message.
-			// Otherwise defer to _persist(), which creates the file on the
-			// first assistant response, matching the newSession() contract
-			// and avoiding the duplicate-header bug when _persist()'s
-			// no-assistant guard later resets flushed to false.
-			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-			if (hasAssistant) {
+			// Only write now if an assistant message or billable usage exists.
+			// Otherwise defer to _persist(), matching the newSession() contract
+			// and avoiding duplicate headers when its guard resets flushed.
+			const hasAssistantOrUsage = this.fileEntries.some(
+				(e) =>
+					e.type !== "session" && ((e.type === "message" && e.message.role === "assistant") || getEntryUsage(e)),
+			);
+			if (hasAssistantOrUsage) {
 				this._rewriteFile();
 				this.flushed = true;
 			} else {

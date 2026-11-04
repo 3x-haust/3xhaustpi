@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- Fixed Anthropic-compatible endpoints that reject the 1h prompt-cache TTL failing every long-retention request: the request is retried once with the default 5m TTL, and the endpoint is remembered for the rest of the process.
+- Fixed OpenAI Responses, OpenAI Completions, and Azure OpenAI Responses ignoring an explicit `promptCacheKey`; it now overrides the session id for `prompt_cache_key`.
+- Fixed Anthropic prompt-cache breakpoints to preserve preceding user lookup across large tool batches and retain nearby assistant continuation boundaries, while keeping OAuth requests within the four-breakpoint limit.
 - Fixed OpenAI Codex Responses requests to send explicit `maxTokens` values as `max_output_tokens`.
 - Fixed Cloudflare AI Gateway builds and Workers AI passthrough models when refreshed gateway metadata omits those models.
 

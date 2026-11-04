@@ -41,6 +41,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
   - [createProvider()](#createprovider)
   - [Calling API Implementations Directly](#calling-api-implementations-directly)
   - [OpenAI Compatibility Settings](#openai-compatibility-settings)
+- [Prompt Caching](#prompt-caching)
 - [Faux Provider for Tests](#faux-provider-for-tests)
 - [Cross-Provider Handoffs](#cross-provider-handoffs)
 - [Context Serialization](#context-serialization)
@@ -1189,6 +1190,16 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 - **Custom inference servers**: May use non-standard field names
 - **Self-hosted endpoints**: May have different feature support
 
+## Prompt Caching
+
+Prompt caching is a server-side optimization, not a guarantee. Keep tool definitions and their order, system instructions, and earlier messages stable; put changing data near the end. A shared routing key cannot make different prefixes match or recover an evicted cache entry. Minimum cacheable lengths, isolation boundaries, and retention depend on the endpoint and model.
+
+- **Anthropic Messages**: `cacheRetention: "long"` (or `PI_CACHE_RETENTION=long`) requests `ttl: "1h"` where supported; `"short"` uses the default TTL. Breakpoints cover tools, the complete system prompt (including OAuth identity), the latest cacheable conversation block, and an earlier boundary. The earlier marker prefers the preceding message (including assistant continuations) when its 20-block lookback still covers the preceding user boundary; otherwise it marks that user boundary explicitly. With only two conversation markers and no previous-request state, widely separated user and assistant boundaries cannot both always be retained. There are at most four breakpoints; thinking blocks are never explicitly marked. `"none"` omits these markers.
+- **OpenAI Codex / ChatGPT endpoint**: `prompt_cache_key` defaults to `sessionId`. Set `promptCacheKey` to separate a deliberately shared routing hint from transport resources; do not share `sessionId` between independent WebSocket histories. Keys are clamped to 64 Unicode code points. This endpoint does not receive `prompt_cache_retention` or `prompt_cache_options`; `"long"` does not request a known TTL, and `"none"` removes client cache affinity/reuse rather than guaranteeing server-side cache bypass.
+- **Codex transport reuse is separate**: `"auto"` and `"websocket-cached"` can send `previous_response_id` plus a delta on the same connection when request settings and the reconstructed history match. `"websocket"` reuses the connection but sends full history; SSE also sends full history. Full-history transmission is not proof of a prompt-cache miss. Forks, compaction, reconnects, or changed request settings can require full history again.
+
+The first cold request must process the uncached prefix. Neither matching request bytes nor a matching key proves a subsequent hit. Compare provider-reported cache usage separately from request-prefix stability. Faux-provider usage estimates do not measure real cache behavior.
+
 ## Faux Provider for Tests
 
 `fauxProvider()` builds an in-memory provider with scripted responses for tests and demos:
@@ -1538,7 +1549,7 @@ Built-in login and refresh flows are private provider implementations. Use provi
 
 Provider notes:
 
-**OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options unless `cacheRetention` is `"none"`. You can set `transport` in stream options to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. When using WebSocket with a `sessionId` and cache retention enabled, connections are reused per session and expire after 5 minutes of inactivity.
+**OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library sends a prompt-cache routing hint from `sessionId` (or an explicit `promptCacheKey`) unless `cacheRetention` is `"none"`; server-side cache hits and retention are not guaranteed. You can set `transport` in stream options to `"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"` for Codex Responses transport selection. See [Prompt Caching](#prompt-caching) for retention and continuation limits. When using WebSocket with a `sessionId` and cache retention enabled, connections are reused per session and expire after 5 minutes of inactivity.
 
 **Azure OpenAI (Responses)**: Uses the Responses API only. Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` supports both `https://<resource>.openai.azure.com` and `https://<resource>.cognitiveservices.azure.com`; root endpoints are normalized to `.../openai/v1` automatically. Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version if needed. Deployment names are treated as model IDs by default, override with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are intentionally unsupported.
 

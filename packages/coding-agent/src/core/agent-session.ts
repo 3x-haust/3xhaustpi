@@ -51,6 +51,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+import { type CacheHitRates, computeCacheHitRates } from "./cache-stats.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -92,6 +93,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { formatLoopWarning, LoopGuard } from "./loop-guard.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -102,11 +104,12 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import { createSummarizationUsageTracker } from "./summarization-usage.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, getEntryUsage } from "./usage-totals.ts";
 
 // ============================================================================
 // Skill Block Parsing
@@ -273,6 +276,8 @@ export interface SessionStats {
 		total: number;
 	};
 	cost: number;
+	/** Prompt-cache hit rates on the current branch. */
+	cache: CacheHitRates;
 	contextUsage?: ContextUsage;
 }
 
@@ -335,6 +340,8 @@ export class AgentSession {
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
+	/** Notices the model rerunning an identical call that keeps returning an identical result. */
+	private readonly _loopGuard = new LoopGuard();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -489,30 +496,33 @@ export class AgentSession {
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
 			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_result")) {
-				return undefined;
-			}
+			const hookResult = runner.hasHandlers("tool_result")
+				? await runner.emitToolResult({
+						type: "tool_result",
+						toolName: toolCall.name,
+						toolCallId: toolCall.id,
+						input: args as Record<string, unknown>,
+						content: result.content,
+						details: result.details,
+						isError,
+						usage: result.usage,
+					})
+				: undefined;
 
-			const hookResult = await runner.emitToolResult({
-				type: "tool_result",
-				toolName: toolCall.name,
-				toolCallId: toolCall.id,
-				input: args as Record<string, unknown>,
-				content: result.content,
-				details: result.details,
-				isError,
-				usage: result.usage,
-			});
+			// The guard sees the result the model will see, after extension rewrites.
+			const content = hookResult?.content ?? result.content ?? [];
+			const resultText = content.map((block) => (block.type === "text" ? block.text : block.type)).join("\n");
+			const warning = formatLoopWarning(toolCall.name, this._loopGuard.record(toolCall.name, args, resultText));
 
-			if (!hookResult) {
+			if (!hookResult && !warning) {
 				return undefined;
 			}
 
 			return {
-				content: hookResult.content,
-				details: hookResult.details,
-				isError: hookResult.isError ?? isError,
-				usage: hookResult.usage,
+				content: warning ? [...content, { type: "text", text: warning }] : content,
+				details: hookResult?.details,
+				isError: hookResult?.isError ?? isError,
+				usage: hookResult?.usage,
 			};
 		};
 	}
@@ -618,9 +628,8 @@ export class AgentSession {
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
 
-		// Notify all listeners
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
-
+		// Persist finalized messages before notifying listeners so completion-triggered
+		// stats/entry reads include this request (and any extension usage overrides).
 		// Handle session persistence
 		if (event.type === "message_end") {
 			// Check if this is a custom message from extensions
@@ -641,7 +650,12 @@ export class AgentSession {
 				this.sessionManager.appendMessage(event.message);
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
+		}
 
+		// Notify all listeners after persistence, but before retry-completion events.
+		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
+
+		if (event.type === "message_end") {
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
 				this._lastAssistantMessage = event.message;
@@ -1781,8 +1795,10 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		this._disconnectFromAgent();
+		// Keep persistence connected until the interrupted assistant response settles.
 		await this.abort();
+		this._disconnectFromAgent();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 
@@ -1857,12 +1873,16 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
+					usageTracker.onResponse,
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
 				usage = result.usage;
-				details = result.details;
+				details = {
+					...(result.details && typeof result.details === "object" ? result.details : {}),
+					usageRequests: usageTracker.getSuccessfulResponses(),
+				};
 			}
 
 			if (this._compactionAbortController.signal.aborted) {
@@ -1870,6 +1890,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -1907,6 +1928,7 @@ export class AgentSession {
 			});
 			return compactionResult;
 		} catch (error) {
+			usageTracker.finish();
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 			this._emit({
@@ -1919,6 +1941,7 @@ export class AgentSession {
 			});
 			throw error;
 		} finally {
+			usageTracker.finish();
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
 		}
@@ -2046,6 +2069,7 @@ export class AgentSession {
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
 		let started = false;
 
 		try {
@@ -2131,15 +2155,20 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
+					usageTracker.onResponse,
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
-				details = compactResult.details;
+				details = {
+					...(compactResult.details && typeof compactResult.details === "object" ? compactResult.details : {}),
+					usageRequests: usageTracker.getSuccessfulResponses(),
+				};
 			}
 
 			if (this._autoCompactionAbortController.signal.aborted) {
+				usageTracker.finish();
 				this._emit({
 					type: "compaction_end",
 					reason,
@@ -2151,6 +2180,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2194,22 +2224,28 @@ export class AgentSession {
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
+			usageTracker.finish();
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			if (started) {
+				const aborted =
+					this._autoCompactionAbortController?.signal.aborted === true ||
+					(error instanceof Error && error.name === "AbortError");
 				this._emit({
 					type: "compaction_end",
 					reason,
 					result: undefined,
-					aborted: false,
+					aborted,
 					willRetry: false,
-					errorMessage:
-						reason === "overflow"
+					errorMessage: aborted
+						? undefined
+						: reason === "overflow"
 							? `Context overflow recovery failed: ${errorMessage}`
 							: `Auto-compaction failed: ${errorMessage}`,
 				});
 			}
 			return false;
 		} finally {
+			usageTracker.finish();
 			this._autoCompactionAbortController = undefined;
 		}
 	}
@@ -2942,6 +2978,7 @@ export class AgentSession {
 
 		// Set up abort controller for summarization
 		this._branchSummaryAbortController = new AbortController();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "branchSummary");
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown; usage?: Usage } | undefined;
@@ -2996,6 +3033,7 @@ export class AgentSession {
 					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
+					onResponse: usageTracker.onResponse,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };
@@ -3008,6 +3046,7 @@ export class AgentSession {
 				summaryDetails = {
 					readFiles: result.readFiles || [],
 					modifiedFiles: result.modifiedFiles || [],
+					usageRequests: usageTracker.getSuccessfulResponses(),
 				};
 			} else if (extensionSummary) {
 				summaryText = extensionSummary.summary;
@@ -3044,6 +3083,7 @@ export class AgentSession {
 					fromExtension,
 					summaryUsage,
 				);
+				usageTracker.commit();
 				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 
 				// Attach label to the summary entry
@@ -3080,6 +3120,7 @@ export class AgentSession {
 
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
+			usageTracker.finish();
 			this._branchSummaryAbortController = undefined;
 		}
 	}
@@ -3118,9 +3159,8 @@ export class AgentSession {
 		const usageTotals = createUsageTotals();
 
 		for (const entry of this.sessionManager.getEntries()) {
-			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
-				addUsageToTotals(usageTotals, entry.usage);
-			}
+			const usage = getEntryUsage(entry);
+			if (usage) addUsageToTotals(usageTotals, usage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;
@@ -3128,16 +3168,12 @@ export class AgentSession {
 				userMessages++;
 			} else if (message.role === "toolResult") {
 				toolResults++;
-				if (message.usage) {
-					addUsageToTotals(usageTotals, message.usage);
-				}
 			} else if (message.role === "assistant") {
 				assistantMessages++;
 				const assistantMsg = message as AssistantMessage;
 				if (Array.isArray(assistantMsg.content)) {
 					toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
 				}
-				addUsageToTotals(usageTotals, assistantMsg.usage);
 			}
 		}
 
@@ -3157,6 +3193,7 @@ export class AgentSession {
 				total: usageTotals.input + usageTotals.output + usageTotals.cacheRead + usageTotals.cacheWrite,
 			},
 			cost: usageTotals.cost,
+			cache: computeCacheHitRates(this.sessionManager.getBranch()),
 			contextUsage: this.getContextUsage(),
 		};
 	}

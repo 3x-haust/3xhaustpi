@@ -12,6 +12,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	maxContextTokens?: number; // default: 300000 - compact at this context size even when the window is larger; 0 disables
 }
 
 export interface BranchSummarySettings {
@@ -86,6 +87,7 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	transport?: TransportSetting; // default: "auto"
+	sharedPromptCache?: boolean; // default: false - key session requests by a hash of system prompt + tools so sessions with the same prefix share one provider cache entry
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -757,6 +759,16 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getSharedPromptCache(): boolean {
+		return this.settings.sharedPromptCache ?? false;
+	}
+
+	setSharedPromptCache(enabled: boolean): void {
+		this.globalSettings.sharedPromptCache = enabled;
+		this.markModified("sharedPromptCache");
+		this.save();
+	}
+
 	getCompactionEnabled(): boolean {
 		return this.settings.compaction?.enabled ?? true;
 	}
@@ -778,11 +790,21 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getCompactionMaxContextTokens(): number {
+		return this.settings.compaction?.maxContextTokens ?? 300000;
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		maxContextTokens: number;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			maxContextTokens: this.getCompactionMaxContextTokens(),
 		};
 	}
 

@@ -29,10 +29,12 @@ Both use the same structured summary format and track file operations cumulative
 Auto-compaction triggers when:
 
 ```
-contextTokens > contextWindow - reserveTokens
+contextTokens > min(contextWindow - reserveTokens, maxContextTokens)
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
+By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response. `maxContextTokens` (default 300000, `0` disables it) caps the threshold on large windows, so a 1M-token model does not resend close to 1M tokens on every request before compacting.
+
+When a request has no reported usage yet, its tokens are estimated from characters, with Hangul, CJK, and other multi-byte characters weighted so that non-English text is not undercounted.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
@@ -40,7 +42,7 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
+3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present. Preserve active instructions, prohibitions, decisions, unfinished tasks, blockers, and operational identifiers; deduplicate historical detail first
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
 5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
 
@@ -102,9 +104,25 @@ Split turn (one huge turn exceeds budget):
   turnPrefixMessages = [usr, ass, tool, ass, tool, tool]
 ```
 
-For split turns, pi generates two summaries and merges them:
-1. **History summary**: Previous context (if any)
-2. **Turn prefix summary**: The early part of the split turn
+For split turns, pi generates two summaries concurrently and merges them:
+1. **History summary**: Previous context (if any). If there are no newly compacted history messages, reuse the previous checkpoint verbatim when its UTF-8 byte upper bound fits the history allocation; otherwise re-summarize it within that allocation
+2. **Turn prefix summary**: The early part of the split turn, including any custom compaction focus
+
+### Summary Budgets and Failure Safety
+
+History-summary calls request at most 4096 output tokens and turn-prefix calls at most 2048, further limited by the model output cap, one quarter of its context window, the overflow reserve, and the actual remaining input budget. For split turns, the history allowance is at most 50% of `reserveTokens` and the prefix allowance at most 30%, rather than each using the full reserve independently. With defaults, their configured allowances sum to 6144 tokens instead of 21299. Additional batches/resizing calls can consume more tokens in total; this is not an operation-wide billing limit, measured savings, or a recall guarantee.
+
+These limits apply to `SimpleStreamOptions.maxTokens` before provider adaptation. OpenAI/Codex and adaptive thinking may spend the allowance on reasoning, so high thinking levels can end at length before producing usable text. Older budget-based Anthropic adapters can add a thinking allowance to this value. Provider wire-level limits and reasoning cost are therefore not proven by the faux option tests. Compaction preserves the selected thinking level; reduce it when reasoning exhausts the summary allowance.
+
+Summarization accounts for the system prompt, instructions, previous checkpoint, output allowance, and 256 tokens of framing headroom. UTF-8 byte length is used as a deliberately conservative input-token upper bound, including multilingual text and opaque payloads. Oversized histories are folded in chronological batches, keeping tool calls and their results together. Each batch receives the preceding checkpoint and the same custom focus. Because generated output is limited in tokens but the next input is budgeted in bytes, the next request can reduce its output allowance. When a large checkpoint blocks the next message, a bounded checkpoint-only condensation pass runs first. A checkpoint too large to fit by itself is folded from ordered UTF-8-safe fragments at a smaller output allowance; raw user messages/tool exchanges are never silently split or dropped. Resizing must reduce byte length, permits at most two consecutive reductions without consuming a new source batch, and disallows recursive fragment splitting. Usage from successful batches and resizing calls is aggregated into the final compaction result. All turn-prefix batches retain only the Original Request / Early Progress / Context for Suffix format, without conflicting checkpoint headings.
+
+No intermediate checkpoint is persisted. Aborted, empty, or length-truncated responses fail compaction without replacing the original history. A single message/tool exchange that cannot fit, or a checkpoint that still cannot fit after bounded resizing, is rejected rather than silently truncated; reduce that input or switch to a larger-context model. Conservative batching can require additional requests and repeated checkpoint input, so it is a safety trade-off, not a promise of lower cost for every transcript.
+
+### Prompt Prefix Stability
+
+Compaction necessarily replaces the old conversation prefix with a new summary. The first request after compaction cannot reuse the replaced portion of the old prompt cache; unchanged system/tool prefixes may still be reusable depending on the provider. The committed summary and retained messages are not rewritten between compactions, so subsequent delta-only turns can extend the same prefix. No rolling memory is injected on every turn.
+
+This change does not alter `PI_CACHE_RETENTION=long`, provider cache routing, main-conversation session IDs, delta submission, or fork/rewind behavior. Summarization remains a separate request path; cache policy and session-statistics changes are intentionally out of scope.
 
 ### Cut Point Rules
 
@@ -141,7 +159,7 @@ interface CompactionDetails {
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work.
+Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations and individual successful response snapshots in `details.usageRequests`, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their aggregate LLM `usage` when available. Failed, aborted, or discarded built-in summary responses are saved as non-context usage records so retries and partial failures still contribute exactly once to session totals. See [Cache token accounting](cache-token-accounting.md).
 
 See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
 
@@ -182,7 +200,7 @@ Both compaction and branch summarization track files cumulatively. When generati
 - Tool calls in the messages being summarized
 - Previous compaction or branch summary `details` (if any)
 
-This means file tracking accumulates across multiple compactions or nested branch summaries, preserving the full history of read and modified files.
+This means file tracking accumulates across multiple compactions or nested branch summaries, preserving the full history of read and modified files. Before updating a built-in compaction summary, its exact generated trailing file-list footer is removed from the LLM input and regenerated from `details`; this avoids repeatedly summarizing and duplicating metadata. Extension-owned summaries are not stripped.
 
 ### BranchSummaryEntry Structure
 
@@ -242,6 +260,10 @@ Both compaction and branch summarization use the same structured format:
 ## Critical Context
 - [Data needed to continue]
 
+## User Requests (verbatim)
+- "First user request, quoted exactly"
+- "A later correction"
+
 <read-files>
 path/to/file1.ts
 path/to/file2.ts
@@ -252,13 +274,14 @@ path/to/changed.ts
 </modified-files>
 ```
 
+The model is asked to keep the summary under 800 words. The `User Requests (verbatim)` section is written by code, not by the model: it quotes every summarized user message (each clipped to 1500 characters), carries the quotes of earlier compactions forward, and keeps the first request plus the most recent ones within 12000 characters.
+
 ### Message Serialization
 
 Before summarization, messages are serialized to text via [`serializeConversation()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/utils.ts):
 
 ```
 [User]: What they said
-[Assistant thinking]: Internal reasoning
 [Assistant]: Response text
 [Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
 [Tool result]: Output from tool
@@ -266,7 +289,7 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 
 This prevents the model from treating it as a conversation to continue.
 
-Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
+Tool results keep their first and last 1000 characters during serialization. The middle is replaced with a marker indicating how many characters were omitted. Tool names, call IDs, and success/error status are included; assistant reasoning is omitted, and oversized tool payload arguments use stable digests. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
 
 ## Custom Summarization via Extensions
 
@@ -325,7 +348,6 @@ pi.on("session_before_compact", async (event, ctx) => {
   );
   // Returns:
   // [User]: message text
-  // [Assistant thinking]: thinking content
   // [Assistant]: response text
   // [Assistant tool calls]: read(path="..."); bash(command="...")
   // [Tool result]: output text
@@ -387,7 +409,8 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "keepRecentTokens": 20000,
+    "maxContextTokens": 300000
   }
 }
 ```
@@ -397,5 +420,6 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `maxContextTokens` | `300000` | Compact at this context size even when the window is larger; `0` disables the cap |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.

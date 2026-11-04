@@ -127,12 +127,15 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Absolute context size that triggers compaction on large windows. 0 or undefined disables the cap. */
+	maxContextTokens?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	maxContextTokens: 300000,
 };
 
 // ============================================================================
@@ -234,7 +237,19 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextTokens > getCompactionThreshold(contextWindow, settings);
+}
+
+/**
+ * Context size above which compaction runs. On a 1M window, waiting for the window edge means
+ * every request near the end resends close to 1M tokens, so large windows compact at
+ * `maxContextTokens` instead.
+ */
+export function getCompactionThreshold(contextWindow: number, settings: CompactionSettings): number {
+	const windowThreshold = contextWindow - settings.reserveTokens;
+	return settings.maxContextTokens && settings.maxContextTokens > 0
+		? Math.min(windowThreshold, settings.maxContextTokens)
+		: windowThreshold;
 }
 
 // ============================================================================
@@ -243,15 +258,31 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 
 const ESTIMATED_IMAGE_CHARS = 4800;
 
+/**
+ * Character count weighted so that `/ 4` approximates tokens for non-English text too. Tokenizers
+ * spend about one token per Hangul, CJK or kana character and about two characters per token for
+ * Cyrillic, Greek or accented Latin, while `length / 4` assumes English. Korean text was
+ * undercounted about four times, so compaction triggered only after the provider overflowed.
+ */
+export function estimateWeightedChars(text: string): number {
+	let weighted = text.length;
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (code < 0x80) continue;
+		weighted += code >= 0x0800 ? 3 : 1;
+	}
+	return weighted;
+}
+
 function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {
-		return content.length;
+		return estimateWeightedChars(content);
 	}
 
 	let chars = 0;
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			chars += block.text.length;
+			chars += estimateWeightedChars(block.text);
 		} else if (block.type === "image") {
 			chars += ESTIMATED_IMAGE_CHARS;
 		}
@@ -277,11 +308,11 @@ export function estimateTokens(message: AgentMessage): number {
 			const assistant = message as AssistantMessage;
 			for (const block of assistant.content) {
 				if (block.type === "text") {
-					chars += block.text.length;
+					chars += estimateWeightedChars(block.text);
 				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
+					chars += estimateWeightedChars(block.thinking);
 				} else if (block.type === "toolCall") {
-					chars += block.name.length + JSON.stringify(block.arguments).length;
+					chars += block.name.length + estimateWeightedChars(JSON.stringify(block.arguments));
 				}
 			}
 			return Math.ceil(chars / 4);
@@ -292,12 +323,12 @@ export function estimateTokens(message: AgentMessage): number {
 			return Math.ceil(chars / 4);
 		}
 		case "bashExecution": {
-			chars = message.command.length + message.output.length;
+			chars = estimateWeightedChars(message.command) + estimateWeightedChars(message.output);
 			return Math.ceil(chars / 4);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
-			chars = message.summary.length;
+			chars = estimateWeightedChars(message.summary);
 			return Math.ceil(chars / 4);
 		}
 	}
@@ -499,17 +530,22 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Prioritize durable user instructions, explicit prohibitions, decisions and their rationale, unresolved work, and exact paths/tool identifiers needed to resume. Distinguish verified results from plans; never mark unverified work as done. Deduplicate repeated facts and collapse completed work that no longer affects continuation. Do not copy file-list metadata tags: file tracking is appended separately.
+Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
+- CARRY FORWARD every still-active user instruction, prohibition, decision, unresolved task/blocker, and continuation-critical fact from the previous summary, even when the new messages do not mention it
 - ADD new progress, decisions, and context from the new messages
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
+- Remove constraints or unresolved work ONLY when the new messages explicitly supersede or resolve them; silence is not resolution
+- Deduplicate facts and collapse completed historical detail before shortening active instructions or unresolved work
+- Distinguish observed tool outcomes from plans and retain exact identifiers needed to resume
+- Do not copy file-list metadata tags: file tracking is appended separately
+- Do not write a "User Requests (verbatim)" section; it is maintained automatically
 
 Use this EXACT format:
 
@@ -542,7 +578,75 @@ Use this EXACT format:
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
+
+const USER_REQUESTS_HEADING = "## User Requests (verbatim)";
+const MAX_USER_REQUEST_CHARS = 1500;
+const MAX_USER_REQUESTS_CHARS = 12_000;
+/** Ends a verbatim section: the next heading, the split-turn separator or the file-list footer. */
+const USER_REQUESTS_END = /\n(## |---\n|<read-files>|<modified-files>)/;
+const OMITTED_REQUESTS_LINE = /^- \[\d+ earlier requests omitted\]$/;
+
+/**
+ * The user's own words, appended to every summary by code. Summaries paraphrase requests and drop
+ * corrections, and having the model copy them would cost output tokens and time on every
+ * compaction. Earlier quotes come from the previous summary, so they survive repeated compactions.
+ */
+export function formatUserRequestsSection(previousSummary: string | undefined, messages: AgentMessage[]): string {
+	const previous = previousSummary ? extractUserRequests(previousSummary) : [];
+	const current = messages.flatMap((message) => {
+		if (message.role !== "user") return [];
+		const text = contentText(message.content).trim();
+		if (!text) return [];
+		const clipped = text.length > MAX_USER_REQUEST_CHARS ? `${text.slice(0, MAX_USER_REQUEST_CHARS)} [...]` : text;
+		return [`- ${JSON.stringify(clipped)}`];
+	});
+	const quotes = [...previous, ...current];
+	if (quotes.length === 0) return "";
+	// Keep the first request, which usually states the task, and as many recent ones as fit.
+	const kept: string[] = [];
+	let size = quotes[0].length;
+	for (let i = quotes.length - 1; i > 0 && size + quotes[i].length <= MAX_USER_REQUESTS_CHARS; i--) {
+		kept.unshift(quotes[i]);
+		size += quotes[i].length;
+	}
+	const omitted = quotes.length - 1 - kept.length;
+	const lines = [quotes[0], ...(omitted > 0 ? [`- [${omitted} earlier requests omitted]`] : []), ...kept];
+	return `\n\n${USER_REQUESTS_HEADING}\n${lines.join("\n")}`;
+}
+
+function extractUserRequests(summary: string): string[] {
+	const start = summary.indexOf(USER_REQUESTS_HEADING);
+	if (start === -1) return [];
+	const body = summary.slice(start + USER_REQUESTS_HEADING.length);
+	const end = body.search(USER_REQUESTS_END);
+	return (end === -1 ? body : body.slice(0, end))
+		.split("\n")
+		.filter((line) => line.startsWith("- ") && !OMITTED_REQUESTS_LINE.test(line));
+}
+
+/** Remove a verbatim section from a summary, so the code-built one is the only copy. */
+export function stripUserRequests(summary: string): string {
+	const start = summary.indexOf(USER_REQUESTS_HEADING);
+	if (start === -1) return summary;
+	const rest = summary.slice(start + USER_REQUESTS_HEADING.length);
+	const end = rest.search(USER_REQUESTS_END);
+	if (end === -1) return summary.slice(0, start).trimEnd();
+	return `${summary.slice(0, start).trimEnd()}\n\n${rest.slice(end + 1)}`.trimEnd();
+}
+
+/** Bound generated memory independently of the much larger overflow reserve. */
+function summaryOutputBudget(model: Model<string>, reserveTokens: number, splitPrefix = false): number {
+	return Math.max(
+		1,
+		Math.min(
+			Math.floor((splitPrefix ? 0.5 : 0.8) * reserveTokens),
+			splitPrefix ? 2048 : 4096,
+			Math.max(1, Math.floor(model.contextWindow / 4)),
+			model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+		),
+	);
+}
 
 function createSummarizationOptions(
 	model: Model<any>,
@@ -560,6 +664,9 @@ function createSummarizationOptions(
 	return options;
 }
 
+/** Observes each actual provider response, not synthetic aborts during retry backoff. */
+export type SummarizationResponseCallback = (response: AssistantMessage) => void;
+
 /**
  * Shared choke point for every compaction/branch-summary summarization call. Wraps the
  * single LLM call in {@link retryAssistantCall} so transient stream drops (e.g.
@@ -574,6 +681,7 @@ export async function completeSummarization(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<AssistantMessage> {
 	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
 	const requestOptions: SimpleStreamOptions = {
@@ -581,10 +689,13 @@ export async function completeSummarization(
 		cacheRetention: "none",
 		sessionId: uuidv7(),
 	};
-	const produce = async (): Promise<AssistantMessage> =>
-		streamFn
+	const produce = async (): Promise<AssistantMessage> => {
+		const response = await (streamFn
 			? (await streamFn(model, context, requestOptions)).result()
-			: completeSimple(model, context, requestOptions);
+			: completeSimple(model, context, requestOptions));
+		onResponse?.(response);
+		return response;
+	};
 	return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
 }
 
@@ -606,6 +717,7 @@ export async function generateSummary(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -622,6 +734,7 @@ export async function generateSummary(
 			env,
 			retry,
 			callbacks,
+			onResponse,
 		)
 	).text;
 }
@@ -641,56 +754,176 @@ export async function generateSummaryWithUsage(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.8 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
-
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-	if (customInstructions) {
-		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
-	}
-
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel);
-
-	const response = await completeSummarization(
+	const maxTokens = summaryOutputBudget(model, reserveTokens);
+	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
+	return summarizeInBatches(
+		currentMessages,
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		completionOptions,
+		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		SUMMARIZATION_PROMPT + focus,
+		UPDATE_SUMMARIZATION_PROMPT + focus,
+		previousSummary,
+		"Summarization",
 		streamFn,
 		retry,
 		callbacks,
+		onResponse,
 	);
+}
 
-	if (response.stopReason === "error") {
-		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+function checkpointFragments(checkpoint: string, maxBytes: number): AgentMessage[] {
+	const fragments: string[] = [];
+	let fragment = "";
+	let bytes = 0;
+	for (const character of checkpoint) {
+		const size = Buffer.byteLength(character, "utf8");
+		if (bytes + size > maxBytes && fragment) {
+			fragments.push(fragment);
+			fragment = "";
+			bytes = 0;
+		}
+		fragment += character;
+		bytes += size;
 	}
+	if (fragment) fragments.push(fragment);
+	return fragments.map((text, index) => ({
+		role: "user",
+		content: `[Previous checkpoint fragment ${index}]\n${text}`,
+		timestamp: Date.now(),
+	}));
+}
 
-	const textContent = contentText(response.content);
+function summaryPrompt(conversation: string, previous: string | undefined, instructions: string): string {
+	const checkpoint = previous ? `<previous-summary>\n${previous}\n</previous-summary>\n\n` : "";
+	return `<conversation>\n${conversation}\n</conversation>\n\n${checkpoint}${instructions}`;
+}
 
-	return { text: textContent, usage: response.usage };
+/**
+ * Fold oversized histories at message boundaries instead of silently dropping old instructions.
+ * UTF-8 bytes are an intentionally conservative token upper bound (including CJK/base64).
+ * No intermediate checkpoint is persisted: any failure leaves the original history intact.
+ */
+async function summarizeInBatches(
+	messages: AgentMessage[],
+	model: Model<string>,
+	options: SimpleStreamOptions,
+	initialPrompt: string,
+	updatePrompt: string,
+	previousSummary: string | undefined,
+	label: string,
+	streamFn?: StreamFn,
+	retry?: RetryPolicy,
+	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
+	allowCheckpointSplit = true,
+): Promise<{ text: string; usage: Usage }> {
+	const serialized: string[] = [];
+	for (const message of convertToLlm(messages)) {
+		const text = serializeConversation([message]);
+		if (!text) continue;
+		// Keep a tool call and its results together so the outcome retains its command/path context.
+		if (message.role === "toolResult" && serialized.length > 0) {
+			serialized[serialized.length - 1] += `\n\n${text}`;
+		} else {
+			serialized.push(text);
+		}
+	}
+	let index = 0;
+	let summary = previousSummary;
+	let usage: Usage | undefined;
+	let consecutiveResizes = 0;
+	// Leave framing headroom; output and UTF-8 input are different units, so adapt each request.
+	const contextBudget = model.contextWindow - 256;
+	do {
+		if (options.signal?.aborted) throw new DOMException(`${label} aborted`, "AbortError");
+		let instructions = `${summary ? updatePrompt : initialPrompt}\n\nKeep the checkpoint compact. Prefer active constraints and unfinished work over historical detail.`;
+		let bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + summaryPrompt("", summary, instructions), "utf8");
+		const nextBytes = index < serialized.length ? Buffer.byteLength(serialized[index], "utf8") : 0;
+		let maxTokens = Math.min(options.maxTokens ?? 1, contextBudget - bytes - nextBytes);
+		const resizeOnly = maxTokens < 1 && summary !== undefined && index < serialized.length;
+		if (resizeOnly) {
+			if (consecutiveResizes >= 2)
+				throw new Error(`${label} failed: checkpoint resizing made insufficient progress`);
+			instructions +=
+				"\n\nCondense the previous checkpoint substantially before incorporating more messages. Deduplicate historical detail, but retain all active instructions, prohibitions, decisions, and unfinished work. Keep the same section format.";
+			bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + summaryPrompt("", summary, instructions), "utf8");
+			maxTokens = Math.min(options.maxTokens ?? 1, contextBudget - bytes);
+		}
+		if (maxTokens < 1) {
+			if (summary && allowCheckpointSplit && consecutiveResizes < 2) {
+				const sourceNote =
+					"\n\nThe conversation contains ordered fragments of an existing checkpoint, not new user requests. Condense them without dropping active constraints, decisions, blockers, or unfinished work.";
+				const resized = await summarizeInBatches(
+					checkpointFragments(summary, Math.max(1, Math.floor(model.contextWindow / 4))),
+					model,
+					{
+						...options,
+						maxTokens: Math.max(1, Math.min(options.maxTokens ?? 1, 1024, Math.floor(model.contextWindow / 16))),
+					},
+					initialPrompt + sourceNote,
+					updatePrompt + sourceNote,
+					undefined,
+					label,
+					streamFn,
+					retry,
+					callbacks,
+					onResponse,
+					false,
+				);
+				if (Buffer.byteLength(resized.text, "utf8") >= Buffer.byteLength(summary, "utf8")) {
+					throw new Error(`${label} failed: checkpoint resizing made no progress`);
+				}
+				summary = resized.text;
+				usage = usage ? combineUsage(usage, resized.usage) : resized.usage;
+				consecutiveResizes++;
+				continue;
+			}
+			throw new Error(`${label} failed: a message or previous summary exceeds the summarization context budget`);
+		}
+		const inputBudget = contextBudget - maxTokens;
+		const batch: string[] = [];
+		while (!resizeOnly && index < serialized.length) {
+			const messageBytes = Buffer.byteLength(serialized[index], "utf8") + (batch.length > 0 ? 2 : 0);
+			if (bytes + messageBytes > inputBudget) break;
+			batch.push(serialized[index++]);
+			bytes += messageBytes;
+		}
+		const promptText = summaryPrompt(batch.join("\n\n"), summary, instructions);
+		const response = await completeSummarization(
+			model,
+			{
+				systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
+				messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
+			},
+			{ ...options, maxTokens },
+			streamFn,
+			retry,
+			callbacks,
+			onResponse,
+		);
+		if (options.signal?.aborted || response.stopReason === "aborted") {
+			throw new DOMException(options.signal?.aborted ? "Compaction cancelled" : `${label} aborted`, "AbortError");
+		}
+		if (response.stopReason === "error") {
+			throw new Error(`${label} failed: ${response.errorMessage || "Unknown error"}`);
+		}
+		if (response.stopReason === "length") throw new Error(`${label} failed: summary was truncated`);
+		const text = contentText(response.content);
+		if (!text.trim()) throw new Error(`${label} failed: summary was empty`);
+		if (resizeOnly) {
+			if (Buffer.byteLength(text, "utf8") >= Buffer.byteLength(summary!, "utf8")) {
+				throw new Error(`${label} failed: checkpoint resizing made no progress`);
+			}
+			consecutiveResizes++;
+		} else {
+			consecutiveResizes = 0;
+		}
+		summary = text;
+		usage = usage ? combineUsage(usage, response.usage) : response.usage;
+	} while (index < serialized.length);
+	return { text: summary!, usage: usage! };
 }
 
 // ============================================================================
@@ -736,6 +969,16 @@ export function prepareCompaction(
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
+		// The generated footer is carried deterministically in details, not rewritten by the LLM.
+		if (!prevCompaction.fromHook && prevCompaction.details) {
+			const details = prevCompaction.details as Partial<CompactionDetails>;
+			if (Array.isArray(details.readFiles) && Array.isArray(details.modifiedFiles)) {
+				const footer = formatFileOperations(details.readFiles, details.modifiedFiles);
+				if (footer && previousSummary.endsWith(footer)) {
+					previousSummary = previousSummary.slice(0, -footer.length);
+				}
+			}
+		}
 		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
@@ -813,6 +1056,7 @@ Summarize the prefix to provide context for the retained suffix:
 ## Context for Suffix
 - [Information needed to understand the retained recent work]
 
+Preserve the user's active instructions and prohibitions, decisions and rationale, unfinished tasks, blockers, and exact file/tool identifiers needed for the suffix. Separate verified outcomes from planned work. Do not copy file-list metadata tags; tracking is appended separately.
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
 /**
@@ -834,6 +1078,7 @@ export async function compact(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -841,22 +1086,30 @@ export async function compact(
 		turnPrefixMessages,
 		isSplitTurn,
 		tokensBefore,
-		previousSummary,
+		previousSummary: storedPreviousSummary,
 		fileOps,
 		settings,
 	} = preparation;
+	// The verbatim requests are rebuilt by code below, so the model never reads or rewrites them.
+	const previousSummary = storedPreviousSummary === undefined ? undefined : stripUserRequests(storedPreviousSummary);
 
 	// Generate summaries and merge into one
 	let summary: string;
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
+		// Allocate 50% of the reserve to history (0.625 * 0.8), 30% to the prefix (0.6 * 0.5).
+		const historyReserve = Math.floor(settings.reserveTokens * 0.625);
+		// Reuse is safe only when the checkpoint fits its allocation even under the byte upper bound.
+		const resizeHistory =
+			previousSummary !== undefined &&
+			Buffer.byteLength(previousSummary, "utf8") > summaryOutputBudget(model, historyReserve);
 		const historyPromise =
-			messagesToSummarize.length > 0
+			messagesToSummarize.length > 0 || resizeHistory
 				? generateSummaryWithUsage(
 						messagesToSummarize,
 						model,
-						settings.reserveTokens,
+						historyReserve,
 						apiKey,
 						headers,
 						signal,
@@ -867,6 +1120,7 @@ export async function compact(
 						env,
 						retry,
 						callbacks,
+						onResponse,
 					)
 				: Promise.resolve(undefined);
 		const [historyResult, turnPrefixResult] = await Promise.all([
@@ -874,7 +1128,7 @@ export async function compact(
 			generateTurnPrefixSummary(
 				turnPrefixMessages,
 				model,
-				settings.reserveTokens,
+				Math.floor(settings.reserveTokens * 0.6),
 				apiKey,
 				headers,
 				env,
@@ -883,9 +1137,12 @@ export async function compact(
 				streamFn,
 				retry,
 				callbacks,
+				onResponse,
+				customInstructions,
 			),
 		]);
-		const historyText = historyResult?.text ?? "No prior history.";
+		// With no newly compacted history, reuse a fitting checkpoint verbatim.
+		const historyText = historyResult?.text ?? previousSummary ?? "No prior history.";
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
 		summaryUsage = historyResult ? combineUsage(historyResult.usage, turnPrefixResult.usage) : turnPrefixResult.usage;
@@ -905,10 +1162,15 @@ export async function compact(
 			env,
 			retry,
 			callbacks,
+			onResponse,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
 	}
+
+	// The model's copy (or the reused previous checkpoint's) is replaced by the code-built one.
+	summary = stripUserRequests(summary);
+	summary += formatUserRequestsSection(storedPreviousSummary, [...messagesToSummarize, ...turnPrefixMessages]);
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -942,37 +1204,22 @@ async function generateTurnPrefixSummary(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
+	customInstructions?: string,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
+	const maxTokens = summaryOutputBudget(model, reserveTokens, true);
+	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
+	return summarizeInBatches(
+		messages,
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
 		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		TURN_PREFIX_SUMMARIZATION_PROMPT + focus,
+		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nMerge new prefix messages into <previous-summary> using only the Original Request, Early Progress, and Context for Suffix sections above. Carry forward all active instructions, prohibitions, decisions, blockers, exact operational evidence, and unfinished work even when not repeated. Remove them only when explicitly superseded or resolved; silence is not resolution. Deduplicate completed historical detail.${focus}`,
+		undefined,
+		"Turn prefix summarization",
 		streamFn,
 		retry,
 		callbacks,
+		onResponse,
 	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	return {
-		text: contentText(response.content),
-		usage: response.usage,
-	};
 }

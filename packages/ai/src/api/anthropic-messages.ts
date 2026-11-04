@@ -30,6 +30,7 @@ import type {
 	ToolResultMessage,
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
+import { appendAssistantMessageDiagnostic, extractDiagnosticError } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -37,6 +38,7 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
+import { applyAnthropicPromptCache } from "./anthropic-prompt-cache.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -70,6 +72,36 @@ function getCacheControl(
 		retention,
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
 	};
+}
+
+function usesLongCacheTtl(params: unknown): boolean {
+	return JSON.stringify(params).includes('"ttl":"1h"');
+}
+
+/** A 400 invalid_request_error that names the cache ttl, as sent by endpoints without 1h cache support. */
+export function isRejectedCacheTtlError(error: unknown): boolean {
+	return (
+		error instanceof Anthropic.APIError &&
+		error.status === 400 &&
+		error.type === "invalid_request_error" &&
+		/\bttl\b/i.test(error.message)
+	);
+}
+
+/** Endpoints that rejected the 1h ttl in this process; they go straight to the 5m ttl afterwards. */
+const rejectedLongCacheTtlEndpoints = new Set<string>();
+
+function cacheTtlEndpointKey(model: Model<"anthropic-messages">): string {
+	return `${model.provider}\u0000${model.baseUrl}`;
+}
+
+function withShortCacheRetention(options: AnthropicOptions | undefined): AnthropicOptions {
+	return { ...options, cacheRetention: "short" };
+}
+
+/** Test hook: forget remembered 1h ttl rejections. */
+export function resetRejectedCacheTtlEndpoints(): void {
+	rejectedLongCacheTtlEndpoints.clear();
 }
 
 // Stealth mode: Mimic Claude Code's tool naming exactly
@@ -546,24 +578,56 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			let params = buildParams(model, context, isOAuth, options);
-			const nextParams = await options?.onPayload?.(params, model);
-			if (nextParams !== undefined) {
-				params = nextParams as MessageCreateParamsStreaming;
-			}
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const response = await retryProviderRequest(
-				() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
-				{
-					maxRetries: options?.maxRetries,
-					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
-				},
-			);
+			const ttlEndpoint = cacheTtlEndpointKey(model);
+			// Only long retention is downgraded; "none" (summaries) must stay uncached.
+			let paramsOptions: AnthropicOptions | undefined =
+				rejectedLongCacheTtlEndpoints.has(ttlEndpoint) &&
+				resolveCacheRetention(options?.cacheRetention, options?.env) === "long"
+					? withShortCacheRetention(options)
+					: options;
+			let response: Response;
+			for (;;) {
+				let params = buildAnthropicParams(model, context, isOAuth, paramsOptions);
+				const nextParams = await options?.onPayload?.(params, model);
+				if (nextParams !== undefined) {
+					params = nextParams as MessageCreateParamsStreaming;
+				}
+				try {
+					response = await retryProviderRequest(
+						() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
+						{
+							maxRetries: options?.maxRetries,
+							maxRetryDelayMs: options?.maxRetryDelayMs,
+							signal: options?.signal,
+						},
+					);
+					break;
+				} catch (error) {
+					// Some Anthropic-compatible endpoints reject the 1h cache ttl. Retry once with the
+					// default 5m ttl and remember the endpoint so later requests skip the failing attempt.
+					if (
+						options?.signal?.aborted ||
+						paramsOptions?.cacheRetention === "short" ||
+						!usesLongCacheTtl(params) ||
+						!isRejectedCacheTtlError(error)
+					) {
+						throw error;
+					}
+					rejectedLongCacheTtlEndpoints.add(ttlEndpoint);
+					paramsOptions = withShortCacheRetention(options);
+					appendAssistantMessageDiagnostic(output, {
+						type: "anthropic_cache_ttl_fallback",
+						timestamp: Date.now(),
+						error: extractDiagnosticError(error),
+						details: { reason: "long_cache_ttl_rejected" },
+					});
+				}
+			}
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
@@ -935,7 +999,8 @@ function createClient(
 	return { client, isOAuthToken: false };
 }
 
-function buildParams(
+/** Pure request construction, also usable for offline payload validation without credentials. */
+export function buildAnthropicParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
 	isOAuthToken: boolean,
@@ -962,7 +1027,6 @@ function buildParams(
 		messages: convertMessages(
 			transformedMessages,
 			isOAuthToken,
-			cacheControl,
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
@@ -977,23 +1041,20 @@ function buildParams(
 			{
 				type: "text",
 				text: "You are Claude Code, Anthropic's official CLI for Claude.",
-				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
 		if (context.systemPrompt) {
 			params.system.push({
 				type: "text",
 				text: sanitizeSurrogates(context.systemPrompt),
-				...(cacheControl ? { cache_control: cacheControl } : {}),
 			});
 		}
 	} else if (context.systemPrompt) {
-		// Add cache control to system prompt for non-OAuth tokens
+		// The cache helper marks the final system block for both auth paths.
 		params.system = [
 			{
 				type: "text",
 				text: sanitizeSurrogates(context.systemPrompt),
-				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
 	}
@@ -1069,6 +1130,7 @@ function buildParams(
 		}
 	}
 
+	applyAnthropicPromptCache(params, cacheControl);
 	return params;
 }
 
@@ -1115,7 +1177,6 @@ function convertToolResult(
 function convertMessages(
 	transformedMessages: Message[],
 	isOAuthToken: boolean,
-	cacheControl?: CacheControlEphemeral,
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
@@ -1131,7 +1192,7 @@ function convertMessages(
 				if (msg.content.trim().length > 0) {
 					params.push({
 						role: "user",
-						content: sanitizeSurrogates(msg.content),
+						content: [{ type: "text", text: sanitizeSurrogates(msg.content) }],
 					});
 				}
 			} else {
@@ -1249,30 +1310,6 @@ function convertMessages(
 				role: "user",
 				content: [...toolResults, ...siblingContent],
 			});
-		}
-	}
-
-	// Add cache_control to the last user message to cache conversation history
-	if (cacheControl && params.length > 0) {
-		const lastMessage = params[params.length - 1];
-		if (lastMessage.role === "user") {
-			if (Array.isArray(lastMessage.content)) {
-				const lastBlock = lastMessage.content[lastMessage.content.length - 1];
-				if (
-					lastBlock &&
-					(lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
-				) {
-					(lastBlock as any).cache_control = cacheControl;
-				}
-			} else if (typeof lastMessage.content === "string") {
-				lastMessage.content = [
-					{
-						type: "text",
-						text: lastMessage.content,
-						cache_control: cacheControl,
-					},
-				] as any;
-			}
 		}
 	}
 
