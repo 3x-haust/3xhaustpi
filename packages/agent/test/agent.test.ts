@@ -1226,4 +1226,74 @@ describe("Agent", () => {
 			{ attribution: PI_ATTRIBUTION, userAgent: "short" },
 		]);
 	});
+
+	it("warms the request the next prompt sends, without running it", async () => {
+		const requests: { messages: unknown[]; maxTokens?: number; sideRequest?: string }[] = [];
+		const agent = new Agent({
+			initialState: { systemPrompt: "You are helpful.", tools: [createTool("echo")] },
+			// What an app puts ahead of the conversation each request.
+			transformContext: async (messages) => {
+				const at = messages.findIndex((message) => message.role !== "system");
+				const lead = createUserMessage("lead");
+				return at === -1 ? [...messages, lead] : [...messages.slice(0, at), lead, ...messages.slice(at)];
+			},
+			streamFn: (_model, context, options) => {
+				requests.push({
+					messages: context.messages.map(({ timestamp: _t, ...message }) => message),
+					maxTokens: options?.maxTokens,
+					sideRequest: options?.sideRequest,
+				});
+				const stream = createAssistantMessageEventStream();
+				const message = createAssistantMessage("done");
+				if (options?.maxTokens === 1) {
+					// A provider that takes no output cap: it would go on until stopped.
+					queueMicrotask(() => {
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "text_start", contentIndex: 0, partial: message });
+					});
+					options.signal?.addEventListener("abort", () =>
+						stream.push({ type: "error", reason: "aborted", error: { ...message, stopReason: "aborted" } }),
+					);
+				} else {
+					queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+				}
+				return stream;
+			},
+		});
+		const events: AgentEvent[] = [];
+		agent.subscribe((event) => {
+			events.push(event);
+		});
+		const before = agent.state.messages.slice();
+
+		const warmed = await agent.warm(".");
+		expect(warmed?.stopReason).toBe("aborted");
+		expect(agent.state.messages).toEqual(before);
+		expect(events).toEqual([]);
+
+		await agent.prompt("hi");
+		const [warm, real] = requests;
+		expect(warm.maxTokens).toBe(1);
+		expect(real.maxTokens).toBeUndefined();
+		// The stream function can tell the warm-up from the request it prepares.
+		expect(warm.sideRequest).toBe("warm");
+		expect(real.sideRequest).toBeUndefined();
+		expect(warm.messages.slice(0, -1)).toEqual(real.messages.slice(0, -1));
+		expect(warm.messages.length).toBeGreaterThan(1);
+	});
+
+	it("does not warm when a one-token request would change Anthropic's thinking budget", async () => {
+		let requests = 0;
+		const budgetModel = { ...getModel("openai", "gpt-4o-mini"), api: "anthropic-messages" as const, reasoning: true };
+		const agent = new Agent({
+			initialState: { systemPrompt: "You are helpful.", model: budgetModel, thinkingLevel: "medium" },
+			streamFn: () => {
+				requests++;
+				return createAssistantMessageEventStream();
+			},
+		});
+
+		expect(await agent.warm(".")).toBeUndefined();
+		expect(requests).toBe(0);
+	});
 });

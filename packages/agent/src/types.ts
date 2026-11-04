@@ -33,8 +33,20 @@ import type { Static } from "@earendil-works/pi-schema";
 export type StreamFn = (
 	model: Model<Api>,
 	context: TranscriptContext,
-	options?: SimpleStreamOptions,
+	options?: AgentStreamOptions,
 ) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
+
+/** Options the agent and its callers pass to a {@link StreamFn}. */
+export interface AgentStreamOptions extends SimpleStreamOptions {
+	/**
+	 * Set on requests that reuse the session's request prefix without continuing the conversation:
+	 * `"warm"` for a one-token cache warm-up (`warmAgentRequest`), `"summary"` for a summary sent on
+	 * the cached transcript. A stream function that keeps the latest session request's cache warm
+	 * must not adopt these as the request to refresh. Not a provider option; strip it before
+	 * forwarding.
+	 */
+	sideRequest?: "warm" | "summary";
+}
 
 /**
  * Configuration for how tool calls from a single assistant message are executed.
