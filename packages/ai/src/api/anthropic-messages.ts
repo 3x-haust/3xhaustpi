@@ -30,6 +30,7 @@ import type {
 	ToolResultMessage,
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
+import { appendAssistantMessageDiagnostic, extractDiagnosticError } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -71,6 +72,36 @@ function getCacheControl(
 		retention,
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
 	};
+}
+
+function usesLongCacheTtl(params: unknown): boolean {
+	return JSON.stringify(params).includes('"ttl":"1h"');
+}
+
+/** A 400 invalid_request_error that names the cache ttl, as sent by endpoints without 1h cache support. */
+export function isRejectedCacheTtlError(error: unknown): boolean {
+	return (
+		error instanceof Anthropic.APIError &&
+		error.status === 400 &&
+		error.type === "invalid_request_error" &&
+		/\bttl\b/i.test(error.message)
+	);
+}
+
+/** Endpoints that rejected the 1h ttl in this process; they go straight to the 5m ttl afterwards. */
+const rejectedLongCacheTtlEndpoints = new Set<string>();
+
+function cacheTtlEndpointKey(model: Model<"anthropic-messages">): string {
+	return `${model.provider}\u0000${model.baseUrl}`;
+}
+
+function withShortCacheRetention(options: AnthropicOptions | undefined): AnthropicOptions {
+	return { ...options, cacheRetention: "short" };
+}
+
+/** Test hook: forget remembered 1h ttl rejections. */
+export function resetRejectedCacheTtlEndpoints(): void {
+	rejectedLongCacheTtlEndpoints.clear();
 }
 
 // Stealth mode: Mimic Claude Code's tool naming exactly
@@ -547,24 +578,56 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			let params = buildAnthropicParams(model, context, isOAuth, options);
-			const nextParams = await options?.onPayload?.(params, model);
-			if (nextParams !== undefined) {
-				params = nextParams as MessageCreateParamsStreaming;
-			}
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const response = await retryProviderRequest(
-				() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
-				{
-					maxRetries: options?.maxRetries,
-					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
-				},
-			);
+			const ttlEndpoint = cacheTtlEndpointKey(model);
+			// Only long retention is downgraded; "none" (summaries) must stay uncached.
+			let paramsOptions: AnthropicOptions | undefined =
+				rejectedLongCacheTtlEndpoints.has(ttlEndpoint) &&
+				resolveCacheRetention(options?.cacheRetention, options?.env) === "long"
+					? withShortCacheRetention(options)
+					: options;
+			let response: Response;
+			for (;;) {
+				let params = buildAnthropicParams(model, context, isOAuth, paramsOptions);
+				const nextParams = await options?.onPayload?.(params, model);
+				if (nextParams !== undefined) {
+					params = nextParams as MessageCreateParamsStreaming;
+				}
+				try {
+					response = await retryProviderRequest(
+						() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
+						{
+							maxRetries: options?.maxRetries,
+							maxRetryDelayMs: options?.maxRetryDelayMs,
+							signal: options?.signal,
+						},
+					);
+					break;
+				} catch (error) {
+					// Some Anthropic-compatible endpoints reject the 1h cache ttl. Retry once with the
+					// default 5m ttl and remember the endpoint so later requests skip the failing attempt.
+					if (
+						options?.signal?.aborted ||
+						paramsOptions?.cacheRetention === "short" ||
+						!usesLongCacheTtl(params) ||
+						!isRejectedCacheTtlError(error)
+					) {
+						throw error;
+					}
+					rejectedLongCacheTtlEndpoints.add(ttlEndpoint);
+					paramsOptions = withShortCacheRetention(options);
+					appendAssistantMessageDiagnostic(output, {
+						type: "anthropic_cache_ttl_fallback",
+						timestamp: Date.now(),
+						error: extractDiagnosticError(error),
+						details: { reason: "long_cache_ttl_rejected" },
+					});
+				}
+			}
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
