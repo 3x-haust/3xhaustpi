@@ -103,16 +103,18 @@ Split turn (one huge turn exceeds budget):
 ```
 
 For split turns, pi generates two summaries concurrently and merges them:
-1. **History summary**: Previous context (if any). If there are no newly compacted history messages, reuse the previous checkpoint verbatim rather than discarding or re-summarizing it
+1. **History summary**: Previous context (if any). If there are no newly compacted history messages, reuse the previous checkpoint verbatim when its UTF-8 byte upper bound fits the history allocation; otherwise re-summarize it within that allocation
 2. **Turn prefix summary**: The early part of the split turn, including any custom compaction focus
 
 ### Summary Budgets and Failure Safety
 
-History-summary output is capped at 4096 tokens and turn-prefix output at 2048 tokens, further limited by the model output cap, one quarter of its context window, and the overflow reserve. For split turns, history receives at most 50% of `reserveTokens` and the prefix at most 30%, rather than each using the full reserve independently. With defaults, the combined output allowance is 6144 tokens instead of 21299. These are output **limits**, not measured savings or recall guarantees; reasoning tokens may consume the allowance.
+History-summary calls request at most 4096 output tokens and turn-prefix calls at most 2048, further limited by the model output cap, one quarter of its context window, the overflow reserve, and the actual remaining input budget. For split turns, the history allowance is at most 50% of `reserveTokens` and the prefix allowance at most 30%, rather than each using the full reserve independently. With defaults, their configured allowances sum to 6144 tokens instead of 21299. Additional batches/resizing calls can consume more tokens in total; this is not an operation-wide billing limit, measured savings, or a recall guarantee.
 
-Summarization accounts for the system prompt, instructions, previous checkpoint, output allowance, and 256 tokens of framing headroom. UTF-8 byte length is used as a deliberately conservative input-token upper bound, including multilingual text and opaque payloads. Oversized histories are folded in chronological batches, keeping tool calls and their results together. Each batch receives the preceding checkpoint and the same custom focus. Usage from successful batches is aggregated into the final compaction result.
+These limits apply to `SimpleStreamOptions.maxTokens` before provider adaptation. OpenAI/Codex and adaptive thinking may spend the allowance on reasoning, so high thinking levels can end at length before producing usable text. Older budget-based Anthropic adapters can add a thinking allowance to this value. Provider wire-level limits and reasoning cost are therefore not proven by the faux option tests. Compaction preserves the selected thinking level; reduce it when reasoning exhausts the summary allowance.
 
-No intermediate checkpoint is persisted. Aborted, empty, or length-truncated responses fail compaction without replacing the original history. A single message/tool exchange or previous checkpoint that cannot fit is rejected rather than silently truncated; reduce that input or switch to a larger-context model. Conservative batching can require additional requests and repeated checkpoint input, so it is a safety trade-off, not a promise of lower cost for every transcript.
+Summarization accounts for the system prompt, instructions, previous checkpoint, output allowance, and 256 tokens of framing headroom. UTF-8 byte length is used as a deliberately conservative input-token upper bound, including multilingual text and opaque payloads. Oversized histories are folded in chronological batches, keeping tool calls and their results together. Each batch receives the preceding checkpoint and the same custom focus. Because generated output is limited in tokens but the next input is budgeted in bytes, the next request can reduce its output allowance. When a large checkpoint blocks the next message, a bounded checkpoint-only condensation pass runs first. A checkpoint too large to fit by itself is folded from ordered UTF-8-safe fragments at a smaller output allowance; raw user messages/tool exchanges are never silently split or dropped. Resizing must reduce byte length, permits at most two consecutive reductions without consuming a new source batch, and disallows recursive fragment splitting. Usage from successful batches and resizing calls is aggregated into the final compaction result. All turn-prefix batches retain only the Original Request / Early Progress / Context for Suffix format, without conflicting checkpoint headings.
+
+No intermediate checkpoint is persisted. Aborted, empty, or length-truncated responses fail compaction without replacing the original history. A single message/tool exchange that cannot fit, or a checkpoint that still cannot fit after bounded resizing, is rejected rather than silently truncated; reduce that input or switch to a larger-context model. Conservative batching can require additional requests and repeated checkpoint input, so it is a safety trade-off, not a promise of lower cost for every transcript.
 
 ### Prompt Prefix Stability
 
@@ -338,7 +340,6 @@ pi.on("session_before_compact", async (event, ctx) => {
   );
   // Returns:
   // [User]: message text
-  // [Assistant thinking]: thinking content
   // [Assistant]: response text
   // [Assistant tool calls]: read(path="..."); bash(command="...")
   // [Tool result]: output text

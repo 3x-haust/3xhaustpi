@@ -202,6 +202,197 @@ describe("compaction memory and budget", () => {
 		);
 	});
 
+	it("continues batching after a valid output expands to many UTF-8 bytes", async () => {
+		const harness = await setup(16_000);
+		const longCheckpoint = "pending ".repeat(1500);
+		const messages: AgentMessage[] = Array.from({ length: 20 }, (_, index) => ({
+			role: "user",
+			content: `item-${index}: ${"work ".repeat(300)}`,
+			timestamp: index,
+		}));
+		const seen: string[] = [];
+		let calls = 0;
+		const response: FauxResponseStep = (context, options) => {
+			const prompt = getMessageText(context.messages[0]);
+			expect(
+				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+			).toBeLessThanOrEqual(16_000);
+			seen.push(prompt.slice(0, prompt.indexOf("</conversation>")));
+			return fauxAssistantMessage(calls++ === 0 ? longCheckpoint : durableMemory);
+		};
+		harness.setResponses(Array.from({ length: 30 }, () => response));
+		const result = await generateSummaryWithUsage(messages, harness.getModel(), 16_384, "faux-key");
+		expect(result.text).toBe(durableMemory);
+		for (let index = 0; index < 20; index++) {
+			expect(seen.join("\n").match(new RegExp(`item-${index}:`, "g"))).toHaveLength(1);
+		}
+		expect(calls).toBeGreaterThan(2);
+	});
+
+	it("resizes a large previous checkpoint before processing an exchange that would not fit", async () => {
+		const harness = await setup(16_000);
+		const longCheckpoint = "pending ".repeat(1500);
+		const prompts: string[] = [];
+		const limits: number[] = [];
+		const response: FauxResponseStep = (context, options) => {
+			const prompt = getMessageText(context.messages[0]);
+			prompts.push(prompt);
+			limits.push(options?.maxTokens ?? 0);
+			expect(
+				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+			).toBeLessThanOrEqual(16_000);
+			return fauxAssistantMessage(durableMemory);
+		};
+		harness.setResponses([response, response]);
+		const result = await generateSummaryWithUsage(
+			[{ role: "user", content: `NEW_INSTRUCTION ${"work ".repeat(600)}`, timestamp: 1 }],
+			harness.getModel(),
+			16_384,
+			"faux-key",
+			undefined,
+			undefined,
+			"Preserve every prohibition.",
+			longCheckpoint,
+		);
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).toContain(longCheckpoint);
+		expect(prompts[0]).not.toContain("NEW_INSTRUCTION");
+		expect(prompts[1]).toContain("NEW_INSTRUCTION");
+		expect(prompts[1]).toContain(durableMemory);
+		expect(prompts.every((prompt) => prompt.includes("Additional focus: Preserve every prohibition."))).toBe(true);
+		expect(limits[0]).toBeLessThan(4000);
+		expect(result.text).toBe(durableMemory);
+	});
+
+	it("folds checkpoint fragments when an older checkpoint exceeds the new model context", async () => {
+		const harness = await setup(16_000);
+		const previous = `CHECKPOINT_START ${"중요한 지시🙂 pending ".repeat(1500)} CHECKPOINT_END`;
+		const sources: string[] = [];
+		const fragments = new Map<number, string>();
+		const response: FauxResponseStep = (context, options) => {
+			const prompt = getMessageText(context.messages[0]);
+			expect(
+				Buffer.byteLength((context.systemPrompt ?? "") + prompt, "utf8") + (options?.maxTokens ?? 0) + 256,
+			).toBeLessThanOrEqual(16_000);
+			sources.push(prompt.slice(0, prompt.indexOf("</conversation>")));
+			const conversation = prompt.slice("<conversation>\n".length, prompt.indexOf("\n</conversation>"));
+			for (const match of conversation.matchAll(
+				/\[User\]: \[Previous checkpoint fragment (\d+)\]\n([\s\S]*?)(?=\n\n\[User\]: \[Previous checkpoint fragment \d+\]\n|$)/g,
+			)) {
+				const id = Number(match[1]);
+				expect(fragments.has(id)).toBe(false);
+				fragments.set(id, match[2]);
+			}
+			return fauxAssistantMessage(durableMemory);
+		};
+		harness.setResponses(Array.from({ length: 20 }, () => response));
+		const result = await generateSummaryWithUsage(
+			[{ role: "user", content: "NEW_WORK", timestamp: 1 }],
+			harness.getModel(),
+			16_384,
+			"faux-key",
+			undefined,
+			undefined,
+			undefined,
+			previous,
+		);
+		expect(sources.join("\n")).toContain("CHECKPOINT_START");
+		expect(sources.join("\n")).toContain("CHECKPOINT_END");
+		expect(sources.filter((source) => source.includes("Previous checkpoint fragment")).length).toBeGreaterThan(1);
+		expect(sources.at(-1)).toContain("NEW_WORK");
+		expect(
+			[...fragments]
+				.sort(([left], [right]) => left - right)
+				.map(([, text]) => text)
+				.join(""),
+		).toBe(previous);
+		expect(result.text).toBe(durableMemory);
+	});
+
+	it("stops checkpoint resizing without truncation when the provider makes no progress", async () => {
+		const harness = await setup(16_000);
+		const previous = "pending ".repeat(1500);
+		harness.setResponses([fauxAssistantMessage(previous)]);
+		await expect(
+			generateSummaryWithUsage(
+				[{ role: "user", content: "new work ".repeat(400), timestamp: 1 }],
+				harness.getModel(),
+				16_384,
+				"faux-key",
+				undefined,
+				undefined,
+				undefined,
+				previous,
+			),
+		).rejects.toThrow("checkpoint resizing made no progress");
+		expect(harness.faux.state.callCount).toBe(1);
+	});
+
+	it("re-summarizes an oversized reused history within the split allocation", async () => {
+		const harness = await setup();
+		const longCheckpoint = "pending ".repeat(800);
+		const limits: number[] = [];
+		const response: FauxResponseStep = (context, options) => {
+			limits.push(options?.maxTokens ?? 0);
+			return fauxAssistantMessage(
+				getMessageText(context.messages[0]).includes(longCheckpoint)
+					? durableMemory
+					: "## Original Request\nContinue the migration.",
+			);
+		};
+		harness.setResponses([response, response]);
+		const result = await compact(
+			preparation({
+				messagesToSummarize: [],
+				previousSummary: longCheckpoint,
+				isSplitTurn: true,
+				turnPrefixMessages: [{ role: "user", content: "Continue the migration.", timestamp: 1 }],
+				settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 100 },
+			}),
+			harness.getModel(),
+			"faux-key",
+		);
+		expect(limits).toEqual([1000, 600]);
+		expect(result.summary).toContain(durableMemory);
+		expect(result.summary).not.toContain(longCheckpoint);
+	});
+
+	it("uses only the turn-prefix format in every prefix batch", async () => {
+		const harness = await setup(16_000);
+		const prompts: string[] = [];
+		const response: FauxResponseStep = (context) => {
+			prompts.push(getMessageText(context.messages[0]));
+			return fauxAssistantMessage(
+				"## Original Request\nMigration\n## Early Progress\nPending\n## Context for Suffix\nNo push.",
+			);
+		};
+		harness.setResponses(Array.from({ length: 40 }, () => response));
+		await compact(
+			preparation({
+				messagesToSummarize: [],
+				isSplitTurn: true,
+				turnPrefixMessages: Array.from({ length: 40 }, (_, index) => ({
+					role: "user",
+					content: `instruction-${index} ${"pending ".repeat(100)}`,
+					timestamp: index,
+				})),
+			}),
+			harness.getModel(),
+			"faux-key",
+		);
+		expect(prompts.length).toBeGreaterThan(1);
+		for (const prompt of prompts) {
+			const instructions = prompt.slice(
+				prompt.indexOf("</previous-summary>") >= 0
+					? prompt.indexOf("</previous-summary>") + "</previous-summary>".length
+					: prompt.indexOf("</conversation>"),
+			);
+			expect(instructions).toContain("## Original Request");
+			expect(instructions).toContain("## Context for Suffix");
+			expect(instructions).not.toContain("## Goal");
+		}
+	});
+
 	it("keeps tool exchanges together when a long history needs several requests", async () => {
 		const harness = await setup(16_000);
 		const messages: AgentMessage[] = [];
@@ -290,6 +481,12 @@ describe("compaction memory and budget", () => {
 		await expect(harness.session.compact()).rejects.toThrow(/truncated|aborted|empty/);
 		expect(harness.sessionManager.getEntries()).toHaveLength(entriesBefore);
 		expect(harness.session.messages).toEqual(before);
+		if (stopReason === "aborted") {
+			expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
+				aborted: true,
+				errorMessage: undefined,
+			});
+		}
 	});
 
 	it("classifies an aborted automatic summary as cancellation without losing history", async () => {

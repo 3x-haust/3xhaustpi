@@ -686,6 +686,33 @@ export async function generateSummaryWithUsage(
 	);
 }
 
+function checkpointFragments(checkpoint: string, maxBytes: number): AgentMessage[] {
+	const fragments: string[] = [];
+	let fragment = "";
+	let bytes = 0;
+	for (const character of checkpoint) {
+		const size = Buffer.byteLength(character, "utf8");
+		if (bytes + size > maxBytes && fragment) {
+			fragments.push(fragment);
+			fragment = "";
+			bytes = 0;
+		}
+		fragment += character;
+		bytes += size;
+	}
+	if (fragment) fragments.push(fragment);
+	return fragments.map((text, index) => ({
+		role: "user",
+		content: `[Previous checkpoint fragment ${index}]\n${text}`,
+		timestamp: Date.now(),
+	}));
+}
+
+function summaryPrompt(conversation: string, previous: string | undefined, instructions: string): string {
+	const checkpoint = previous ? `<previous-summary>\n${previous}\n</previous-summary>\n\n` : "";
+	return `<conversation>\n${conversation}\n</conversation>\n\n${checkpoint}${instructions}`;
+}
+
 /**
  * Fold oversized histories at message boundaries instead of silently dropping old instructions.
  * UTF-8 bytes are an intentionally conservative token upper bound (including CJK/base64).
@@ -703,6 +730,7 @@ async function summarizeInBatches(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	onResponse?: SummarizationResponseCallback,
+	allowCheckpointSplit = true,
 ): Promise<{ text: string; usage: Usage }> {
 	const serialized: string[] = [];
 	for (const message of convertToLlm(messages)) {
@@ -718,32 +746,71 @@ async function summarizeInBatches(
 	let index = 0;
 	let summary = previousSummary;
 	let usage: Usage | undefined;
-	// Leave framing headroom in addition to the explicit output allowance.
-	const inputBudget = model.contextWindow - (options.maxTokens ?? 0) - 256;
+	let consecutiveResizes = 0;
+	// Leave framing headroom; output and UTF-8 input are different units, so adapt each request.
+	const contextBudget = model.contextWindow - 256;
 	do {
 		if (options.signal?.aborted) throw new DOMException(`${label} aborted`, "AbortError");
-		const instructions = `${summary ? updatePrompt : initialPrompt}\n\nKeep the checkpoint compact; target at most ${options.maxTokens} output tokens. Prefer active constraints and unfinished work over historical detail.`;
-		const previous = summary ? `<previous-summary>\n${summary}\n</previous-summary>\n\n` : "";
-		const framing = `<conversation>\n\n</conversation>\n\n${previous}${instructions}`;
-		let bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + framing, "utf8");
-		const batch: string[] = [];
-		while (index < serialized.length) {
-			const nextBytes = Buffer.byteLength(serialized[index], "utf8") + (batch.length > 0 ? 2 : 0);
-			if (bytes + nextBytes > inputBudget) break;
-			batch.push(serialized[index++]);
-			bytes += nextBytes;
+		let instructions = `${summary ? updatePrompt : initialPrompt}\n\nKeep the checkpoint compact. Prefer active constraints and unfinished work over historical detail.`;
+		let bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + summaryPrompt("", summary, instructions), "utf8");
+		const nextBytes = index < serialized.length ? Buffer.byteLength(serialized[index], "utf8") : 0;
+		let maxTokens = Math.min(options.maxTokens ?? 1, contextBudget - bytes - nextBytes);
+		const resizeOnly = maxTokens < 1 && summary !== undefined && index < serialized.length;
+		if (resizeOnly) {
+			if (consecutiveResizes >= 2)
+				throw new Error(`${label} failed: checkpoint resizing made insufficient progress`);
+			instructions +=
+				"\n\nCondense the previous checkpoint substantially before incorporating more messages. Deduplicate historical detail, but retain all active instructions, prohibitions, decisions, and unfinished work. Keep the same section format.";
+			bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + summaryPrompt("", summary, instructions), "utf8");
+			maxTokens = Math.min(options.maxTokens ?? 1, contextBudget - bytes);
 		}
-		if (bytes > inputBudget || (batch.length === 0 && index < serialized.length)) {
+		if (maxTokens < 1) {
+			if (summary && allowCheckpointSplit && consecutiveResizes < 2) {
+				const sourceNote =
+					"\n\nThe conversation contains ordered fragments of an existing checkpoint, not new user requests. Condense them without dropping active constraints, decisions, blockers, or unfinished work.";
+				const resized = await summarizeInBatches(
+					checkpointFragments(summary, Math.max(1, Math.floor(model.contextWindow / 4))),
+					model,
+					{
+						...options,
+						maxTokens: Math.max(1, Math.min(options.maxTokens ?? 1, 1024, Math.floor(model.contextWindow / 16))),
+					},
+					initialPrompt + sourceNote,
+					updatePrompt + sourceNote,
+					undefined,
+					label,
+					streamFn,
+					retry,
+					callbacks,
+					onResponse,
+					false,
+				);
+				if (Buffer.byteLength(resized.text, "utf8") >= Buffer.byteLength(summary, "utf8")) {
+					throw new Error(`${label} failed: checkpoint resizing made no progress`);
+				}
+				summary = resized.text;
+				usage = usage ? combineUsage(usage, resized.usage) : resized.usage;
+				consecutiveResizes++;
+				continue;
+			}
 			throw new Error(`${label} failed: a message or previous summary exceeds the summarization context budget`);
 		}
-		const promptText = `<conversation>\n${batch.join("\n\n")}\n</conversation>\n\n${previous}${instructions}`;
+		const inputBudget = contextBudget - maxTokens;
+		const batch: string[] = [];
+		while (!resizeOnly && index < serialized.length) {
+			const messageBytes = Buffer.byteLength(serialized[index], "utf8") + (batch.length > 0 ? 2 : 0);
+			if (bytes + messageBytes > inputBudget) break;
+			batch.push(serialized[index++]);
+			bytes += messageBytes;
+		}
+		const promptText = summaryPrompt(batch.join("\n\n"), summary, instructions);
 		const response = await completeSummarization(
 			model,
 			{
 				systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
 			},
-			options,
+			{ ...options, maxTokens },
 			streamFn,
 			retry,
 			callbacks,
@@ -758,6 +825,14 @@ async function summarizeInBatches(
 		if (response.stopReason === "length") throw new Error(`${label} failed: summary was truncated`);
 		const text = contentText(response.content);
 		if (!text.trim()) throw new Error(`${label} failed: summary was empty`);
+		if (resizeOnly) {
+			if (Buffer.byteLength(text, "utf8") >= Buffer.byteLength(summary!, "utf8")) {
+				throw new Error(`${label} failed: checkpoint resizing made no progress`);
+			}
+			consecutiveResizes++;
+		} else {
+			consecutiveResizes = 0;
+		}
 		summary = text;
 		usage = usage ? combineUsage(usage, response.usage) : response.usage;
 	} while (index < serialized.length);
@@ -935,12 +1010,17 @@ export async function compact(
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
 		// Allocate 50% of the reserve to history (0.625 * 0.8), 30% to the prefix (0.6 * 0.5).
+		const historyReserve = Math.floor(settings.reserveTokens * 0.625);
+		// Reuse is safe only when the checkpoint fits its allocation even under the byte upper bound.
+		const resizeHistory =
+			previousSummary !== undefined &&
+			Buffer.byteLength(previousSummary, "utf8") > summaryOutputBudget(model, historyReserve);
 		const historyPromise =
-			messagesToSummarize.length > 0
+			messagesToSummarize.length > 0 || resizeHistory
 				? generateSummaryWithUsage(
 						messagesToSummarize,
 						model,
-						Math.floor(settings.reserveTokens * 0.625),
+						historyReserve,
 						apiKey,
 						headers,
 						signal,
@@ -972,7 +1052,7 @@ export async function compact(
 				customInstructions,
 			),
 		]);
-		// With no newly compacted history, reuse the previous checkpoint verbatim.
+		// With no newly compacted history, reuse a fitting checkpoint verbatim.
 		const historyText = historyResult?.text ?? previousSummary ?? "No prior history.";
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -1041,7 +1121,7 @@ async function generateTurnPrefixSummary(
 		model,
 		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
 		TURN_PREFIX_SUMMARIZATION_PROMPT + focus,
-		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\n${UPDATE_SUMMARIZATION_PROMPT}${focus}`,
+		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nMerge new prefix messages into <previous-summary> using only the Original Request, Early Progress, and Context for Suffix sections above. Carry forward all active instructions, prohibitions, decisions, blockers, exact operational evidence, and unfinished work even when not repeated. Remove them only when explicitly superseded or resolved; silence is not resolution. Deduplicate completed historical detail.${focus}`,
 		undefined,
 		"Turn prefix summarization",
 		streamFn,

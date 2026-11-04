@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Fixed large generated checkpoints blocking subsequent summary batches, oversized reused checkpoints bypassing split-turn allocations, and conflicting formats in multi-batch turn-prefix summaries.
 - Fixed split-turn compaction dropping the previous checkpoint when no new history messages need summarizing; active instructions, decisions, and unfinished work are now prioritized on repeated updates.
 - Fixed repeated compaction duplicating generated file-list footers and accepting empty, aborted, or truncated summaries in place of intact history.
 - Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
