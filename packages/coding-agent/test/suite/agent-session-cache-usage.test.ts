@@ -172,6 +172,99 @@ describe("request cache usage and session totals", () => {
 		expect(harness.session.getSessionStats().contextUsage?.tokens).toBeNull();
 	});
 
+	it("persists individual successful split-summary requests without adding their aggregate twice", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			settings: { compaction: { enabled: false, keepRecentTokens: 1 } },
+		});
+		harnesses.push(harness);
+		const requests = [usage(1, 10, 100), usage(2, 20, 200), usage(3, 30, 300), usage(4, 40, 400)];
+		harness.setResponses(requests.map((item) => fauxAssistantMessage("response", { usage: item })));
+		await harness.session.prompt("first turn");
+		await harness.session.prompt("second turn");
+		const result = await harness.session.compact();
+		expect(harness.faux.state.callCount).toBe(4);
+		expect(result.details).toMatchObject({
+			usageRequests: expect.arrayContaining(
+				requests
+					.slice(2)
+					.map((item) =>
+						expect.objectContaining({
+							usage: item,
+							source: "compaction",
+							provider: harness.getModel().provider,
+							model: harness.getModel().id,
+							stopReason: "stop",
+						}),
+					),
+			),
+		});
+		const saved = harness.sessionManager.getEntries().find((entry) => entry.type === "compaction");
+		expect(saved?.type === "compaction" ? saved.details : undefined).toEqual(result.details);
+		expectTotals(harness.session.getSessionStats(), requests);
+		reload(harness);
+		expectTotals(harness.session.getSessionStats(), requests);
+		const reloaded = harness.sessionManager.getEntries().find((entry) => entry.type === "compaction");
+		expect(reloaded?.type === "compaction" ? reloaded.details : undefined).toMatchObject({
+			usageRequests: expect.arrayContaining([
+				expect.objectContaining({ usage: requests[2] }),
+				expect.objectContaining({ usage: requests[3] }),
+			]),
+		});
+	});
+
+	it("includes failed auto-compaction attempts and the successful summary once at completion", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 200 }],
+			settings: {
+				compaction: { enabled: true, reserveTokens: 300, keepRecentTokens: 1 },
+				retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+			},
+		});
+		harnesses.push(harness);
+		const attempts = [usage(600, 200, 0), usage(20, 30, 40), usage(10, 0, 50)];
+		harness.setResponses([
+			fauxAssistantMessage("response", { usage: attempts[0] }),
+			fauxAssistantMessage("", { usage: attempts[1], stopReason: "error", errorMessage: "terminated" }),
+			fauxAssistantMessage("summary", { usage: attempts[2] }),
+		]);
+		harness.session.subscribe((event) => {
+			if (event.type === "compaction_end") expectTotals(harness.session.getSessionStats(), attempts);
+		});
+		await harness.session.prompt("automatic compaction");
+		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ reason: "threshold", aborted: false });
+		expectTotals(harness.session.getSessionStats(), attempts);
+		reload(harness);
+		expectTotals(harness.session.getSessionStats(), attempts);
+	});
+
+	it("records a successful summary response discarded by cancellation after retry completion", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			settings: {
+				compaction: { enabled: false, keepRecentTokens: 1 },
+				retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+			},
+		});
+		harnesses.push(harness);
+		const attempts = [usage(1, 10, 100), usage(2, 20, 200), usage(3, 30, 300)];
+		harness.setResponses([
+			fauxAssistantMessage("response", { usage: attempts[0] }),
+			fauxAssistantMessage("", { usage: attempts[1], stopReason: "error", errorMessage: "terminated" }),
+			fauxAssistantMessage("discarded summary", { usage: attempts[2] }),
+		]);
+		await harness.session.prompt("compact this");
+		harness.session.subscribe((event) => {
+			if (event.type === "summarization_retry_finished") harness.session.abortCompaction();
+			if (event.type === "compaction_end") expectTotals(harness.session.getSessionStats(), attempts);
+		});
+		await expect(harness.session.compact()).rejects.toThrow("Compaction cancelled");
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+		reload(harness);
+		expectTotals(harness.session.getSessionStats(), attempts);
+	});
+
 	it("includes abandoned branches in the original session but only copied history in a branch fork", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);

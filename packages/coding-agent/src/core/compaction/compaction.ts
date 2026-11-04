@@ -560,6 +560,9 @@ function createSummarizationOptions(
 	return options;
 }
 
+/** Observes each actual provider response, not synthetic aborts during retry backoff. */
+export type SummarizationResponseCallback = (response: AssistantMessage) => void;
+
 /**
  * Shared choke point for every compaction/branch-summary summarization call. Wraps the
  * single LLM call in {@link retryAssistantCall} so transient stream drops (e.g.
@@ -574,6 +577,7 @@ export async function completeSummarization(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<AssistantMessage> {
 	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
 	const requestOptions: SimpleStreamOptions = {
@@ -581,10 +585,13 @@ export async function completeSummarization(
 		cacheRetention: "none",
 		sessionId: uuidv7(),
 	};
-	const produce = async (): Promise<AssistantMessage> =>
-		streamFn
+	const produce = async (): Promise<AssistantMessage> => {
+		const response = await (streamFn
 			? (await streamFn(model, context, requestOptions)).result()
-			: completeSimple(model, context, requestOptions);
+			: completeSimple(model, context, requestOptions));
+		onResponse?.(response);
+		return response;
+	};
 	return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
 }
 
@@ -606,6 +613,7 @@ export async function generateSummary(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -622,6 +630,7 @@ export async function generateSummary(
 			env,
 			retry,
 			callbacks,
+			onResponse,
 		)
 	).text;
 }
@@ -641,6 +650,7 @@ export async function generateSummaryWithUsage(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -682,8 +692,12 @@ export async function generateSummaryWithUsage(
 		streamFn,
 		retry,
 		callbacks,
+		onResponse,
 	);
 
+	if (response.stopReason === "aborted") {
+		throw new Error("Compaction cancelled");
+	}
 	if (response.stopReason === "error") {
 		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
 	}
@@ -834,6 +848,7 @@ export async function compact(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -867,6 +882,7 @@ export async function compact(
 						env,
 						retry,
 						callbacks,
+						onResponse,
 					)
 				: Promise.resolve(undefined);
 		const [historyResult, turnPrefixResult] = await Promise.all([
@@ -883,6 +899,7 @@ export async function compact(
 				streamFn,
 				retry,
 				callbacks,
+				onResponse,
 			),
 		]);
 		const historyText = historyResult?.text ?? "No prior history.";
@@ -905,6 +922,7 @@ export async function compact(
 			env,
 			retry,
 			callbacks,
+			onResponse,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -942,6 +960,7 @@ async function generateTurnPrefixSummary(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	onResponse?: SummarizationResponseCallback,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -965,8 +984,12 @@ async function generateTurnPrefixSummary(
 		streamFn,
 		retry,
 		callbacks,
+		onResponse,
 	);
 
+	if (response.stopReason === "aborted") {
+		throw new Error("Compaction cancelled");
+	}
 	if (response.stopReason === "error") {
 		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
 	}

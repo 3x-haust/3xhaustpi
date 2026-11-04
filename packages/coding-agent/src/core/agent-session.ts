@@ -102,11 +102,12 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import { createSummarizationUsageTracker } from "./summarization-usage.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, getEntryUsage } from "./usage-totals.ts";
 
 // ============================================================================
 // Skill Block Parsing
@@ -1785,8 +1786,10 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		this._disconnectFromAgent();
+		// Keep persistence connected until the interrupted assistant response settles.
 		await this.abort();
+		this._disconnectFromAgent();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 
@@ -1861,12 +1864,16 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
+					usageTracker.onResponse,
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
 				usage = result.usage;
-				details = result.details;
+				details = {
+					...(result.details && typeof result.details === "object" ? result.details : {}),
+					usageRequests: usageTracker.getSuccessfulResponses(),
+				};
 			}
 
 			if (this._compactionAbortController.signal.aborted) {
@@ -1874,6 +1881,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -1911,6 +1919,7 @@ export class AgentSession {
 			});
 			return compactionResult;
 		} catch (error) {
+			usageTracker.finish();
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 			this._emit({
@@ -1923,6 +1932,7 @@ export class AgentSession {
 			});
 			throw error;
 		} finally {
+			usageTracker.finish();
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
 		}
@@ -2050,6 +2060,7 @@ export class AgentSession {
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
 		let started = false;
 
 		try {
@@ -2135,15 +2146,20 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
+					usageTracker.onResponse,
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
-				details = compactResult.details;
+				details = {
+					...(compactResult.details && typeof compactResult.details === "object" ? compactResult.details : {}),
+					usageRequests: usageTracker.getSuccessfulResponses(),
+				};
 			}
 
 			if (this._autoCompactionAbortController.signal.aborted) {
+				usageTracker.finish();
 				this._emit({
 					type: "compaction_end",
 					reason,
@@ -2155,6 +2171,7 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2198,6 +2215,7 @@ export class AgentSession {
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
+			usageTracker.finish();
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			if (started) {
 				this._emit({
@@ -2214,6 +2232,7 @@ export class AgentSession {
 			}
 			return false;
 		} finally {
+			usageTracker.finish();
 			this._autoCompactionAbortController = undefined;
 		}
 	}
@@ -2946,6 +2965,7 @@ export class AgentSession {
 
 		// Set up abort controller for summarization
 		this._branchSummaryAbortController = new AbortController();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "branchSummary");
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown; usage?: Usage } | undefined;
@@ -3000,6 +3020,7 @@ export class AgentSession {
 					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
+					onResponse: usageTracker.onResponse,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };
@@ -3012,6 +3033,7 @@ export class AgentSession {
 				summaryDetails = {
 					readFiles: result.readFiles || [],
 					modifiedFiles: result.modifiedFiles || [],
+					usageRequests: usageTracker.getSuccessfulResponses(),
 				};
 			} else if (extensionSummary) {
 				summaryText = extensionSummary.summary;
@@ -3048,6 +3070,7 @@ export class AgentSession {
 					fromExtension,
 					summaryUsage,
 				);
+				usageTracker.commit();
 				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 
 				// Attach label to the summary entry
@@ -3084,6 +3107,7 @@ export class AgentSession {
 
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
+			usageTracker.finish();
 			this._branchSummaryAbortController = undefined;
 		}
 	}
@@ -3122,9 +3146,8 @@ export class AgentSession {
 		const usageTotals = createUsageTotals();
 
 		for (const entry of this.sessionManager.getEntries()) {
-			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
-				addUsageToTotals(usageTotals, entry.usage);
-			}
+			const usage = getEntryUsage(entry);
+			if (usage) addUsageToTotals(usageTotals, usage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;
@@ -3132,16 +3155,12 @@ export class AgentSession {
 				userMessages++;
 			} else if (message.role === "toolResult") {
 				toolResults++;
-				if (message.usage) {
-					addUsageToTotals(usageTotals, message.usage);
-				}
 			} else if (message.role === "assistant") {
 				assistantMessages++;
 				const assistantMsg = message as AssistantMessage;
 				if (Array.isArray(assistantMsg.content)) {
 					toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
 				}
-				addUsageToTotals(usageTotals, assistantMsg.usage);
 			}
 		}
 
