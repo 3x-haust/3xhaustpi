@@ -29,10 +29,12 @@ Both use the same structured summary format and track file operations cumulative
 Auto-compaction triggers when:
 
 ```
-contextTokens > contextWindow - reserveTokens
+contextTokens > min(contextWindow - reserveTokens, maxContextTokens)
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
+By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response. `maxContextTokens` (default 300000, `0` disables it) caps the threshold on large windows, so a 1M-token model does not resend close to 1M tokens on every request before compacting.
+
+When a request has no reported usage yet, its tokens are estimated from characters, with Hangul, CJK, and other multi-byte characters weighted so that non-English text is not undercounted.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
@@ -258,6 +260,10 @@ Both compaction and branch summarization use the same structured format:
 ## Critical Context
 - [Data needed to continue]
 
+## User Requests (verbatim)
+- "First user request, quoted exactly"
+- "A later correction"
+
 <read-files>
 path/to/file1.ts
 path/to/file2.ts
@@ -267,6 +273,8 @@ path/to/file2.ts
 path/to/changed.ts
 </modified-files>
 ```
+
+The model is asked to keep the summary under 800 words. The `User Requests (verbatim)` section is written by code, not by the model: it quotes every summarized user message (each clipped to 1500 characters), carries the quotes of earlier compactions forward, and keeps the first request plus the most recent ones within 12000 characters.
 
 ### Message Serialization
 
@@ -401,7 +409,8 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "keepRecentTokens": 20000,
+    "maxContextTokens": 300000
   }
 }
 ```
@@ -411,5 +420,6 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `maxContextTokens` | `300000` | Compact at this context size even when the window is larger; `0` disables the cap |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
