@@ -547,7 +547,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			let params = buildParams(model, context, isOAuth, options);
+			let params = buildAnthropicParams(model, context, isOAuth, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
@@ -936,7 +936,8 @@ function createClient(
 	return { client, isOAuthToken: false };
 }
 
-function buildParams(
+/** Pure request construction, also usable for offline payload validation without credentials. */
+export function buildAnthropicParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
 	isOAuthToken: boolean,

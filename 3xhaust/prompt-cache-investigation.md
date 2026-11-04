@@ -3,7 +3,7 @@
 ## 결론과 증거 범위
 
 - 사용자 제공 관측은 전체 히트율 74%, 세션 첫 요청 약 1만 토큰 uncached, 간헐적인 입력 전체 미스다. 운영 요청 원문이나 서버 로그는 열람하지 않았다. 이 비율을 재측정하거나 특정 운영 미스의 원인을 확정하지 않는다.
-- 로컬에서 확인한 수정 대상은 **Anthropic 대화 캐시의 단일 이동 경계**다. 큰 병렬 도구 묶음 뒤 직전 경계가 서버의 제한된 블록 탐색 범위 밖으로 밀릴 수 있었다. 직전 사용자 경계를 명시적으로 남기고, OAuth 시스템 경계를 통합하여 총 네 개 이내로 유지했다. 이는 Anthropic 경로의 개선이며 **Codex 미스의 해결 증거가 아니다**.
+- 로컬에서 확인한 수정 대상은 **Anthropic 대화 캐시의 단일 이동 경계**다. 큰 병렬 도구 묶음 뒤 직전 경계가 서버의 제한된 블록 탐색 범위 밖으로 밀릴 수 있었다. 직전 사용자 경계를 명시 표시 또는 인접 경계의 lookback 안에 남기고, OAuth 시스템 경계를 통합하여 총 네 개 이내로 유지했다. 이는 Anthropic 경로의 개선이며 **Codex 미스의 해결 증거가 아니다**.
 - 코딩 에이전트 기본 시스템 프롬프트에는 요청마다 달라지는 날짜·시간·세션 ID를 삽입하지 않는다. 동일 리소스와 도구 순서에서는 날짜 변경, 프롬프트 재구성, compaction 전후에도 시스템/도구 JSON 바이트가 동일함을 faux provider로 확인했다.
 - Codex의 세션 기반 키는 라우팅 친화도를 분산시킬 수 있지만, **세션 간 캐시 공유가 원천 불가능하다는 증거는 아니다**. 같은 키도 히트 보장이 아니다. 실패했던 공통 키 실험을 기본값으로 다시 적용하지 않았다.
 - 실제 API 호출, 인증 파일 접근, 실제 키 사용은 없었다. 서버 적중률·지연·비용 절감은 미측정이다. 캐시 통계/usage 계약 및 메모리 정리 코드는 변경하지 않았다.
@@ -47,10 +47,12 @@
 수정:
 
 - OAuth identity는 그대로 전송하고 **전체 시스템 끝**에만 표시한다. identity도 이 접두부 안에 포함된다.
-- 최신 캐시 가능한 대화 블록과 그 앞 user 경계를 표시한다. 큰 병렬 도구 배치 뒤에도 직전 명시 경계가 남는다.
-- assistant text/tool-use continuation을 지원하고 thinking/redacted-thinking에는 표시하지 않는다.
+- 최신 캐시 가능한 대화 블록과 이전 경계 하나를 표시한다. 이전 메시지 끝(assistant 포함)에서 앞 user 경계가 20블록 탐색 범위 안에 있으면 그 메시지 끝을 택하여 양쪽 경계를 보호한다. 범위 밖이면 앞 user 경계를 명시 표시하여 큰 병렬 도구 배치 회귀를 피한다.
+- assistant text/tool-use continuation을 지원하고 thinking/redacted-thinking에는 표시하지 않는다. 탐색 거리를 계산할 때는 thinking 등 표시할 수 없는 블록도 센다.
 - string user를 항상 text-block 배열로 표현하여, 표식 외의 과거 메시지 표현을 일정하게 유지한다.
 - 최대 `도구 1 + 시스템 1 + 대화 2 = 4`. 호환성의 도구 표시 제외, long/short/none 선택은 유지한다.
+
+후속 검토에서 초기 수정은 이전 assistant 경계를 무조건 건너뛰는 공백이 발견되어 위 선택 규칙과 요청 간 전이 테스트를 추가했다. 단, **최근 user 묶음과 그 앞 assistant 묶음이 모두 탐색 범위를 넘으면**, 도구/시스템 경계를 유지한 채 남은 대화 표시 두 개만으로 모든 과거 경계를 보호할 수 없다. 이 경우 이전 user 보호를 우선하며, 훨씬 뒤의 assistant 경계가 직전 요청에 캐시되었더라도 재사용을 놓칠 수 있다. 정확한 직전 요청 경계를 추적하려면 별도 세션 상태가 필요하다. 통계/메모리 동시 작업과의 충돌을 피하려고 전역 map이나 새 세션 캐시는 추가하지 않았다.
 
 이는 모든 대화 블록을 캐시하거나 자동 탐색 제한 자체를 없애는 수정은 아니다. 모델별 최소 길이, 같은 접두부, 계정/조직 격리, TTL과 서버 가용성 조건은 여전히 적용된다. 추가 경계가 캐시 쓰기 위치와 비용 분포를 바꿀 수 있으므로 실제 비용은 provider usage로 별도 확인해야 한다.
 
@@ -79,9 +81,10 @@
 
 테스트는 provider 네트워크 호출 없이 순수 payload fixture와 faux provider만 사용했다.
 
-- `packages/ai/test/anthropic-prompt-cache.test.ts`: OAuth 포함 네 개 제한, 24개 병렬 도구 호출/결과 후 이전 경계 유지, assistant/thinking/image/tool-result, none 및 빈 이력.
+- `packages/ai/test/anthropic-prompt-cache.test.ts`: OAuth 포함 네 개 제한, 24개 병렬 도구 호출/결과 후 사용자 경계 유지, assistant continuation→24블록 user 전이, 19/20블록 경계(thinking 포함), 실제 중첩 tool-result 비수정, image/none/빈 이력.
+- `packages/ai/test/anthropic-cache-payload.test.ts`: stream이 사용하는 순수 `buildAnthropicParams`를 직접 호출하여 두 인증 모드 × none/short/long의 실제 identity 문자열/순서, 총 경계 수, TTL, env fallback, 호환성 설정, 입력 Context 비수정을 검증한다. faux transcript와 인증 모드 boolean만 전달하며 클라이언트 생성·인증·네트워크는 실행하지 않는다.
 - `packages/coding-agent/test/suite/agent-session-prompt-cache.test.ts`: 동일 선택 순서, 날짜 변경과 시스템 재구성, compaction 후 시스템/도구 바이트 동일 및 대화 prefix 교체.
-- `packages/ai/test/faux-provider.test.ts`: 기존 가상 제공자 회귀. AI 두 파일 32개 테스트 통과.
+- `packages/ai/test/faux-provider.test.ts`: 기존 가상 제공자 회귀. 보완 후 AI 세 파일 49개 테스트 통과.
 - coding-agent의 새 테스트와 기존 compaction/runtime/system-prompt 네 파일 37개 테스트 통과(fork 회귀 포함).
 - 전체 `npm run check`: lint, 의존성 고정/lock 검증, 타입 검사 및 브라우저 스모크 통과. 최초에는 워크트리에 없는 semantic-contract 선언 산출물 때문에 실패하여 원본의 해당 `dist`를 copy-on-write 복제한 뒤 재실행했다. 소스/설정/의존성을 낮추거나 바꾸지 않았다. npm 자체의 기존 알 수 없는 설정 경고는 출력되었지만 lint/타입 검사 오류·경고는 없었다.
 

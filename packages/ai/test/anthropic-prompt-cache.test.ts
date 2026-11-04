@@ -104,8 +104,9 @@ describe("Anthropic prompt cache breakpoints (pure payload fixtures, no provider
 	});
 
 	it("supports image boundaries without annotating nested tool-result content", () => {
+		const nested = [{ type: "text" as const, text: "result" }];
 		const params = request([
-			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: "result" }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: nested }] },
 			{
 				role: "user",
 				content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "fixture" } }],
@@ -114,9 +115,63 @@ describe("Anthropic prompt cache breakpoints (pure payload fixtures, no provider
 		applyAnthropicPromptCache(params, cacheControl);
 
 		expect(markedBlocks(params).map((block) => block.type)).toEqual(["tool_result", "image"]);
+		expect(nested).toEqual([{ type: "text", text: "result" }]);
 	});
 
-	it("marks only the two newest boundaries in a longer conversation", () => {
+	it("retains an assistant continuation boundary when the next user adds over 20 blocks", () => {
+		const messages: MessageParam[] = [
+			{ role: "user", content: [{ type: "text", text: "first" }] },
+			{ role: "assistant", content: [{ type: "text", text: "partial" }] },
+		];
+		const previous = request(structuredClone(messages));
+		applyAnthropicPromptCache(previous, cacheControl);
+		const next = request([
+			...structuredClone(messages),
+			{ role: "user", content: Array.from({ length: 24 }, () => ({ type: "text", text: "new" })) },
+		]);
+		applyAnthropicPromptCache(next, cacheControl);
+
+		expect(JSON.stringify(next.messages[1])).toBe(JSON.stringify(previous.messages[1]));
+		expect(markedBlocks(next)).toHaveLength(2);
+		expect(markedBlocks(next)[0]).toMatchObject({ type: "text", text: "partial" });
+	});
+
+	it.each([19, 20])("preserves user lookup at a gap of %i blocks, counting thinking", (gap) => {
+		const params = request([
+			{ role: "user", content: [{ type: "text", text: "first" }] },
+			{
+				role: "assistant",
+				content: [
+					...Array.from(
+						{ length: gap - 1 },
+						(): ContentBlockParam => ({
+							type: "thinking",
+							thinking: "reason",
+							signature: "fixture",
+						}),
+					),
+					{ type: "text", text: "partial" },
+				],
+			},
+			{ role: "user", content: Array.from({ length: 24 }, () => ({ type: "text", text: "new" })) },
+		]);
+		applyAnthropicPromptCache(params, cacheControl);
+
+		expect(markedBlocks(params)[0]).toMatchObject({ type: "text", text: gap < 20 ? "partial" : "first" });
+		expect(markedBlocks(params)).toHaveLength(2);
+	});
+
+	it("retains a preceding assistant boundary when there is no earlier user", () => {
+		const params = request([
+			{ role: "assistant", content: "earlier partial" },
+			{ role: "assistant", content: "latest partial" },
+		]);
+		applyAnthropicPromptCache(params, cacheControl);
+
+		expect(markedBlocks(params)).toHaveLength(2);
+	});
+
+	it("uses the preceding assistant boundary when its lookback also covers the user", () => {
 		const params = request([
 			{ role: "user", content: "one" },
 			{ role: "assistant", content: "reply" },
@@ -127,7 +182,7 @@ describe("Anthropic prompt cache breakpoints (pure payload fixtures, no provider
 		applyAnthropicPromptCache(params, cacheControl);
 
 		expect(markedBlocks(params)).toEqual([
-			{ type: "text", text: "two", cache_control: cacheControl },
+			{ type: "text", text: "reply", cache_control: cacheControl },
 			{ type: "text", text: "three", cache_control: cacheControl },
 		]);
 	});

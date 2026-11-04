@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Fixed Anthropic prompt-cache breakpoints to retain the preceding user boundary across large tool batches and cache assistant continuations, while keeping OAuth requests within the four-breakpoint limit.
+- Fixed Anthropic prompt-cache breakpoints to preserve preceding user lookup across large tool batches and retain nearby assistant continuation boundaries, while keeping OAuth requests within the four-breakpoint limit.
 - Fixed OpenAI Codex Responses requests to send explicit `maxTokens` values as `max_output_tokens`.
 - Fixed Cloudflare AI Gateway builds and Workers AI passthrough models when refreshed gateway metadata omits those models.
 
