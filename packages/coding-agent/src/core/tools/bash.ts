@@ -313,6 +313,40 @@ function rebuildBashResultRenderComponent(
 	}
 }
 
+/**
+ * Truncated output keeps its first lines as well as its last ones. The command's own header,
+ * the first compiler error and the test runner's banner are often at the start, while the
+ * summary and the final error are at the end.
+ */
+const HEAD_MAX_LINES = 100;
+const HEAD_MAX_BYTES = 8 * 1024;
+
+/** Join the head and a tail shortened so both fit the usual output budget. */
+export function formatHeadAndTail(
+	head: { text: string; lines: number },
+	tail: string,
+	tailStart: number,
+	totalLines: number,
+): { text: string; tailStart: number } | undefined {
+	const tailLines = tail.split("\n");
+	let start = tailStart;
+	let bytes = Buffer.byteLength(tail, "utf-8");
+	const byteBudget = DEFAULT_MAX_BYTES - Buffer.byteLength(head.text, "utf-8");
+	const lineBudget = DEFAULT_MAX_LINES - head.lines;
+	let drop = 0;
+	while (drop < tailLines.length - 1 && (bytes > byteBudget || tailLines.length - drop > lineBudget)) {
+		bytes -= Buffer.byteLength(tailLines[drop], "utf-8") + 1;
+		drop++;
+		start++;
+	}
+	if (start <= head.lines + 1 || start > totalLines) return undefined;
+	const omitted = start - head.lines - 1;
+	return {
+		text: `${head.text}\n\n[... ${omitted} lines omitted ...]\n\n${tailLines.slice(drop).join("\n")}`,
+		tailStart: start,
+	};
+}
+
 export function createBashToolDefinition(
 	cwd: string,
 	options?: BashToolOptions,
@@ -330,6 +364,8 @@ export function createBashToolDefinition(
 			? ["Inspect PI_* environment variables for current model and session details."]
 			: undefined,
 		parameters: bashSchema,
+		// A command can read or change any file, so it must not race edits or writes in the same batch.
+		executionMode: "exclusive",
 		async execute(
 			_toolCallId,
 			{ command, timeout }: { command: string; timeout?: number },
@@ -398,7 +434,11 @@ export function createBashToolDefinition(
 				emitOutputUpdate();
 				const snapshot = output.snapshot({ persistIfTruncated: true });
 				await output.closeTempFile();
-				return snapshot;
+				const head =
+					snapshot.truncation.truncated && !snapshot.truncation.lastLinePartial
+						? await output.readHead(HEAD_MAX_LINES, HEAD_MAX_BYTES).catch(() => undefined)
+						: undefined;
+				return { ...snapshot, head };
 			};
 
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
@@ -409,7 +449,11 @@ export function createBashToolDefinition(
 					details = { truncation, fullOutputPath: snapshot.fullOutputPath };
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
-					if (truncation.lastLinePartial) {
+					const headAndTail =
+						snapshot.head && formatHeadAndTail(snapshot.head, text, startLine, truncation.totalLines);
+					if (headAndTail) {
+						text = `${headAndTail.text}\n\n[Showing lines 1-${snapshot.head?.lines} and ${headAndTail.tailStart}-${endLine} of ${truncation.totalLines}. Full output: ${snapshot.fullOutputPath}]`;
+					} else if (truncation.lastLinePartial) {
 						const lastLineSize = formatSize(output.getLastLineBytes());
 						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${snapshot.fullOutputPath}]`;
 					} else if (truncation.truncatedBy === "lines") {

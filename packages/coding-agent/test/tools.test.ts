@@ -4,7 +4,12 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
+import {
+	type BashOperations,
+	createBashTool,
+	createLocalBashOperations,
+	formatHeadAndTail,
+} from "../src/core/tools/bash.ts";
 import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
 	createEditTool,
@@ -516,7 +521,7 @@ describe("Coding Agent Tools", () => {
 				expect(error).toBeInstanceOf(Error);
 				const message = (error as Error).message;
 				expect(message).toContain(testCase.expected);
-				expect(message).toMatch(/\[Showing lines \d+-\d+ of \d+\. Full output: /);
+				expect(message).toMatch(/\[Showing lines (1-\d+ and )?\d+-\d+ of \d+\. Full output: /);
 				expect(message).not.toContain("Full output: undefined");
 				const fullOutputPath = message.match(/Full output: ([^\]\n]+)/)?.[1];
 				expect(fullOutputPath).toBeDefined();
@@ -681,10 +686,28 @@ describe("Coding Agent Tools", () => {
 
 			expect(result.details?.truncation?.totalLines).toBe(4000);
 			expect(result.details?.truncation?.outputLines).toBe(2000);
-			expect(output).toContain("line-2001");
+			// The first 100 lines are kept, and the tail shrinks so both fit the 2000-line budget.
+			expect(output).toContain("line-0001");
+			expect(output).toContain("line-0100");
+			expect(output).not.toContain("line-0101");
+			expect(output).toContain("[... 2000 lines omitted ...]");
+			expect(output).not.toContain("line-2100");
+			expect(output).toContain("line-2101");
 			expect(output).toContain("line-4000");
-			expect(output).toMatch(/\[Showing lines 2001-4000 of 4000\. Full output: /);
+			expect(output).toMatch(/\[Showing lines 1-100 and 2101-4000 of 4000\. Full output: /);
 			expect(output).not.toContain("4001");
+		});
+
+		it("runs exclusively so a command never races an edit in the same batch", () => {
+			expect(createBashTool(testDir).executionMode).toBe("exclusive");
+		});
+
+		it("keeps only the tail when the head and the tail would overlap", () => {
+			expect(formatHeadAndTail({ text: "a\nb", lines: 2 }, "c\nd", 3, 4)).toBeUndefined();
+			expect(formatHeadAndTail({ text: "a\nb", lines: 2 }, "e\nf", 5, 6)).toEqual({
+				text: "a\nb\n\n[... 2 lines omitted ...]\n\ne\nf",
+				tailStart: 5,
+			});
 		});
 
 		it("should decode UTF-8 characters split across output chunks", async () => {
@@ -736,7 +759,7 @@ describe("Coding Agent Tools", () => {
 			expect(result.details?.truncation?.truncated).toBe(true);
 			expect(result.details?.truncation?.truncatedBy).toBe("lines");
 			expect(fullOutputPath).toBeDefined();
-			expect(output).toMatch(/\[Showing lines \d+-\d+ of \d+\. Full output: /);
+			expect(output).toMatch(/\[Showing lines (1-\d+ and )?\d+-\d+ of \d+\. Full output: /);
 			expect(output).not.toContain("Full output: undefined");
 
 			for (let i = 0; i < 20 && (!fullOutputPath || !existsSync(fullOutputPath)); i++) {
