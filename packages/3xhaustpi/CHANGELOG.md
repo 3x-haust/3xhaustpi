@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-11-04
+
+### Changed
+
+- The TUI now runs on `@earendil-works/pi-tui` 1.5.0 (`TuiMainScreen`), matching the monorepo's upstream pi 1.5.0 base.
+
 ## [0.2.13] - 2026-11-02
 
 ### Added
