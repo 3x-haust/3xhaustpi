@@ -242,6 +242,38 @@ describe("openai-responses provider defaults", () => {
 		expect(captured.clientRequestId).toBe("session-123");
 	});
 
+	it("routes prompt_cache_key by an explicit promptCacheKey while the session id stays per session", async () => {
+		let capturedPayload: Pick<CapturedResponsesPayload, "prompt_cache_key"> | undefined;
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("data: [DONE]\n\n", {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+
+		const stream = streamOpenAIResponses(
+			getModel("openai", "gpt-5.4"),
+			{
+				systemPrompt: "sys",
+				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test-key",
+				sessionId: "session-123",
+				promptCacheKey: "pfx-shared",
+				onPayload: (payload) => {
+					capturedPayload = payload as Pick<CapturedResponsesPayload, "prompt_cache_key">;
+				},
+			},
+		);
+
+		for await (const event of stream) {
+			if (event.type === "done" || event.type === "error") break;
+		}
+
+		expect(capturedPayload?.prompt_cache_key).toBe("pfx-shared");
+	});
+
 	it("clamps prompt_cache_key to OpenAI's 64-character limit", async () => {
 		const sessionId = "x".repeat(67);
 		let capturedPayload: Pick<CapturedResponsesPayload, "prompt_cache_key"> | undefined;
