@@ -857,6 +857,59 @@ Each command has:
 
 **Note**: Built-in TUI commands (`/settings`, `/hotkeys`, etc.) are not included. They are handled only in interactive mode and would not execute if sent via `prompt`.
 
+## Context
+
+### get_context
+
+Get what the model receives on the next request, broken into parts a client can show, each with a token estimate (characters / 4, multi-byte text weighted, as compaction estimates it). Read-only; nothing is sent to the model.
+
+```json
+{"type": "get_context"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "get_context",
+  "success": true,
+  "data": {
+    "cwd": "/home/user/myproject",
+    "systemPrompt": "You are a coding assistant ...",
+    "systemPromptTokens": 4210,
+    "forced": false,
+    "sections": [
+      {"name": "preamble", "text": "You are a coding assistant ...", "tokens": 30},
+      {"name": "tools", "text": "<tools>\n- read: ...\n</tools>", "tokens": 120},
+      {"name": "addendum", "text": "<addendum>\n...\n</addendum>", "tokens": 1800}
+    ],
+    "appendSystemPrompt": [{"text": "# Role\n...", "tokens": 1500}],
+    "contextFiles": [{"path": "/home/user/myproject/AGENTS.md", "content": "...", "tokens": 600}],
+    "skills": [
+      {"name": "code-review", "description": "...", "path": "/skills/code-review/SKILL.md", "modelInvocable": true, "sourceInfo": {"...": "..."}}
+    ],
+    "tools": [
+      {"name": "read", "description": "Read the contents of a file ...", "active": true, "exposure": "direct", "sourceInfo": {"path": "builtin:read", "...": "..."}, "schemaTokens": 310}
+    ],
+    "messages": [
+      {"role": "user", "tokens": 42, "preview": "Fix the login redirect"},
+      {"role": "assistant", "tokens": 80, "preview": "Reading the router. [read]", "toolCalls": ["read"]},
+      {"role": "toolResult", "tokens": 900, "preview": "import { Router } ...", "toolName": "read"}
+    ],
+    "contextUsage": {"tokens": 18000, "contextWindow": 200000, "percent": 9}
+  }
+}
+```
+
+- `systemPrompt`: the full system prompt text. `systemPromptTokens` estimates it.
+- `sections`: the prompt's ordered sections as the model receives them, tags included: `preamble`, `tools`, `rules`, `docs`, `addendum` (every `--append-system-prompt` part joined), `project_context` (context files), `skills`, `cwd`, and any section an extension adds. Empty when `forced` is `true` (an extension replaced the whole prompt).
+- `appendSystemPrompt`: each `--append-system-prompt` part, in order.
+- `contextFiles`: `AGENTS.md` / `CLAUDE.md` files loaded into `project_context`.
+- `skills`: loaded skills. Skills with `modelInvocable: false` are left out of the prompt.
+- `tools`: every registered tool. `active` tools are declared to the model on the next request; `schemaTokens` estimates the declaration (name, description, parameter schema). `sourceInfo.path` is `builtin:<name>` for built-in tools and the extension's file for extension tools; MCP tools carry a `namespace` such as `mcp__docs`.
+- `messages`: the current context, one entry per message, with `preview` (first 160 characters, whitespace collapsed), `toolName` for tool results and `toolCalls` for assistant messages that call tools.
+- `contextUsage`: the same estimate as `get_session_stats`.
+
 ## Model object
 
 Model commands return the complete configured model definition. Costs are in US dollars per million tokens.

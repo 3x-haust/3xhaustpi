@@ -10,6 +10,7 @@ import type { AuthEvent, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ContextUsage, ToolExposure } from "../../core/extensions/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -74,6 +75,9 @@ export type RpcCommand =
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
 
+	// Context
+	| { id?: string; type: "get_context" }
+
 	// Auth (for clients that draw their own login UI)
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; provider: string; authType: "oauth" | "api_key" }
@@ -126,6 +130,61 @@ export interface RpcSlashCommand {
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
 	sourceInfo: SourceInfo;
+}
+
+// ============================================================================
+// RPC Context (for get_context response)
+// ============================================================================
+
+/** One system prompt section as the model receives it (tag included). */
+export interface RpcContextSection {
+	/** `preamble`, `tools`, `rules`, `docs`, `addendum`, `project_context`, `skills`, `cwd`, or an extension section */
+	name: string;
+	text: string;
+	tokens: number;
+}
+
+/** A tool registered in the session. */
+export interface RpcContextTool {
+	name: string;
+	description: string;
+	/** Declared to the model on the next request */
+	active: boolean;
+	exposure: ToolExposure;
+	/** Namespace such as `mcp__docs` */
+	namespace?: string;
+	sourceInfo: SourceInfo;
+	/** Estimated tokens of the declaration (name, description, parameter schema) */
+	schemaTokens: number;
+}
+
+/** One message of the current context, summarized. */
+export interface RpcContextMessage {
+	role: string;
+	tokens: number;
+	/** First characters of the text, whitespace collapsed */
+	preview: string;
+	toolName?: string;
+	toolCalls?: string[];
+	isError?: boolean;
+}
+
+export interface RpcContextReport {
+	cwd: string;
+	/** Full system prompt text */
+	systemPrompt: string;
+	systemPromptTokens: number;
+	/** An extension replaced the whole prompt; `sections` is empty */
+	forced: boolean;
+	sections: RpcContextSection[];
+	/** Each `--append-system-prompt` part, in order (together they form the `addendum` section) */
+	appendSystemPrompt: Array<{ text: string; tokens: number }>;
+	/** AGENTS.md / CLAUDE.md files loaded into `project_context` */
+	contextFiles: Array<{ path: string; content: string; tokens: number }>;
+	skills: Array<{ name: string; description: string; path: string; modelInvocable: boolean; sourceInfo: SourceInfo }>;
+	tools: RpcContextTool[];
+	messages: RpcContextMessage[];
+	contextUsage?: ContextUsage;
 }
 
 // ============================================================================
@@ -304,6 +363,7 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcSlashCommand[] };
 	  }
+	| { id?: string; type: "response"; command: "get_context"; success: true; data: RpcContextReport }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
