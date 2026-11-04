@@ -1660,6 +1660,11 @@ export class AgentSession {
 		return buildSystemPrompt(this._runSystemPromptOptions ?? this._baseSystemPromptOptions);
 	}
 
+	/** Options the current system prompt is built from (appended text, context files, skills, tools). */
+	get systemPromptOptions(): Readonly<NormalizedBuildSystemPromptOptions> {
+		return this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+	}
+
 	/** Current retry attempt (0 if not retrying) */
 	get retryAttempt(): number {
 		return this._retryAttempt;
