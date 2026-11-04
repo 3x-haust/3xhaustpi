@@ -640,6 +640,18 @@ export class AgentSession {
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
 
+	/**
+	 * The session stream function for summaries, given the request options the agent loop gives
+	 * session requests: thinking budgets, so a budget-thinking model summarizes at the configured
+	 * budget (and a summary on the cached prefix sends the same thinking settings), and the
+	 * `before_provider_request` transform, so extensions see and shape every provider request.
+	 */
+	private _summaryStreamFn(): StreamFn {
+		const streamFn = this.agent.streamFunction;
+		const { thinkingBudgets, onPayload } = this.agent;
+		return (model, context, options) => streamFn(model, context, { thinkingBudgets, onPayload, ...options });
+	}
+
 	private async _getSummarizationRequestAuth(
 		selectedModel: Model<any>,
 		signal?: AbortSignal,
@@ -3032,7 +3044,7 @@ export class AgentSession {
 			customInstructions,
 			signal,
 			request.thinkingLevel,
-			this.agent.streamFunction,
+			this._summaryStreamFn(),
 			request.env,
 			this.settingsManager.getRetrySettings(),
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
@@ -4502,7 +4514,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
+					streamFn: this._summaryStreamFn(),
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 					onResponse: usageTracker.onResponse,
@@ -4766,7 +4778,7 @@ export class AgentSession {
 			messages: this.messages,
 			hint: options.hint,
 			signal: options.signal,
-			streamFn: this.agent.streamFunction,
+			streamFn: this._summaryStreamFn(),
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});

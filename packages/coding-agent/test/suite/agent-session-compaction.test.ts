@@ -343,6 +343,10 @@ describe("AgentSession compaction characterization", () => {
 		harness.session.agent.transformContext = transformContext;
 		harness.session.agent.sessionId = "active-routing-session";
 		harness.session.agent.transport = "websocket";
+		const thinkingBudgets = { medium: 4096 };
+		harness.session.agent.thinkingBudgets = thinkingBudgets;
+		const onPayload = vi.fn(async (payload: unknown) => payload);
+		harness.session.agent.onPayload = onPayload;
 
 		let requestContext: TranscriptContext | undefined;
 		let requestOptions: SimpleStreamOptions | undefined;
@@ -361,6 +365,9 @@ describe("AgentSession compaction characterization", () => {
 		expect(requestOptions).toMatchObject({ cacheRetention: "none" });
 		expect(requestOptions?.sessionId).not.toBe("active-routing-session");
 		expect(requestOptions?.transport).toBeUndefined();
+		// The same thinking budgets and payload hook as session requests.
+		expect(requestOptions?.thinkingBudgets).toBe(thinkingBudgets);
+		expect(requestOptions?.onPayload).toBe(onPayload);
 	});
 
 	it("summarizes by appending an instruction to the cached session request", async () => {
@@ -370,6 +377,10 @@ describe("AgentSession compaction characterization", () => {
 
 		const transformContext = vi.fn(async (messages: AgentMessage[]) => messages);
 		harness.session.agent.transformContext = transformContext;
+		const thinkingBudgets = { medium: 4096 };
+		harness.session.agent.thinkingBudgets = thinkingBudgets;
+		const onPayload = vi.fn(async (payload: unknown) => payload);
+		harness.session.agent.onPayload = onPayload;
 		const requests: { context: TranscriptContext; options: AgentStreamOptions | undefined }[] = [];
 		useSummaryStreamFn(harness, "## Goal\ncached summary", (context, options) => {
 			requests.push({ context, options });
@@ -390,6 +401,9 @@ describe("AgentSession compaction characterization", () => {
 		expect(options?.sessionId).toBe(harness.sessionManager.getSessionId());
 		// Marked so cache warming keeps refreshing the session request, not this one.
 		expect(options?.sideRequest).toBe("summary");
+		// The same thinking budgets and payload hook as session requests.
+		expect(options?.thinkingBudgets).toBe(thinkingBudgets);
+		expect(options?.onPayload).toBe(onPayload);
 		expect(result.summary).toContain("cached summary");
 	});
 
