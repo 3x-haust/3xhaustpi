@@ -60,13 +60,19 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
+import { writeOutputFile } from "../utils/output-files.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { generateBugReportSummary } from "./bug-report.ts";
 import { type CacheHitRates, computeCacheHitRates } from "./cache-stats.ts";
-import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
+import {
+	type CacheWarmer,
+	type CacheWarmingStatus,
+	getPromptCacheTtlMs,
+	resolveSessionCacheRetention,
+} from "./cache-warmer.ts";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -78,12 +84,14 @@ import {
 	estimateProjectedContextTokens,
 	estimateTokens,
 	generateBranchSummary,
+	getCompactionThreshold,
 	prepareCompaction,
 	SummarizationAbortedError,
 	type SummarizationResponseCallback,
 	type SummaryCacheReuse,
 	shouldCompact,
 } from "./compaction/index.ts";
+import { formatClearedToolResult, selectStaleToolResults } from "./context-pruning.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -385,6 +393,26 @@ export interface SessionStats {
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
+}
+
+/** Usage kinds of requests sent only to write the prompt cache (CacheWarmer, AgentSession.warm). */
+const CACHE_WRITE_USAGE_KINDS = new Set(["cache_warm", "cache_prewarm"]);
+
+/**
+ * When `model`'s provider last wrote the branch's prompt cache: the later of the last assistant
+ * message (`lastAssistantAt`, ms) and the latest warm-up on the branch. A cache refreshed a minute
+ * ago is warm even when the last answer is older than its lifetime.
+ */
+function lastCacheWrite(branch: readonly SessionEntry[], model: Model<any>, lastAssistantAt: number): number {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry.type !== "usage" || !CACHE_WRITE_USAGE_KINDS.has(entry.kind) || entry.provider !== model.provider) {
+			continue;
+		}
+		const warmedAt = new Date(entry.timestamp).getTime();
+		return Number.isNaN(warmedAt) ? lastAssistantAt : Math.max(lastAssistantAt, warmedAt);
+	}
+	return lastAssistantAt;
 }
 
 function estimateMessagesTokens(messages: AgentMessage[]): number {
@@ -825,7 +853,57 @@ export class AgentSession {
 		);
 	}
 
+	/**
+	 * Replace old large tool results with pointers to files holding their text. See
+	 * context-pruning.ts for when this pays for the cache break it causes.
+	 */
+	private async _pruneStaleToolResults(model: Model<any> | undefined): Promise<void> {
+		if (!model || isVirtualModel(model) || model.contextWindow <= 0) return;
+		const settings = this.settingsManager.getContextPruningSettings();
+		if (!settings.enabled) return;
+		const projection = this.sessionManager.buildSessionProjection();
+		const lastAssistant = projection.messages.findLast((message) => message.role === "assistant");
+		if (!lastAssistant) return;
+		const branch = this.sessionManager.getBranch();
+		const retention = resolveSessionCacheRetention(
+			this.settingsManager.getCacheRetention(),
+			model,
+			this._modelRuntime,
+		);
+		// Providers without a published lifetime (OpenAI) keep entries for minutes to an hour.
+		// Assuming the long end only delays clearing until context pressure requires it.
+		const ttlMs = getPromptCacheTtlMs(model, { cacheRetention: retention }) ?? 60 * 60_000;
+		const stale = selectStaleToolResults({
+			entries: projection.entries,
+			branch,
+			settings,
+			contextTokens: estimateProjectedContextTokens(projection, branch).tokens,
+			compactionThreshold: getCompactionThreshold(
+				model.contextWindow,
+				this._thresholdCompactionSettings(this.settingsManager.getCompactionSettings(model)),
+			),
+			cacheWarm: Date.now() - lastCacheWrite(branch, model, lastAssistant.timestamp) < ttlMs,
+		});
+		if (stale.length === 0) return;
+		for (const result of stale) {
+			const text = result.message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+			let savedPath: string | undefined;
+			try {
+				savedPath = await writeOutputFile("pi-cleared", ".txt", text);
+			} catch {
+				// Without a file the pointer tells the model to rerun the tool instead.
+			}
+			const editId = this.sessionManager.appendContextEdit(result.entryId, {
+				content: formatClearedToolResult(result.message, savedPath),
+			});
+			const entry = this.sessionManager.getEntry(editId);
+			if (entry) this._emit({ type: "entry_appended", entry });
+		}
+		this._refreshFinalizedContext();
+	}
+
 	private async _compactBeforeNextAssistantResponse(context: AgentContext): Promise<AgentContext> {
+		await this._pruneStaleToolResults(this.model);
 		const projection = this.sessionManager.buildSessionProjection();
 		// A virtual selection is checked in prepareRequest, against the model the request is routed to.
 		const model = this.model;
@@ -841,6 +919,7 @@ export class AgentSession {
 		this.agent.prepareRequest = async (request, signal) => {
 			const failed = this._failedResponse;
 			this._failedResponse = undefined;
+			await this._pruneStaleToolResults(this.agent.state.model);
 			const prepare = async () => {
 				const projection = this.sessionManager.buildSessionProjection();
 				const canonicalContext = {

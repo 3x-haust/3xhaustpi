@@ -39,6 +39,28 @@ const CompactionSettingsSchema = Type.Object({
 	),
 });
 
+const ContextPruningSettingsSchema = Type.Object({
+	enabled: Type.Optional(
+		Type.Boolean({
+			description:
+				"Replace old large tool results with a pointer to a file holding their text before compaction is needed.",
+			default: SETTINGS_DEFAULTS.contextPruning.enabled,
+		}),
+	),
+	protectRecentTokens: Type.Optional(
+		nonNegativeSafeInteger({
+			description: "Tool results inside this many most recent context tokens are never cleared.",
+			default: SETTINGS_DEFAULTS.contextPruning.protectRecentTokens,
+		}),
+	),
+	minSavingsTokens: Type.Optional(
+		nonNegativeSafeInteger({
+			description: "Clear only when at least this many tokens would be removed in one batch.",
+			default: SETTINGS_DEFAULTS.contextPruning.minSavingsTokens,
+		}),
+	),
+});
+
 const BranchSummarySettingsSchema = Type.Object({
 	reserveTokens: Type.Optional(
 		Type.Number({
@@ -438,6 +460,7 @@ export const SettingsSchema = Type.Object(
 				default: SETTINGS_DEFAULTS.cacheWarming,
 			}),
 		),
+		contextPruning: Type.Optional(ContextPruningSettingsSchema),
 		cacheRetention: Type.Optional(
 			Type.Union([Type.Literal("auto"), Type.Literal("short"), Type.Literal("long")], {
 				description:

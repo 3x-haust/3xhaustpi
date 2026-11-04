@@ -76,6 +76,9 @@ CLI tool options override this setting for one invocation. `--tools` with only `
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
 | `compaction.maxContextTokens` | number | `300000` | Compact at this context size even on larger windows; `0` disables the cap. |
 | `compaction.reuseCache` | boolean | `true` | Summarize threshold and manual compactions by appending an instruction to the conversation as the session sent it, so the provider reads it from prompt cache. Falls back to the standalone summary request when the reply is not a summary. |
+| `contextPruning.enabled` | boolean | `true` | Replace old large text tool results (500+ tokens) with a pointer to a temp file holding their text, using context edits. Runs after the prompt cache expired, or while it is warm only once context reaches 80% of the compaction threshold. Results from `SKILL.md` reads are kept. |
+| `contextPruning.protectRecentTokens` | number | `40000` | Tool results within this many most recent context tokens are never cleared. |
+| `contextPruning.minSavingsTokens` | number | `20000` | Clear only when one batch removes at least this many tokens, so the cache breaks rarely. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
 
 <a id="per-model-compaction-overrides"></a>

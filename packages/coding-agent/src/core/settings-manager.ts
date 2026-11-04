@@ -905,6 +905,16 @@ export class SettingsManager {
 		};
 	}
 
+	getContextPruningSettings(): { enabled: boolean; protectRecentTokens: number; minSavingsTokens: number } {
+		const pruning = this.settings.contextPruning;
+		const defaults = SETTINGS_DEFAULTS.contextPruning;
+		return {
+			enabled: pruning?.enabled ?? defaults.enabled,
+			protectRecentTokens: pruning?.protectRecentTokens ?? defaults.protectRecentTokens,
+			minSavingsTokens: pruning?.minSavingsTokens ?? defaults.minSavingsTokens,
+		};
+	}
+
 	/** Whether compaction summarizes on the session's cached request prefix first. */
 	getCompactionReuseCache(): boolean {
 		return this.settings.compaction?.reuseCache ?? SETTINGS_DEFAULTS.compaction.reuseCache;

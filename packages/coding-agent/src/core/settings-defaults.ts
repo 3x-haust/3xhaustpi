@@ -14,6 +14,11 @@ export const SETTINGS_DEFAULTS = {
 		maxContextTokens: 300000,
 		reuseCache: true,
 	},
+	contextPruning: {
+		enabled: true,
+		protectRecentTokens: 40000,
+		minSavingsTokens: 20000,
+	},
 	branchSummary: {
 		reserveTokens: 16384,
 		skipPrompt: false,
