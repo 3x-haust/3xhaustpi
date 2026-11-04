@@ -9,7 +9,7 @@ import {
 	stream,
 	Type,
 } from "../src/compat.ts";
-import type { AssistantMessageEvent, Context } from "../src/types.ts";
+import type { AssistantMessageEvent, Context, Usage } from "../src/types.ts";
 
 async function collectEvents(streamResult: ReturnType<typeof stream>): Promise<AssistantMessageEvent[]> {
 	const events: AssistantMessageEvent[] = [];
@@ -44,6 +44,77 @@ describe("faux provider", () => {
 		expect(response.usage.output).toBeGreaterThan(0);
 		expect(response.usage.totalTokens).toBe(response.usage.input + response.usage.output);
 		expect(registration.state.callCount).toBe(1);
+	});
+
+	it.each([false, true])("preserves explicit helper usage, including zeros (factory: %s)", async (factory) => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		const usages: Usage[] = [
+			{
+				input: 10,
+				output: 20,
+				cacheRead: 30,
+				cacheWrite: 40,
+				totalTokens: 100,
+				cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
+			},
+			{
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		];
+		registration.setResponses(
+			usages.map((usage) => {
+				const message = fauxAssistantMessage("not an empty response", { usage });
+				expect(message.usage).toEqual(usage);
+				return factory ? async () => message : message;
+			}),
+		);
+
+		for (const usage of usages) {
+			const result = stream(
+				registration.getModel(),
+				{ messages: [{ role: "user", content: "not an empty prompt", timestamp: 1 }] },
+				{ sessionId: "explicit-usage", cacheRetention: "short" },
+			);
+			const events = await collectEvents(result);
+			for (const event of events) {
+				if (event.type === "done") {
+					expect(event.message.usage).toEqual(usage);
+				} else if (event.type === "error") {
+					throw new Error("Expected a successful response");
+				} else {
+					expect(event.partial.usage).toEqual(usage);
+				}
+			}
+			const response = await result.result();
+			expect(response.usage).toEqual(usage);
+			expect(response.usage).not.toBe(usage);
+			expect(response.usage.cost).not.toBe(usage.cost);
+		}
+	});
+
+	it("preserves usage supplied directly on a queued message", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 12,
+			cacheWrite: 8,
+			totalTokens: 20,
+			cost: { input: 0, output: 0, cacheRead: 1, cacheWrite: 2, total: 3 },
+		};
+		registration.setResponses([{ ...fauxAssistantMessage("hello"), usage }]);
+
+		const response = await complete(registration.getModel(), {
+			messages: [{ role: "user", content: "hi", timestamp: 1 }],
+		});
+		expect(response.usage).toEqual(usage);
 	});
 
 	it("supports helper blocks for text, thinking, and tool calls", async () => {
@@ -323,6 +394,44 @@ describe("faux provider", () => {
 		expect(second.usage.cacheRead).toBeGreaterThan(0);
 		expect(second.usage.input + second.usage.cacheRead).toBeGreaterThan(second.usage.input);
 	});
+
+	it.each([
+		{ nextPrompt: "hello", promptTokens: 3, cacheRead: 3, cacheWrite: 0 },
+		{ nextPrompt: "hello world", promptTokens: 4, cacheRead: 3, cacheWrite: 1 },
+		{ nextPrompt: "help", promptTokens: 3, cacheRead: 2, cacheWrite: 1 },
+		{ nextPrompt: "he", promptTokens: 2, cacheRead: 2, cacheWrite: 0 },
+	])(
+		"counts cached prompt tokens once for '$nextPrompt'",
+		async ({ nextPrompt, promptTokens, cacheRead, cacheWrite }) => {
+			const registration = registerFauxProvider();
+			registrations.push(registration);
+			const message = fauxAssistantMessage("done");
+			registration.setResponses([message, message]);
+			const options = { sessionId: "session-1", cacheRetention: "short" as const };
+
+			const first = await complete(
+				registration.getModel(),
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				options,
+			);
+			expect(first.usage).toMatchObject({ input: 0, output: 1, cacheRead: 0, cacheWrite: 3, totalTokens: 4 });
+
+			const second = await complete(
+				registration.getModel(),
+				{ messages: [{ role: "user", content: nextPrompt, timestamp: 2 }] },
+				options,
+			);
+			expect(second.usage).toMatchObject({
+				input: 0,
+				output: 1,
+				cacheRead,
+				cacheWrite,
+				totalTokens: promptTokens + 1,
+			});
+			expect(second.usage.input + second.usage.cacheRead + second.usage.cacheWrite).toBe(promptTokens);
+			expect(message.usage.totalTokens).toBe(0);
+		},
+	);
 
 	it("does not simulate caching when cacheRetention is none", async () => {
 		const registration = registerFauxProvider();
