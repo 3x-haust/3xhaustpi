@@ -127,12 +127,15 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Absolute context size that triggers compaction on large windows. 0 or undefined disables the cap. */
+	maxContextTokens?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	maxContextTokens: 300000,
 };
 
 // ============================================================================
@@ -234,7 +237,19 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextTokens > getCompactionThreshold(contextWindow, settings);
+}
+
+/**
+ * Context size above which compaction runs. On a 1M window, waiting for the window edge means
+ * every request near the end resends close to 1M tokens, so large windows compact at
+ * `maxContextTokens` instead.
+ */
+export function getCompactionThreshold(contextWindow: number, settings: CompactionSettings): number {
+	const windowThreshold = contextWindow - settings.reserveTokens;
+	return settings.maxContextTokens && settings.maxContextTokens > 0
+		? Math.min(windowThreshold, settings.maxContextTokens)
+		: windowThreshold;
 }
 
 // ============================================================================
@@ -243,15 +258,31 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 
 const ESTIMATED_IMAGE_CHARS = 4800;
 
+/**
+ * Character count weighted so that `/ 4` approximates tokens for non-English text too. Tokenizers
+ * spend about one token per Hangul, CJK or kana character and about two characters per token for
+ * Cyrillic, Greek or accented Latin, while `length / 4` assumes English. Korean text was
+ * undercounted about four times, so compaction triggered only after the provider overflowed.
+ */
+export function estimateWeightedChars(text: string): number {
+	let weighted = text.length;
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (code < 0x80) continue;
+		weighted += code >= 0x0800 ? 3 : 1;
+	}
+	return weighted;
+}
+
 function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {
-		return content.length;
+		return estimateWeightedChars(content);
 	}
 
 	let chars = 0;
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			chars += block.text.length;
+			chars += estimateWeightedChars(block.text);
 		} else if (block.type === "image") {
 			chars += ESTIMATED_IMAGE_CHARS;
 		}
@@ -277,11 +308,11 @@ export function estimateTokens(message: AgentMessage): number {
 			const assistant = message as AssistantMessage;
 			for (const block of assistant.content) {
 				if (block.type === "text") {
-					chars += block.text.length;
+					chars += estimateWeightedChars(block.text);
 				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
+					chars += estimateWeightedChars(block.thinking);
 				} else if (block.type === "toolCall") {
-					chars += block.name.length + JSON.stringify(block.arguments).length;
+					chars += block.name.length + estimateWeightedChars(JSON.stringify(block.arguments));
 				}
 			}
 			return Math.ceil(chars / 4);
@@ -292,12 +323,12 @@ export function estimateTokens(message: AgentMessage): number {
 			return Math.ceil(chars / 4);
 		}
 		case "bashExecution": {
-			chars = message.command.length + message.output.length;
+			chars = estimateWeightedChars(message.command) + estimateWeightedChars(message.output);
 			return Math.ceil(chars / 4);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
-			chars = message.summary.length;
+			chars = estimateWeightedChars(message.summary);
 			return Math.ceil(chars / 4);
 		}
 	}
@@ -500,7 +531,7 @@ Use this EXACT format:
 - [Or "(none)" if not applicable]
 
 Prioritize durable user instructions, explicit prohibitions, decisions and their rationale, unresolved work, and exact paths/tool identifiers needed to resume. Distinguish verified results from plans; never mark unverified work as done. Deduplicate repeated facts and collapse completed work that no longer affects continuation. Do not copy file-list metadata tags: file tracking is appended separately.
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
@@ -514,6 +545,7 @@ Update the existing structured summary with new information. RULES:
 - Deduplicate facts and collapse completed historical detail before shortening active instructions or unresolved work
 - Distinguish observed tool outcomes from plans and retain exact identifiers needed to resume
 - Do not copy file-list metadata tags: file tracking is appended separately
+- Do not write a "User Requests (verbatim)" section; it is maintained automatically
 
 Use this EXACT format:
 
@@ -546,7 +578,62 @@ Use this EXACT format:
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
+
+const USER_REQUESTS_HEADING = "## User Requests (verbatim)";
+const MAX_USER_REQUEST_CHARS = 1500;
+const MAX_USER_REQUESTS_CHARS = 12_000;
+/** Ends a verbatim section: the next heading, the split-turn separator or the file-list footer. */
+const USER_REQUESTS_END = /\n(## |---\n|<read-files>|<modified-files>)/;
+const OMITTED_REQUESTS_LINE = /^- \[\d+ earlier requests omitted\]$/;
+
+/**
+ * The user's own words, appended to every summary by code. Summaries paraphrase requests and drop
+ * corrections, and having the model copy them would cost output tokens and time on every
+ * compaction. Earlier quotes come from the previous summary, so they survive repeated compactions.
+ */
+export function formatUserRequestsSection(previousSummary: string | undefined, messages: AgentMessage[]): string {
+	const previous = previousSummary ? extractUserRequests(previousSummary) : [];
+	const current = messages.flatMap((message) => {
+		if (message.role !== "user") return [];
+		const text = contentText(message.content).trim();
+		if (!text) return [];
+		const clipped = text.length > MAX_USER_REQUEST_CHARS ? `${text.slice(0, MAX_USER_REQUEST_CHARS)} [...]` : text;
+		return [`- ${JSON.stringify(clipped)}`];
+	});
+	const quotes = [...previous, ...current];
+	if (quotes.length === 0) return "";
+	// Keep the first request, which usually states the task, and as many recent ones as fit.
+	const kept: string[] = [];
+	let size = quotes[0].length;
+	for (let i = quotes.length - 1; i > 0 && size + quotes[i].length <= MAX_USER_REQUESTS_CHARS; i--) {
+		kept.unshift(quotes[i]);
+		size += quotes[i].length;
+	}
+	const omitted = quotes.length - 1 - kept.length;
+	const lines = [quotes[0], ...(omitted > 0 ? [`- [${omitted} earlier requests omitted]`] : []), ...kept];
+	return `\n\n${USER_REQUESTS_HEADING}\n${lines.join("\n")}`;
+}
+
+function extractUserRequests(summary: string): string[] {
+	const start = summary.indexOf(USER_REQUESTS_HEADING);
+	if (start === -1) return [];
+	const body = summary.slice(start + USER_REQUESTS_HEADING.length);
+	const end = body.search(USER_REQUESTS_END);
+	return (end === -1 ? body : body.slice(0, end))
+		.split("\n")
+		.filter((line) => line.startsWith("- ") && !OMITTED_REQUESTS_LINE.test(line));
+}
+
+/** Remove a verbatim section from a summary, so the code-built one is the only copy. */
+export function stripUserRequests(summary: string): string {
+	const start = summary.indexOf(USER_REQUESTS_HEADING);
+	if (start === -1) return summary;
+	const rest = summary.slice(start + USER_REQUESTS_HEADING.length);
+	const end = rest.search(USER_REQUESTS_END);
+	if (end === -1) return summary.slice(0, start).trimEnd();
+	return `${summary.slice(0, start).trimEnd()}\n\n${rest.slice(end + 1)}`.trimEnd();
+}
 
 /** Bound generated memory independently of the much larger overflow reserve. */
 function summaryOutputBudget(model: Model<string>, reserveTokens: number, splitPrefix = false): number {
@@ -999,10 +1086,12 @@ export async function compact(
 		turnPrefixMessages,
 		isSplitTurn,
 		tokensBefore,
-		previousSummary,
+		previousSummary: storedPreviousSummary,
 		fileOps,
 		settings,
 	} = preparation;
+	// The verbatim requests are rebuilt by code below, so the model never reads or rewrites them.
+	const previousSummary = storedPreviousSummary === undefined ? undefined : stripUserRequests(storedPreviousSummary);
 
 	// Generate summaries and merge into one
 	let summary: string;
@@ -1078,6 +1167,10 @@ export async function compact(
 		summary = result.text;
 		summaryUsage = result.usage;
 	}
+
+	// The model's copy (or the reused previous checkpoint's) is replaced by the code-built one.
+	summary = stripUserRequests(summary);
+	summary += formatUserRequestsSection(storedPreviousSummary, [...messagesToSummarize, ...turnPrefixMessages]);
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
