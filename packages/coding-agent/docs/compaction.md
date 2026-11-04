@@ -141,7 +141,7 @@ interface CompactionDetails {
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work.
+Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations and individual successful response snapshots in `details.usageRequests`, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their aggregate LLM `usage` when available. Failed, aborted, or discarded built-in summary responses are saved as non-context usage records so retries and partial failures still contribute exactly once to session totals. See [Cache token accounting](cache-token-accounting.md).
 
 See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
 

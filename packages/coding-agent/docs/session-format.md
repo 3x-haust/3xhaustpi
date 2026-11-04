@@ -270,6 +270,8 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context.
 
+The built-in `pi.summarization_usage` custom type stores failed, aborted, or discarded compaction/branch-summary responses. Its `data` contains `usage`, `source` (`compaction` or `branchSummary`), `provider`, `model`, `stopReason`, and an optional `responseId`. Session statistics include these records, but context reconstruction ignores them. Successful summary responses are recorded individually in the summary entry's `details.usageRequests`; only the aggregate entry `usage` contributes to totals. See [Cache token accounting](cache-token-accounting.md).
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.
@@ -402,6 +404,7 @@ Key methods for working with sessions programmatically.
 - `newSession(options?)` - Start a new session (options: `{ parentSession?: string }`)
 - `setSessionFile(path)` - Switch to a different session file
 - `createBranchedSession(leafId)` - Extract branch to new session file
+- `forkInMemory(leafId)` - Copy a branch into an independent in-memory manager without replacing the source
 
 ### Instance Methods - Appending (all return entry ID)
 - `appendMessage(message)` - Add message
