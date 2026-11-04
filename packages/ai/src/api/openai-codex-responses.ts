@@ -603,7 +603,8 @@ function buildRequestBody(
 	}
 
 	if (options?.maxTokens !== undefined) {
-		body.max_output_tokens = Math.max(1, Math.floor(options.maxTokens));
+		// Codex rejects max_output_tokens below 16, like OpenAI Responses (a 1-token warm-up failed)
+		body.max_output_tokens = Math.max(16, Math.floor(options.maxTokens));
 	}
 
 	if (transcriptTools.requestTools.length > 0) {

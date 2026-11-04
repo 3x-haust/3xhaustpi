@@ -426,7 +426,7 @@ export async function warmAgentRequest(
 	if (config.transformContext) messages = await config.transformContext(messages, signal);
 	const llmContext = normalizeContext({ messages: await config.convertToLlm(messages) });
 	const apiKey = (config.getApiKey ? await config.getApiKey(model.provider) : undefined) || config.apiKey;
-	// Not every provider takes an output cap (Codex sends none), so the stop is ours.
+	// Providers may raise the cap (OpenAI and Codex take at least 16), so the stop is ours.
 	const controller = new AbortController();
 	const stop = () => controller.abort();
 	if (signal?.aborted) return undefined;
