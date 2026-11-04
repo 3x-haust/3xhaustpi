@@ -186,17 +186,15 @@ describe("request cache usage and session totals", () => {
 		expect(harness.faux.state.callCount).toBe(4);
 		expect(result.details).toMatchObject({
 			usageRequests: expect.arrayContaining(
-				requests
-					.slice(2)
-					.map((item) =>
-						expect.objectContaining({
-							usage: item,
-							source: "compaction",
-							provider: harness.getModel().provider,
-							model: harness.getModel().id,
-							stopReason: "stop",
-						}),
-					),
+				requests.slice(2).map((item) =>
+					expect.objectContaining({
+						usage: item,
+						source: "compaction",
+						provider: harness.getModel().provider,
+						model: harness.getModel().id,
+						stopReason: "stop",
+					}),
+				),
 			),
 		});
 		const saved = harness.sessionManager.getEntries().find((entry) => entry.type === "compaction");

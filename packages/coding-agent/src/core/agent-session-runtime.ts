@@ -286,6 +286,9 @@ export class AgentSessionRuntime {
 			selectedText = extractUserMessageText(selectedEntry.message.content);
 		}
 
+		// Finalize an interrupted response in the source session before taking
+		// the branch snapshot, so its usage cannot leak into the child.
+		await this.session.abort();
 		const previousSessionFile = this.session.sessionFile;
 		if (this.session.sessionManager.isPersisted()) {
 			const currentSessionFile = this.session.sessionFile;
@@ -332,12 +335,10 @@ export class AgentSessionRuntime {
 			return { cancelled: false, selectedText };
 		}
 
-		const sessionManager = this.session.sessionManager;
-		if (!targetLeafId) {
-			sessionManager.newSession({ parentSession: this.session.sessionFile });
-		} else {
-			sessionManager.createBranchedSession(targetLeafId);
-		}
+		// Keep the source manager alive for any late summarization responses.
+		const sessionManager = targetLeafId
+			? this.session.sessionManager.forkInMemory(targetLeafId)
+			: SessionManager.inMemory(this.cwd);
 		await this.teardownCurrent("fork", sessionManager.getSessionFile());
 		this.apply(
 			await this.createRuntime({
