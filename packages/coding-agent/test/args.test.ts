@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { normalizeSessionName, parseArgs } from "../src/cli/args.ts";
+import { normalizeSessionName, parseArgs, resolveSharedPromptCache } from "../src/cli/args.ts";
 
 describe("parseArgs", () => {
 	describe("--version flag", () => {
@@ -566,6 +566,24 @@ describe("parseArgs", () => {
 			expect(result.thinking).toBe("high");
 			expect(result.fileArgs).toEqual(["prompt.md"]);
 			expect(result.messages).toEqual(["Do the task"]);
+		});
+	});
+
+	describe("--shared-prompt-cache flag", () => {
+		test("enables the shared prompt cache for the run, also in RPC mode", () => {
+			const result = parseArgs(["--mode", "rpc", "--shared-prompt-cache"]);
+			expect(result.mode).toBe("rpc");
+			expect(result.sharedPromptCache).toBe(true);
+			expect(resolveSharedPromptCache(result, {})).toBe(true);
+		});
+
+		test("falls back to PI_SHARED_PROMPT_CACHE, then to the setting", () => {
+			const result = parseArgs(["--mode", "rpc"]);
+			expect(result.sharedPromptCache).toBeUndefined();
+			expect(resolveSharedPromptCache(result, { PI_SHARED_PROMPT_CACHE: "1" })).toBe(true);
+			expect(resolveSharedPromptCache(result, { PI_SHARED_PROMPT_CACHE: "true" })).toBe(true);
+			expect(resolveSharedPromptCache(result, { PI_SHARED_PROMPT_CACHE: "0" })).toBe(false);
+			expect(resolveSharedPromptCache(result, {})).toBe(false);
 		});
 	});
 });

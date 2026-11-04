@@ -294,7 +294,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
 			}
-			const websocketRequestId = resourceSessionId || uuidv7();
+			// Codex routes its cache by the session header and prompt_cache_key together; a shared key
+			// under per-session headers does not hit, so a shared key goes in both. Connection reuse,
+			// fallbacks and cleanup stay keyed by the per-session resourceSessionId.
+			const cacheRoutingId = codexPromptCacheKey ?? resourceSessionId;
+			const websocketRequestId = cacheRoutingId || uuidv7();
 			// Codex expects an originator on every request; it is not attribution.
 			const identityHeaders = { originator: "pi", ...getIdentityHeaders(model, options?.identity) };
 			const sseHeaders = buildSSEHeaders(
@@ -303,7 +307,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				options?.headers,
 				accountId,
 				apiKey,
-				resourceSessionId,
+				cacheRoutingId,
 			);
 			const websocketHeaders = buildWebSocketHeaders(
 				identityHeaders,

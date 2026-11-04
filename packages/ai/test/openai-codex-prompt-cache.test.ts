@@ -6,6 +6,7 @@ import { normalizeContext } from "../src/utils/transcript.ts";
 interface CapturedPayload {
 	prompt_cache_key?: string;
 	prompt_cache_retention?: string;
+	sessionHeader?: string | null;
 }
 
 async function capturePayload(
@@ -13,6 +14,7 @@ async function capturePayload(
 	promptCacheKey?: string,
 ): Promise<CapturedPayload> {
 	let captured: CapturedPayload | undefined;
+	let sessionHeader: string | null | undefined;
 	const apiKey = `header.${btoa(
 		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account" } }),
 	)}.signature`;
@@ -32,7 +34,10 @@ async function capturePayload(
 			sessionId: "cache-session",
 			...(promptCacheKey ? { promptCacheKey } : {}),
 			transport: "sse",
-			fetch: vi.fn().mockResolvedValue(response),
+			fetch: vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+				sessionHeader = new Headers(init?.headers).get("session-id");
+				return response;
+			}),
 			onPayload: (payload) => {
 				captured = payload as CapturedPayload;
 			},
@@ -42,7 +47,7 @@ async function capturePayload(
 		if (event.type === "done" || event.type === "error") break;
 	}
 	if (!captured) throw new Error("Codex request payload was not captured");
-	return captured;
+	return { ...captured, sessionHeader };
 }
 
 describe("openai-codex prompt cache request fields", () => {
@@ -68,6 +73,19 @@ describe("openai-codex prompt cache request fields", () => {
 		const payload = await capturePayload("long", "semantic-followup");
 
 		expect(payload.prompt_cache_key).toBe("semantic-followup");
+	});
+
+	it("sends a shared prompt-cache key in the session header too, so Codex routes both alike", async () => {
+		const payload = await capturePayload("long", "shared-prefix");
+
+		expect(payload.prompt_cache_key).toBe("shared-prefix");
+		expect(payload.sessionHeader).toBe("shared-prefix");
+	});
+
+	it("keeps the session header on the session id without a shared key", async () => {
+		const payload = await capturePayload("long");
+
+		expect(payload.sessionHeader).toBe("cache-session");
 	});
 
 	it("omits all prompt cache fields when caching is disabled", async () => {

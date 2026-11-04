@@ -240,6 +240,8 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
   Ignores trust-gated project-local configuration and resources for this process.
 - `--offline`<br>
   Disables automatic network activity, including model catalog refreshes. Equivalent to `PI_OFFLINE=1`.
+- `--shared-prompt-cache`<br>
+  Keys the prompt cache by the system prompt and tool definitions for this process, so a new session's first request can reuse a prefix that another session already cached. Overrides the `sharedPromptCache` setting, also in `--mode rpc`. Equivalent to `PI_SHARED_PROMPT_CACHE=1`.
 - `-h`, `--help`<br>
   Shows help, including flags registered by loaded extensions, then exits.
 - `-v`, `--version`<br>

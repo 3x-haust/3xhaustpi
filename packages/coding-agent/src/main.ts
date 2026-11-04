@@ -9,7 +9,14 @@ import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { type Args, type Mode, normalizeSessionName, parseArgs, printHelp } from "./cli/args.ts";
+import {
+	type Args,
+	type Mode,
+	normalizeSessionName,
+	parseArgs,
+	printHelp,
+	resolveSharedPromptCache,
+} from "./cli/args.ts";
 import {
 	type AuthCheckResult,
 	checkProviderAuth,
@@ -537,6 +544,11 @@ function buildSessionOptions(
 	// API key from CLI - set as a non-persistent runtime override
 	// (handled by caller before createAgentSession)
 
+	// A per-run override; the sharedPromptCache setting applies otherwise.
+	if (resolveSharedPromptCache(parsed)) {
+		options.sharedPromptCache = true;
+	}
+
 	// Tools
 	if (parsed.noTools) {
 		options.noTools = "all";
@@ -859,6 +871,7 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			sharedPromptCache: sessionOptions.sharedPromptCache,
 		});
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {

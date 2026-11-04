@@ -123,7 +123,7 @@ See [Themes](themes.md) and [Terminal Setup](terminal-setup.md) for format and p
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `transport` | `"auto" \| "sse" \| "websocket" \| "websocket-cached"` | `"auto"` | Preferred transport for AI providers that support multiple transports. |
-| `sharedPromptCache` | boolean | `false` | Send a prompt-cache key derived from the system prompt and tool definitions instead of the session id, so sessions with the same prefix share one cache entry on providers that route their cache by key (OpenAI `prompt_cache_key`). |
+| `sharedPromptCache` | boolean | `false` | Send a prompt-cache key derived from the system prompt and tool definitions instead of the session id, so sessions with the same prefix share one cache entry on providers that route their cache by key (OpenAI `prompt_cache_key`; Codex also gets it as its session header). `--shared-prompt-cache` or `PI_SHARED_PROMPT_CACHE=1` enables it for one run, including `--mode rpc`. |
 | `httpProxy` | string | None | Proxy URL applied as `HTTP_PROXY` and `HTTPS_PROXY` for Pi-managed HTTP clients. **Can only be set in agent-directory settings.** |
 | `httpIdleTimeoutMs` | number \| `"disabled"` | `300000` | HTTP header and body idle timeout in milliseconds. Set to `0` or `"disabled"` to disable. |
 | `websocketConnectTimeoutMs` | number \| `"disabled"` | `15000` | WebSocket connection timeout in milliseconds. Set to `0` or `"disabled"` to disable. |
