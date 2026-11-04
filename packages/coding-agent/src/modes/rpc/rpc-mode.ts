@@ -33,6 +33,8 @@ import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcLoginOutput,
+	RpcLoginProvider,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
@@ -81,6 +83,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		string,
 		{ resolve: (value: any) => void; reject: (error: Error) => void }
 	>();
+
+	// Logins in progress, by the id of their `login` command
+	const activeLogins = new Map<string, AbortController>();
 
 	// Shutdown request flag
 	let shutdownRequested = false;
@@ -483,6 +488,100 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return success(id, "cycle_model", null);
 				}
 				return success(id, "cycle_model", result);
+			}
+
+			// =================================================================
+			// Auth: a client draws its own login screen from these
+			// =================================================================
+
+			case "get_login_providers": {
+				const runtime = session.modelRuntime;
+				const providers: RpcLoginProvider[] = [];
+				for (const provider of runtime.getProviders()) {
+					const configured = runtime.getProviderAuthStatus(provider.id).configured;
+					const subscription = provider.auth.oauth?.isSubscription === true;
+					if (provider.auth.oauth)
+						providers.push({
+							id: provider.id,
+							name: provider.name,
+							authType: "oauth",
+							label: provider.auth.oauth.name,
+							subscription,
+							configured,
+						});
+					if (provider.auth.apiKey?.login)
+						providers.push({
+							id: provider.id,
+							name: provider.name,
+							authType: "api_key",
+							label: provider.auth.apiKey.name,
+							subscription: false,
+							configured,
+						});
+				}
+				providers.sort((a, b) => a.name.localeCompare(b.name));
+				return success(id, "get_login_providers", { providers });
+			}
+
+			case "login": {
+				// Runs until the user finishes in the browser (or answers prompts); other
+				// commands keep flowing meanwhile, so `login_cancel` can stop it.
+				const loginId = id ?? crypto.randomUUID();
+				const controller = new AbortController();
+				activeLogins.set(loginId, controller);
+				try {
+					await session.modelRuntime.login(
+						command.provider,
+						command.authType,
+						{
+							signal: controller.signal,
+							notify: (event) => output({ type: "login_event", loginId, event } satisfies RpcLoginOutput),
+							prompt: (prompt) => {
+								const { signal, ...rest } = prompt;
+								const promptId = crypto.randomUUID();
+								return new Promise<string>((resolve, reject) => {
+									const stop = () => {
+										pendingExtensionRequests.delete(promptId);
+										reject(new Error("Login cancelled"));
+									};
+									const signals = [controller.signal, signal].filter((s): s is AbortSignal => !!s);
+									if (signals.some((s) => s.aborted)) return stop();
+									for (const s of signals) s.addEventListener("abort", stop, { once: true });
+									pendingExtensionRequests.set(promptId, {
+										resolve: (response: RpcExtensionUIResponse) => {
+											for (const s of signals) s.removeEventListener("abort", stop);
+											if ("cancelled" in response && response.cancelled)
+												reject(new Error("Login cancelled"));
+											else resolve("value" in response ? String(response.value ?? "") : "");
+										},
+										reject,
+									});
+									output({
+										type: "login_prompt",
+										loginId,
+										id: promptId,
+										prompt: { ...rest, options: "options" in rest ? rest.options : undefined },
+									} satisfies RpcLoginOutput);
+								});
+							},
+						},
+						{ getDeviceId: () => session.settingsManager.getOrCreateDeviceId() },
+					);
+				} finally {
+					activeLogins.delete(loginId);
+				}
+				return success(id, "login", { provider: command.provider, authType: command.authType });
+			}
+
+			case "login_cancel": {
+				const controller = activeLogins.get(command.loginId);
+				controller?.abort();
+				return success(id, "login_cancel", { cancelled: !!controller });
+			}
+
+			case "logout": {
+				await session.modelRuntime.logout(command.provider);
+				return success(id, "logout");
 			}
 
 			case "get_available_models": {
