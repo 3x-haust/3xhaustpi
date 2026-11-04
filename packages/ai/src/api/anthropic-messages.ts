@@ -37,6 +37,7 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
+import { applyAnthropicPromptCache } from "./anthropic-prompt-cache.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -962,7 +963,6 @@ function buildParams(
 		messages: convertMessages(
 			transformedMessages,
 			isOAuthToken,
-			cacheControl,
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
@@ -977,23 +977,20 @@ function buildParams(
 			{
 				type: "text",
 				text: "You are Claude Code, Anthropic's official CLI for Claude.",
-				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
 		if (context.systemPrompt) {
 			params.system.push({
 				type: "text",
 				text: sanitizeSurrogates(context.systemPrompt),
-				...(cacheControl ? { cache_control: cacheControl } : {}),
 			});
 		}
 	} else if (context.systemPrompt) {
-		// Add cache control to system prompt for non-OAuth tokens
+		// The cache helper marks the final system block for both auth paths.
 		params.system = [
 			{
 				type: "text",
 				text: sanitizeSurrogates(context.systemPrompt),
-				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
 	}
@@ -1069,6 +1066,7 @@ function buildParams(
 		}
 	}
 
+	applyAnthropicPromptCache(params, cacheControl);
 	return params;
 }
 
@@ -1115,7 +1113,6 @@ function convertToolResult(
 function convertMessages(
 	transformedMessages: Message[],
 	isOAuthToken: boolean,
-	cacheControl?: CacheControlEphemeral,
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
@@ -1131,7 +1128,7 @@ function convertMessages(
 				if (msg.content.trim().length > 0) {
 					params.push({
 						role: "user",
-						content: sanitizeSurrogates(msg.content),
+						content: [{ type: "text", text: sanitizeSurrogates(msg.content) }],
 					});
 				}
 			} else {
@@ -1249,30 +1246,6 @@ function convertMessages(
 				role: "user",
 				content: [...toolResults, ...siblingContent],
 			});
-		}
-	}
-
-	// Add cache_control to the last user message to cache conversation history
-	if (cacheControl && params.length > 0) {
-		const lastMessage = params[params.length - 1];
-		if (lastMessage.role === "user") {
-			if (Array.isArray(lastMessage.content)) {
-				const lastBlock = lastMessage.content[lastMessage.content.length - 1];
-				if (
-					lastBlock &&
-					(lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
-				) {
-					(lastBlock as any).cache_control = cacheControl;
-				}
-			} else if (typeof lastMessage.content === "string") {
-				lastMessage.content = [
-					{
-						type: "text",
-						text: lastMessage.content,
-						cache_control: cacheControl,
-					},
-				] as any;
-			}
 		}
 	}
 
