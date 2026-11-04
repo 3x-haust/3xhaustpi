@@ -967,6 +967,51 @@ describe("openai-codex streaming", () => {
 		expect(requestedMaxOutputTokens).toBe(16);
 	});
 
+	it("raises an output cap below 16 to Codex's minimum", async () => {
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const sse = buildSSEPayload({ status: "completed" });
+		let requestedMaxOutputTokens: unknown;
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL, init?: RequestInit) => {
+				requestedMaxOutputTokens = decodeCodexRequestBody(init?.body)?.max_output_tokens;
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode(sse));
+							controller.close();
+						},
+					}),
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			}),
+		);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		// a cache warm-up asks for one token
+		await streamOpenAICodexResponses(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: ".", timestamp: Date.now() }] }),
+			{ apiKey: token, transport: "sse", maxTokens: 1 },
+		).result();
+
+		expect(requestedMaxOutputTokens).toBe(16);
+	});
+
 	it("sets Codex strict mode explicitly and honors constrained sampling", async () => {
 		const token = mockToken();
 		const encoder = new TextEncoder();
