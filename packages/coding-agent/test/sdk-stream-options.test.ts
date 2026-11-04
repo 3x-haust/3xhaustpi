@@ -345,6 +345,80 @@ describe("createAgentSession stream options", () => {
 		expect(explicit?.promptCacheKey).toBe("caller-key");
 	});
 
+	it("warms the request the first prompt sends, under the same shared cache key", async () => {
+		const api: Api = "openai-responses";
+		const model = createModel(api);
+		const settingsManager = SettingsManager.inMemory({});
+		// An app's own part of the prompt, ahead of the conversation: the warm-up has to carry it too.
+		const lead: ExtensionFactory = (pi) => {
+			pi.on("before_agent_start", (event) => {
+				event.systemPromptOptions.sections.servers = "<servers>one</servers>";
+			});
+			pi.on("context", (event) => {
+				const at = event.messages.findIndex((message) => message.role !== "system");
+				const note = { role: "user" as const, content: [{ type: "text" as const, text: "lead" }], timestamp: 0 };
+				return { messages: [...event.messages.slice(0, at), note, ...event.messages.slice(at)] };
+			});
+		};
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, extensionFactories: [lead] });
+		await resourceLoader.reload();
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
+		const requests: { messages: unknown[]; promptCacheKey?: string; maxTokens?: number }[] = [];
+		modelRegistry.registerProvider(model.provider, {
+			api,
+			streamSimple: (_model, context, options) => {
+				requests.push({
+					messages: context.messages.map(({ timestamp: _t, ...message }) => message),
+					promptCacheKey: options?.promptCacheKey,
+					maxTokens: options?.maxTokens,
+				});
+				return createDoneStream(api, 100);
+			},
+		});
+		const sessionManager = SessionManager.inMemory(cwd);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			modelRuntime: getModelRuntime(modelRegistry),
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+			sharedPromptCache: true,
+		});
+		try {
+			expect(await session.warm()).toEqual({ warmed: true, cacheWrite: 0 });
+			expect(session.messages).toEqual([]);
+			await session.prompt("hi");
+			const [warm, real] = requests;
+			expect(warm.maxTokens).toBe(1);
+			expect(warm.promptCacheKey).toMatch(/^pfx-/);
+			expect(warm.promptCacheKey).toBe(real.promptCacheKey);
+			expect(warm.messages.slice(0, -1)).toEqual(real.messages.slice(0, -1));
+			expect(JSON.stringify(warm.messages[0])).toContain("<servers>one</servers>");
+			expect(warm.messages.map((message) => (message as { role: string }).role)).toEqual(["system", "user", "user"]);
+			const usage = sessionManager.getEntries().filter((entry) => entry.type === "usage");
+			expect(usage.map((entry) => entry.type === "usage" && entry.kind)).toEqual(["cache_prewarm"]);
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
+	});
+
+	it("skips warm() when a one-token request would change Anthropic's thinking budget", async () => {
+		const fixture = await createCacheWarmingSession();
+		try {
+			fixture.session.agent.state.model = { ...fixture.session.agent.state.model, reasoning: true };
+			fixture.session.agent.state.thinkingLevel = "medium";
+			expect(await fixture.session.warm()).toEqual({ warmed: false });
+			expect(fixture.providerCalls()).toBe(0);
+		} finally {
+			fixture.dispose();
+		}
+	});
+
 	// Regression test for #9784.
 	it("forwards provider stream events to extensions", async () => {
 		const providerEvent = { openrouter_metadata: { strategy: "direct" } };

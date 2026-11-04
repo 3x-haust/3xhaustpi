@@ -371,6 +371,14 @@ export class RpcClient {
 	}
 
 	/**
+	 * Warm the prompt cache the next prompt reads. Resolves once the warm-up finished or was skipped.
+	 */
+	async warm(): Promise<{ warmed: boolean; cacheWrite?: number }> {
+		const response = await this.send({ type: "warm" });
+		return this.getData(response);
+	}
+
+	/**
 	 * Export session to HTML.
 	 */
 	async exportHtml(outputPath?: string): Promise<{ path: string }> {

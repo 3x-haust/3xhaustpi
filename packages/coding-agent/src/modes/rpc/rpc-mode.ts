@@ -595,6 +595,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_session_stats", stats);
 			}
 
+			case "warm": {
+				// Resolves once the one-token warm-up finished or was skipped.
+				const result = await session.warm();
+				return success(id, "warm", result);
+			}
+
 			case "export_html": {
 				const path = await session.exportToHtml(command.outputPath);
 				return success(id, "export_html", { path });

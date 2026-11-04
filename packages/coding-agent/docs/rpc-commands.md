@@ -574,6 +574,22 @@ Response:
 
 `contextUsage` is omitted when no model or context window is available. `contextUsage.tokens` and `contextUsage.percent` are `null` immediately after compaction until a fresh post-compaction assistant response provides valid usage data.
 
+### warm
+
+Write the prompt cache the next prompt will read, without running a turn: Pi sends the request a prompt would send now, with `.` as the user's message, and stops it at the model's first output. The transcript and queues do not change and no session events are emitted. Send it when a prompt is coming (a conversation opened, the user typing), so the first real request reads its prefix from cache. With `--shared-prompt-cache`, a fresh session reuses the system prompt and tools another session already cached.
+
+```json
+{"type": "warm"}
+```
+
+The response arrives once the warm-up request has finished or was skipped:
+
+```json
+{"type": "response", "command": "warm", "success": true, "data": {"warmed": true, "cacheWrite": 18234}}
+```
+
+`warmed` is `false` when nothing was sent or the request failed: a run is active (it keeps its own cache warm), the model is virtual, or the model uses Anthropic budget thinking, where a one-token request would key a different cache entry. `cacheWrite` is the provider's reported cache-write token count for the warm-up when it reported usage before the stop; many providers report usage only at the end of a response, so it can be `0` or missing even when the cache was written. A successful warm-up is recorded as a `usage` entry of kind `cache_prewarm`.
+
 ### export_html
 
 Export session to an HTML file.

@@ -117,7 +117,7 @@ function scan(
 			prev = undefined;
 			continue;
 		}
-		if (entry.type === "usage" && entry.kind === "cache_warm") {
+		if (entry.type === "usage" && (entry.kind === "cache_warm" || entry.kind === "cache_prewarm")) {
 			const promptTokens = entry.usage.input + entry.usage.cacheRead + entry.usage.cacheWrite;
 			if (promptTokens > 0) {
 				prev = {

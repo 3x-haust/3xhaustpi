@@ -27,6 +27,7 @@ import {
 	type AgentToolCallOutcome,
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
+	isReplayable,
 	type PrepareNextTurnContext,
 	runToolCall,
 	type StreamFn,
@@ -1980,6 +1981,20 @@ export class AgentSession {
 		}
 	}
 
+	/** before_agent_start for a run, with the tool loadout the run will use. */
+	private async _beforeAgentStart(trigger: BeforeAgentStartTrigger) {
+		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+		const result = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
+		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
+		// which updates the live loadout instead. An explicit edit wins; otherwise the live
+		// loadout is authoritative, so a setActiveTools() call is not undone here.
+		const handlerEditedTools =
+			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+		return result;
+	}
+
 	/**
 	 * Prepare a run and return its starting messages: compact first when needed, emit
 	 * before_agent_start, apply the run's prompt options and tool loadout, and build the starting
@@ -1994,15 +2009,7 @@ export class AgentSession {
 			await this._checkCompaction(lastAssistant, false);
 		}
 
-		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-		const result = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
-		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
-		// which updates the live loadout instead. An explicit edit wins; otherwise the live
-		// loadout is authoritative, so a setActiveTools() call is not undone here.
-		const handlerEditedTools =
-			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
-		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+		const result = await this._beforeAgentStart(trigger);
 
 		const messages: AgentMessage[] = [];
 		if (trigger.messageType === "custom") {
@@ -2141,6 +2148,54 @@ export class AgentSession {
 			hints.push(...processed.hints);
 		}
 		return { images: normalizedImages, hints };
+	}
+
+	/**
+	 * Write the prompt cache the next prompt will read: the request a prompt would send now, with a
+	 * placeholder for the user's words, stopped at the model's first output (Agent.warm). Call it when
+	 * a prompt is coming - a conversation opened, the user typing - so the first call reads its whole
+	 * prefix instead of paying for what is new since the cache was last written: on a fresh session
+	 * with the shared prompt cache, everything after the system prompt and tools another session
+	 * already sent.
+	 *
+	 * The transcript is the session's projection, as the real request's is; the rest of that
+	 * preparation - pruning, compaction, retry state - is left to the real request. The prompt is
+	 * the one a run would build: `before_agent_start` runs as it does for a message. A handler that
+	 * shapes the prompt from the message's own words gets "." here and writes a cache the message
+	 * misses - warming is best-effort. Skipped while a run is active (it keeps its own cache), on a
+	 * virtual model (the request goes to whichever model routing picks), and when a one-token
+	 * request would not write the entry the real request reads (`isReplayable`: Anthropic budget
+	 * thinking). Resolves once the request finished or was skipped.
+	 */
+	async warm(signal?: AbortSignal): Promise<{ warmed: boolean; cacheWrite?: number }> {
+		if (!this.isIdle || isVirtualModel(this.agent.state.model)) return { warmed: false };
+		const level = this.agent.state.thinkingLevel;
+		if (!isReplayable(this.agent.state.model, { reasoning: level === "off" ? undefined : level })) {
+			return { warmed: false };
+		}
+		const { systemPromptOptions } = await this._beforeAgentStart({ messageType: "user", prompt: "." });
+		if (!this.isIdle || signal?.aborted) return { warmed: false };
+		const projection = this.sessionManager.buildSessionProjection().messages;
+		const update = this._preparePromptAndToolLoadout(systemPromptOptions, projection);
+		const user: AgentMessage = { role: "user", content: [{ type: "text", text: "." }], timestamp: Date.now() };
+		try {
+			const message = await this.agent.warm(update ? [update, user] : [user], { signal, messages: projection });
+			// A stopped warm-up ends as aborted; an error means nothing was written.
+			if (!message || message.stopReason === "error") return { warmed: false };
+			const usage = message.usage;
+			if (usage && usage.input + usage.cacheRead + usage.cacheWrite > 0) {
+				this.sessionManager.appendUsage(
+					"cache_prewarm",
+					message.provider,
+					message.responseModel ?? message.model,
+					usage,
+				);
+			}
+			return { warmed: true, ...(usage ? { cacheWrite: usage.cacheWrite } : {}) };
+		} catch {
+			// Best-effort, like refresh warming: a failed warm-up costs the real request nothing.
+			return { warmed: false };
+		}
 	}
 
 	/**
