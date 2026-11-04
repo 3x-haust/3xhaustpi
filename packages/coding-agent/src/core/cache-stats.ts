@@ -162,3 +162,58 @@ export function detectCacheMiss(
 ): CacheMiss | undefined {
 	return detectMiss(scan(entries, models).prev, message, models);
 }
+
+export interface CacheHitRates {
+	/** Cache reads over all prompt tokens. New tokens in each request cap this well below 100%. */
+	hitRate: number;
+	/**
+	 * Cache reads over the prompt tokens the previous request had already sent, which a perfect
+	 * cache would serve. This is the share the harness controls; misses come from prefix changes,
+	 * expired entries or provider eviction.
+	 */
+	reusableHitRate: number;
+	/** Prompt tokens of each request that the previous request on the same model had already sent. */
+	reusableTokens: number;
+	/** Reusable tokens that were not read from cache. */
+	missedReusableTokens: number;
+}
+
+/**
+ * Hit rates over the assistant messages in `entries`, in order (pass the current branch). A
+ * compaction, a branch summary or a model change resets the reusable prefix, because the next
+ * request legitimately starts over. Failed and aborted requests are skipped.
+ */
+export function computeCacheHitRates(entries: readonly SessionEntry[]): CacheHitRates {
+	let promptTokens = 0;
+	let cacheRead = 0;
+	let reusableTokens = 0;
+	let reusableRead = 0;
+	let previous: { promptTokens: number; modelKey: string } | undefined;
+	for (const entry of entries) {
+		if (entry.type === "compaction" || entry.type === "branch_summary") {
+			previous = undefined;
+			continue;
+		}
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		const message = entry.message;
+		if (message.stopReason === "error" || message.stopReason === "aborted") continue;
+		const usage = message.usage;
+		const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+		if (prompt <= 0) continue;
+		const modelKey = `${message.provider}/${message.model}`;
+		promptTokens += prompt;
+		cacheRead += usage.cacheRead;
+		if (previous && previous.modelKey === modelKey) {
+			const reusable = Math.min(previous.promptTokens, prompt);
+			reusableTokens += reusable;
+			reusableRead += Math.min(usage.cacheRead, reusable);
+		}
+		previous = { promptTokens: prompt, modelKey };
+	}
+	return {
+		hitRate: promptTokens === 0 ? 0 : cacheRead / promptTokens,
+		reusableHitRate: reusableTokens === 0 ? 0 : reusableRead / reusableTokens,
+		reusableTokens,
+		missedReusableTokens: reusableTokens - reusableRead,
+	};
+}

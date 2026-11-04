@@ -51,6 +51,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+import { type CacheHitRates, computeCacheHitRates } from "./cache-stats.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -274,6 +275,8 @@ export interface SessionStats {
 		total: number;
 	};
 	cost: number;
+	/** Prompt-cache hit rates on the current branch. */
+	cache: CacheHitRates;
 	contextUsage?: ContextUsage;
 }
 
@@ -3184,6 +3187,7 @@ export class AgentSession {
 				total: usageTotals.input + usageTotals.output + usageTotals.cacheRead + usageTotals.cacheWrite,
 			},
 			cost: usageTotals.cost,
+			cache: computeCacheHitRates(this.sessionManager.getBranch()),
 			contextUsage: this.getContextUsage(),
 		};
 	}

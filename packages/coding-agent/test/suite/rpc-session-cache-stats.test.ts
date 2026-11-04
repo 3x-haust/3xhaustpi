@@ -71,6 +71,8 @@ it("returns finalized cache buckets over get_session_stats at completion and aft
 						assistantMessages: 1,
 						tokens: { input: 600, output: 20, cacheRead: 7400, cacheWrite: 2000, total: 10020 },
 						cost: 1,
+						// One request: 7400 of 10000 prompt tokens read, nothing reusable yet.
+						cache: { hitRate: 0.74, reusableHitRate: 0, reusableTokens: 0, missedReusableTokens: 0 },
 					},
 				});
 			}
