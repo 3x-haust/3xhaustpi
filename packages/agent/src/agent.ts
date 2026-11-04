@@ -1,4 +1,5 @@
 import {
+	type AssistantMessage,
 	type ClientIdentity,
 	createInitialSystemMessage,
 	getCurrentSystemMessage,
@@ -12,7 +13,7 @@ import {
 	type Transport,
 	toToolDeclaration,
 } from "@earendil-works/pi-ai";
-import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import { runAgentLoop, runAgentLoopContinue, warmAgentRequest } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -417,6 +418,29 @@ export class Agent {
 		}
 
 		await this.runContinuation();
+	}
+
+	/**
+	 * Write the prompt cache the next prompt will read, without running it: the request that
+	 * prompt would send with `input` as its new messages, stopped at the model's first output.
+	 * The transcript, the queues and the listeners are untouched. Does nothing while a run is
+	 * active, which keeps its own cache warm. `prepareRequest` is not run (warmAgentRequest): a
+	 * caller that projects its requests there passes the projected transcript as `messages`.
+	 */
+	async warm(
+		input: string | AgentMessage | AgentMessage[],
+		options: { signal?: AbortSignal; messages?: AgentMessage[] } = {},
+	): Promise<AssistantMessage | undefined> {
+		if (this.activeRun) return undefined;
+		const context = this.createContextSnapshot();
+		if (options.messages) context.messages = options.messages.slice();
+		return warmAgentRequest(
+			this.normalizePromptInput(input),
+			context,
+			this.createLoopConfig(),
+			options.signal,
+			this.streamFunction,
+		);
 	}
 
 	private normalizePromptInput(

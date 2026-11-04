@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentStreamOptions, AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -57,7 +57,7 @@ function createAssistant(
 function useSummaryStreamFn(
 	harness: Harness,
 	summary: string,
-	onRequest?: (context: TranscriptContext, options: SimpleStreamOptions | undefined) => void,
+	onRequest?: (context: TranscriptContext, options: AgentStreamOptions | undefined) => void,
 ): () => number {
 	let callCount = 0;
 	harness.session.agent.streamFunction = (model, context, options) => {
@@ -335,7 +335,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("uses the standalone compaction request context", async () => {
-		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
+		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1, reuseCache: false } } });
 		harnesses.push(harness);
 		seedCompactableSession(harness);
 
@@ -343,6 +343,10 @@ describe("AgentSession compaction characterization", () => {
 		harness.session.agent.transformContext = transformContext;
 		harness.session.agent.sessionId = "active-routing-session";
 		harness.session.agent.transport = "websocket";
+		const thinkingBudgets = { medium: 4096 };
+		harness.session.agent.thinkingBudgets = thinkingBudgets;
+		const onPayload = vi.fn(async (payload: unknown) => payload);
+		harness.session.agent.onPayload = onPayload;
 
 		let requestContext: TranscriptContext | undefined;
 		let requestOptions: SimpleStreamOptions | undefined;
@@ -361,6 +365,81 @@ describe("AgentSession compaction characterization", () => {
 		expect(requestOptions).toMatchObject({ cacheRetention: "none" });
 		expect(requestOptions?.sessionId).not.toBe("active-routing-session");
 		expect(requestOptions?.transport).toBeUndefined();
+		// The same thinking budgets and payload hook as session requests.
+		expect(requestOptions?.thinkingBudgets).toBe(thinkingBudgets);
+		expect(requestOptions?.onPayload).toBe(onPayload);
+	});
+
+	it("summarizes by appending an instruction to the cached session request", async () => {
+		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		const transformContext = vi.fn(async (messages: AgentMessage[]) => messages);
+		harness.session.agent.transformContext = transformContext;
+		const thinkingBudgets = { medium: 4096 };
+		harness.session.agent.thinkingBudgets = thinkingBudgets;
+		const onPayload = vi.fn(async (payload: unknown) => payload);
+		harness.session.agent.onPayload = onPayload;
+		const requests: { context: TranscriptContext; options: AgentStreamOptions | undefined }[] = [];
+		useSummaryStreamFn(harness, "## Goal\ncached summary", (context, options) => {
+			requests.push({ context, options });
+		});
+
+		const result = await harness.session.compact();
+
+		expect(requests).toHaveLength(1);
+		const [{ context, options }] = requests;
+		expect(transformContext).toHaveBeenCalled();
+		// The conversation is sent as messages, not serialized into one prompt.
+		const texts = context.messages.map((message) => JSON.stringify(message.content));
+		expect(texts.some((text) => text.includes("message to compact") && !text.includes("[User]:"))).toBe(true);
+		const last = context.messages.at(-1);
+		expect(last?.role).toBe("user");
+		expect(JSON.stringify(last?.content)).toContain("Do not call any tools");
+		expect(options?.cacheRetention).not.toBe("none");
+		expect(options?.sessionId).toBe(harness.sessionManager.getSessionId());
+		// Marked so cache warming keeps refreshing the session request, not this one.
+		expect(options?.sideRequest).toBe("summary");
+		// The same thinking budgets and payload hook as session requests.
+		expect(options?.thinkingBudgets).toBe(thinkingBudgets);
+		expect(options?.onPayload).toBe(onPayload);
+		expect(result.summary).toContain("cached summary");
+	});
+
+	it("falls back to the standalone request when the cached summary calls a tool", async () => {
+		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		let calls = 0;
+		harness.session.agent.streamFunction = (model, _context, _options) => {
+			calls++;
+			const stream = createAssistantMessageEventStream();
+			const content =
+				calls === 1
+					? fauxAssistantMessage([fauxToolCall("read", { path: "x" })], { stopReason: "toolUse" })
+					: fauxAssistantMessage("standalone summary");
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: calls === 1 ? "toolUse" : "stop",
+					message: {
+						...content,
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: createUsage(10),
+					},
+				});
+			});
+			return stream;
+		};
+
+		const result = await harness.session.compact();
+
+		expect(calls).toBe(2);
+		expect(result.summary).toContain("standalone summary");
 	});
 
 	it("persists usage from pi-generated manual compaction", async () => {

@@ -449,4 +449,30 @@ describe("RPC prompt response semantics", () => {
 			await cleanup();
 		}
 	});
+
+	it("answers warm once the warm-up finished, without touching the transcript", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "w1", type: "warm" }));
+			await vi.waitFor(() => {
+				const response = parseOutputLines(rpcIo.outputLines).find((record) => record.id === "w1");
+				expect(response).toMatchObject({
+					type: "response",
+					command: "warm",
+					success: true,
+					data: { warmed: true, cacheWrite: 0 },
+				});
+			});
+			expect(parseOutputLines(rpcIo.outputLines).some((record) => record.type === "message_start")).toBe(false);
+
+			lineHandler(JSON.stringify({ id: "w2", type: "get_session_stats" }));
+			await vi.waitFor(() => {
+				const stats = parseOutputLines(rpcIo.outputLines).find((record) => record.id === "w2");
+				expect(stats).toMatchObject({ success: true, data: { userMessages: 0, assistantMessages: 0 } });
+			});
+		} finally {
+			await cleanup();
+		}
+	});
 });

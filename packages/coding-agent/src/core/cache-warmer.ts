@@ -1,5 +1,7 @@
+import { isReplayable } from "@earendil-works/pi-agent-core";
 import {
 	type Api,
+	type CacheRetention,
 	type Context,
 	calculateCost,
 	type Model,
@@ -10,7 +12,27 @@ import {
 import { getProviderEnvValue } from "@earendil-works/pi-ai/utils/provider-env";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { SessionEntry, SessionManager, UsageEntry } from "./session-manager.ts";
-import type { CacheWarmingMode } from "./settings-manager.ts";
+import type { CacheRetentionSetting, CacheWarmingMode } from "./settings-manager.ts";
+
+export { isReplayable };
+
+/**
+ * Retention for session requests. A subscription pays no per-token price for cache writes, so the
+ * long tier only removes the re-read after a pause of more than five minutes. API-key users keep
+ * the provider default, where long writes cost more than short ones. With "auto", an explicit
+ * PI_CACHE_RETENTION still wins, as the providers read it when no retention is passed.
+ */
+export function resolveSessionCacheRetention(
+	setting: CacheRetentionSetting,
+	model: Model<Api>,
+	modelRuntime: Pick<ModelRuntime, "isUsingSubscription">,
+	env: Record<string, string | undefined> = process.env,
+): CacheRetention | undefined {
+	if (setting !== "auto") return setting;
+	if (env.PI_CACHE_RETENTION) return undefined;
+	if (model.promptCache?.long === undefined) return undefined;
+	return modelRuntime.isUsingSubscription(model.provider) ? "long" : undefined;
+}
 
 /** Streaming warming never continues past this long after the real request that started it. */
 const MAX_WARMING_AGE_MS = 60 * 60_000;
@@ -43,18 +65,6 @@ export function getPromptCacheTtlMs(model: Model<Api>, options: SimpleStreamOpti
 	if (retention === "none") return undefined;
 	const seconds = model.promptCache?.[retention];
 	return seconds === undefined ? undefined : seconds * 1000;
-}
-
-/**
- * Whether replaying the request with a one-token output cap leaves its cache
- * entry untouched. Anthropic's budget-based thinking (Claude models without
- * adaptive thinking) derives `budget_tokens` from `max_tokens`; the replay
- * would get a different budget, which Anthropic keys the message cache on,
- * and the model could still think for thousands of tokens.
- */
-export function isReplayable(model: Model<Api>, options: SimpleStreamOptions | undefined): boolean {
-	if (!options?.reasoning || model.api !== "anthropic-messages") return true;
-	return (model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true;
 }
 
 /** Prompt size of the most recent real request on the branch, as reported by the provider. */

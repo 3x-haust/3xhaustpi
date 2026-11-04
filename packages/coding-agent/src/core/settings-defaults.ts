@@ -12,6 +12,12 @@ export const SETTINGS_DEFAULTS = {
 		reserveTokens: 16384,
 		keepRecentTokens: 20000,
 		maxContextTokens: 300000,
+		reuseCache: true,
+	},
+	contextPruning: {
+		enabled: true,
+		protectRecentTokens: 40000,
+		minSavingsTokens: 20000,
 	},
 	branchSummary: {
 		reserveTokens: 16384,
@@ -61,6 +67,7 @@ export const SETTINGS_DEFAULTS = {
 		inlineBudget: 3000,
 	},
 	cacheWarming: "streaming",
+	cacheRetention: "auto",
 	tuiMode: "fullscreen",
 	fullscreenExitOutput: "transcript",
 	fullscreenScrollbar: "auto",

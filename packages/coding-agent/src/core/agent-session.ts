@@ -27,6 +27,7 @@ import {
 	type AgentToolCallOutcome,
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
+	isReplayable,
 	type PrepareNextTurnContext,
 	runToolCall,
 	type StreamFn,
@@ -59,13 +60,19 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
+import { writeOutputFile } from "../utils/output-files.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { generateBugReportSummary } from "./bug-report.ts";
 import { type CacheHitRates, computeCacheHitRates } from "./cache-stats.ts";
-import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
+import {
+	type CacheWarmer,
+	type CacheWarmingStatus,
+	getPromptCacheTtlMs,
+	resolveSessionCacheRetention,
+} from "./cache-warmer.ts";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -77,11 +84,14 @@ import {
 	estimateProjectedContextTokens,
 	estimateTokens,
 	generateBranchSummary,
+	getCompactionThreshold,
 	prepareCompaction,
 	SummarizationAbortedError,
 	type SummarizationResponseCallback,
+	type SummaryCacheReuse,
 	shouldCompact,
 } from "./compaction/index.ts";
+import { formatClearedToolResult, selectStaleToolResults } from "./context-pruning.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -385,6 +395,31 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+/** Share of the compaction threshold at which the summary starts in the background. */
+const SPECULATIVE_COMPACTION_RATIO = 0.85;
+/** A background summary is used only if the entries it keeps stay below this share of the threshold. */
+const SPECULATIVE_MAX_KEPT_RATIO = 0.6;
+
+/** Usage kinds of requests sent only to write the prompt cache (CacheWarmer, AgentSession.warm). */
+const CACHE_WRITE_USAGE_KINDS = new Set(["cache_warm", "cache_prewarm"]);
+
+/**
+ * When `model`'s provider last wrote the branch's prompt cache: the later of the last assistant
+ * message (`lastAssistantAt`, ms) and the latest warm-up on the branch. A cache refreshed a minute
+ * ago is warm even when the last answer is older than its lifetime.
+ */
+function lastCacheWrite(branch: readonly SessionEntry[], model: Model<any>, lastAssistantAt: number): number {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry.type !== "usage" || !CACHE_WRITE_USAGE_KINDS.has(entry.kind) || entry.provider !== model.provider) {
+			continue;
+		}
+		const warmedAt = new Date(entry.timestamp).getTime();
+		return Number.isNaN(warmedAt) ? lastAssistantAt : Math.max(lastAssistantAt, warmedAt);
+	}
+	return lastAssistantAt;
+}
+
 function estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
 	for (const message of messages) {
@@ -494,6 +529,14 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
+	/** A threshold summary started early in the background; see `_maybeStartSpeculativeCompaction`. */
+	private _speculativeCompaction?: {
+		branchIds: string[];
+		modelKey: string;
+		abortController: AbortController;
+		result: Promise<CompactionResult | undefined>;
+		usageTracker: ReturnType<typeof createSummarizationUsageTracker>;
+	};
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 
 	// Tool registry for extension getTools/setTools
@@ -595,6 +638,18 @@ export class AgentSession {
 			);
 		}
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
+	}
+
+	/**
+	 * The session stream function for summaries, given the request options the agent loop gives
+	 * session requests: thinking budgets, so a budget-thinking model summarizes at the configured
+	 * budget (and a summary on the cached prefix sends the same thinking settings), and the
+	 * `before_provider_request` transform, so extensions see and shape every provider request.
+	 */
+	private _summaryStreamFn(): StreamFn {
+		const streamFn = this.agent.streamFunction;
+		const { thinkingBudgets, onPayload } = this.agent;
+		return (model, context, options) => streamFn(model, context, { thinkingBudgets, onPayload, ...options });
 	}
 
 	private async _getSummarizationRequestAuth(
@@ -823,11 +878,68 @@ export class AgentSession {
 		);
 	}
 
+	/**
+	 * Replace old large tool results with pointers to files holding their text. See
+	 * context-pruning.ts for when this pays for the cache break it causes.
+	 */
+	private async _pruneStaleToolResults(model: Model<any> | undefined): Promise<void> {
+		if (!model || isVirtualModel(model) || model.contextWindow <= 0) return;
+		const settings = this.settingsManager.getContextPruningSettings();
+		if (!settings.enabled) return;
+		const projection = this.sessionManager.buildSessionProjection();
+		const lastAssistant = projection.messages.findLast((message) => message.role === "assistant");
+		if (!lastAssistant) return;
+		const branch = this.sessionManager.getBranch();
+		const retention = resolveSessionCacheRetention(
+			this.settingsManager.getCacheRetention(),
+			model,
+			this._modelRuntime,
+		);
+		// Providers without a published lifetime (OpenAI) keep entries for minutes to an hour.
+		// Assuming the long end only delays clearing until context pressure requires it.
+		const ttlMs = getPromptCacheTtlMs(model, { cacheRetention: retention }) ?? 60 * 60_000;
+		const stale = selectStaleToolResults({
+			entries: projection.entries,
+			branch,
+			settings,
+			contextTokens: estimateProjectedContextTokens(projection, branch).tokens,
+			compactionThreshold: getCompactionThreshold(
+				model.contextWindow,
+				this._thresholdCompactionSettings(this.settingsManager.getCompactionSettings(model)),
+			),
+			cacheWarm: Date.now() - lastCacheWrite(branch, model, lastAssistant.timestamp) < ttlMs,
+		});
+		if (stale.length === 0) return;
+		for (const result of stale) {
+			const text = result.message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+			let savedPath: string | undefined;
+			try {
+				savedPath = await writeOutputFile("pi-cleared", ".txt", text);
+			} catch {
+				// Without a file the pointer tells the model to rerun the tool instead.
+			}
+			const editId = this.sessionManager.appendContextEdit(result.entryId, {
+				content: formatClearedToolResult(result.message, savedPath),
+			});
+			const entry = this.sessionManager.getEntry(editId);
+			if (entry) this._emit({ type: "entry_appended", entry });
+		}
+		this._refreshFinalizedContext();
+	}
+
 	private async _compactBeforeNextAssistantResponse(context: AgentContext): Promise<AgentContext> {
+		await this._pruneStaleToolResults(this.model);
 		const projection = this.sessionManager.buildSessionProjection();
 		// A virtual selection is checked in prepareRequest, against the model the request is routed to.
 		const model = this.model;
 		if (!model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
+			if (model && !isVirtualModel(model) && model.contextWindow > 0) {
+				this._maybeStartSpeculativeCompaction(
+					estimateProjectedContextTokens(projection, this.sessionManager.getBranch()).tokens,
+					model.contextWindow,
+					this.settingsManager.getCompactionSettings(model),
+				);
+			}
 			return { ...context, messages: projection.messages };
 		}
 		await this._runAutoCompaction("threshold", false);
@@ -839,6 +951,7 @@ export class AgentSession {
 		this.agent.prepareRequest = async (request, signal) => {
 			const failed = this._failedResponse;
 			this._failedResponse = undefined;
+			await this._pruneStaleToolResults(this.agent.state.model);
 			const prepare = async () => {
 				const projection = this.sessionManager.buildSessionProjection();
 				const canonicalContext = {
@@ -1979,6 +2092,20 @@ export class AgentSession {
 		}
 	}
 
+	/** before_agent_start for a run, with the tool loadout the run will use. */
+	private async _beforeAgentStart(trigger: BeforeAgentStartTrigger) {
+		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+		const result = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
+		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
+		// which updates the live loadout instead. An explicit edit wins; otherwise the live
+		// loadout is authoritative, so a setActiveTools() call is not undone here.
+		const handlerEditedTools =
+			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+		return result;
+	}
+
 	/**
 	 * Prepare a run and return its starting messages: compact first when needed, emit
 	 * before_agent_start, apply the run's prompt options and tool loadout, and build the starting
@@ -1993,15 +2120,7 @@ export class AgentSession {
 			await this._checkCompaction(lastAssistant, false);
 		}
 
-		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-		const result = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
-		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
-		// which updates the live loadout instead. An explicit edit wins; otherwise the live
-		// loadout is authoritative, so a setActiveTools() call is not undone here.
-		const handlerEditedTools =
-			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
-		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+		const result = await this._beforeAgentStart(trigger);
 
 		const messages: AgentMessage[] = [];
 		if (trigger.messageType === "custom") {
@@ -2140,6 +2259,54 @@ export class AgentSession {
 			hints.push(...processed.hints);
 		}
 		return { images: normalizedImages, hints };
+	}
+
+	/**
+	 * Write the prompt cache the next prompt will read: the request a prompt would send now, with a
+	 * placeholder for the user's words, stopped at the model's first output (Agent.warm). Call it when
+	 * a prompt is coming - a conversation opened, the user typing - so the first call reads its whole
+	 * prefix instead of paying for what is new since the cache was last written: on a fresh session
+	 * with the shared prompt cache, everything after the system prompt and tools another session
+	 * already sent.
+	 *
+	 * The transcript is the session's projection, as the real request's is; the rest of that
+	 * preparation - pruning, compaction, retry state - is left to the real request. The prompt is
+	 * the one a run would build: `before_agent_start` runs as it does for a message. A handler that
+	 * shapes the prompt from the message's own words gets "." here and writes a cache the message
+	 * misses - warming is best-effort. Skipped while a run is active (it keeps its own cache), on a
+	 * virtual model (the request goes to whichever model routing picks), and when a one-token
+	 * request would not write the entry the real request reads (`isReplayable`: Anthropic budget
+	 * thinking). Resolves once the request finished or was skipped.
+	 */
+	async warm(signal?: AbortSignal): Promise<{ warmed: boolean; cacheWrite?: number }> {
+		if (!this.isIdle || isVirtualModel(this.agent.state.model)) return { warmed: false };
+		const level = this.agent.state.thinkingLevel;
+		if (!isReplayable(this.agent.state.model, { reasoning: level === "off" ? undefined : level })) {
+			return { warmed: false };
+		}
+		const { systemPromptOptions } = await this._beforeAgentStart({ messageType: "user", prompt: "." });
+		if (!this.isIdle || signal?.aborted) return { warmed: false };
+		const projection = this.sessionManager.buildSessionProjection().messages;
+		const update = this._preparePromptAndToolLoadout(systemPromptOptions, projection);
+		const user: AgentMessage = { role: "user", content: [{ type: "text", text: "." }], timestamp: Date.now() };
+		try {
+			const message = await this.agent.warm(update ? [update, user] : [user], { signal, messages: projection });
+			// A stopped warm-up ends as aborted; an error means nothing was written.
+			if (!message || message.stopReason === "error") return { warmed: false };
+			const usage = message.usage;
+			if (usage && usage.input + usage.cacheRead + usage.cacheWrite > 0) {
+				this.sessionManager.appendUsage(
+					"cache_prewarm",
+					message.provider,
+					message.responseModel ?? message.model,
+					usage,
+				);
+			}
+			return { warmed: true, ...(usage ? { cacheWrite: usage.cacheWrite } : {}) };
+		} catch {
+			// Best-effort, like refresh warming: a failed warm-up costs the real request nothing.
+			return { warmed: false };
+		}
 	}
 
 	/**
@@ -2852,6 +3019,23 @@ export class AgentSession {
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
 		const request = await this._getSummarizationRequestAuth(model, signal);
+		// The provider cache holds the session model's requests only. Overflow recovery uses the
+		// standalone request: the cached conversation may itself be what overflowed, while the
+		// standalone request truncates tool results.
+		const sessionModel = this.agent.state.model;
+		const cacheReuse: SummaryCacheReuse | undefined =
+			reason !== "overflow" &&
+			this.settingsManager.getCompactionReuseCache() &&
+			request.model.provider === sessionModel.provider &&
+			request.model.id === sessionModel.id
+				? {
+						convertMessages: async (messages: AgentMessage[]) =>
+							this.agent.convertToLlm(
+								this.agent.transformContext ? await this.agent.transformContext(messages, signal) : messages,
+							),
+						sessionId: this.sessionManager.getSessionId(),
+					}
+				: undefined;
 		return compact(
 			preparation,
 			request.model,
@@ -2860,12 +3044,13 @@ export class AgentSession {
 			customInstructions,
 			signal,
 			request.thinkingLevel,
-			this.agent.streamFunction,
+			this._summaryStreamFn(),
 			request.env,
 			this.settingsManager.getRetrySettings(),
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
 			undefined, // sessionId
 			onResponse,
+			cacheReuse,
 		);
 	}
 
@@ -2977,6 +3162,7 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
+			this._cancelSpeculativeCompaction();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
@@ -3050,6 +3236,7 @@ export class AgentSession {
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
+		this._cancelSpeculativeCompaction();
 	}
 
 	/**
@@ -3213,7 +3400,107 @@ export class AgentSession {
 		if (shouldCompact(contextTokens, contextWindow, this._thresholdCompactionSettings(settings))) {
 			return await this._runAutoCompaction("threshold", false);
 		}
+		this._maybeStartSpeculativeCompaction(contextTokens, contextWindow, settings);
 		return false;
+	}
+
+	/**
+	 * Start the threshold summary in the background once context reaches
+	 * `SPECULATIVE_COMPACTION_RATIO` of the threshold, so the agent does not wait for it when the
+	 * threshold is reached. The session is append-only, so the summary of the prefix stays valid
+	 * as long as the branch still starts with the entries it saw. Skipped when extensions handle
+	 * compaction, because they may need to see the final preparation.
+	 */
+	private _maybeStartSpeculativeCompaction(
+		contextTokens: number,
+		contextWindow: number,
+		settings: CompactionSettings,
+	): void {
+		const model = this.model;
+		if (!model || isVirtualModel(model) || this._speculativeCompaction) return;
+		if (!settings.enabled || this._extensionRunner.hasHandlers("session_before_compact")) return;
+		const threshold = getCompactionThreshold(contextWindow, this._thresholdCompactionSettings(settings));
+		if (contextTokens < threshold * SPECULATIVE_COMPACTION_RATIO) return;
+		const branch = this.sessionManager.getBranch();
+		const preparation = prepareCompaction(branch, settings);
+		if (!preparation) return;
+		const abortController = new AbortController();
+		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
+		const result = this._runDefaultCompaction(
+			preparation,
+			model,
+			undefined,
+			abortController.signal,
+			"threshold",
+			usageTracker.onResponse,
+		).catch(() => undefined);
+		this._speculativeCompaction = {
+			branchIds: branch.map((entry) => entry.id),
+			modelKey: `${model.provider}/${model.id}`,
+			abortController,
+			result,
+			usageTracker,
+		};
+	}
+
+	/**
+	 * Take the background summary if it still matches the branch and model, and drop it either way.
+	 * Waiting for it ends when `signal` aborts (Esc, dispose), which also aborts the summary.
+	 */
+	private async _takeSpeculativeCompaction(
+		model: Model<any>,
+		signal: AbortSignal,
+	): Promise<
+		{ result: CompactionResult; usageTracker: ReturnType<typeof createSummarizationUsageTracker> } | undefined
+	> {
+		const speculative = this._speculativeCompaction;
+		if (!speculative) return undefined;
+		this._speculativeCompaction = undefined;
+		const branch = this.sessionManager.getBranch();
+		const matches =
+			speculative.modelKey === `${model.provider}/${model.id}` &&
+			speculative.branchIds.length <= branch.length &&
+			speculative.branchIds.every((id, index) => branch[index]?.id === id) &&
+			!branch.slice(speculative.branchIds.length).some((entry) => entry.type === "compaction");
+		if (!matches || signal.aborted) {
+			this._dropSpeculativeCompaction(speculative);
+			return undefined;
+		}
+		let onAbort: (() => void) | undefined;
+		const aborted = new Promise<undefined>((resolve) => {
+			onAbort = () => resolve(undefined);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		try {
+			const result = await Promise.race([speculative.result, aborted]);
+			if (!result || signal.aborted) {
+				this._dropSpeculativeCompaction(speculative);
+				return undefined;
+			}
+			return { result, usageTracker: speculative.usageTracker };
+		} finally {
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+		}
+	}
+
+	/** Abort a background summary and record what its requests cost once they settle. */
+	private _dropSpeculativeCompaction(speculative: NonNullable<AgentSession["_speculativeCompaction"]>): void {
+		speculative.abortController.abort();
+		void speculative.result.then(() => speculative.usageTracker.finish());
+	}
+
+	private _cancelSpeculativeCompaction(): void {
+		const speculative = this._speculativeCompaction;
+		this._speculativeCompaction = undefined;
+		if (speculative) this._dropSpeculativeCompaction(speculative);
+	}
+
+	/** Estimated context tokens of the projection from `entryId` to the end of the branch. */
+	private _estimateTokensFrom(entryId: string): number {
+		const entries = this.sessionManager.buildSessionProjection().entries;
+		const start = entries.findIndex((entry) => entry.sourceEntry.id === entryId);
+		if (start === -1) return Number.POSITIVE_INFINITY;
+		return estimateMessagesTokens(entries.slice(start).flatMap((entry) => entry.messages));
 	}
 
 	/**
@@ -3231,6 +3518,7 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
 		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
+		let committedTracker = usageTracker;
 		let started = false;
 		let fromExtension = false;
 		let cancelledByExtension = false;
@@ -3291,28 +3579,48 @@ export class AgentSession {
 				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
+				// A background summary of an earlier prefix keeps more recent entries verbatim, which is
+				// fine as long as they fit; otherwise summarize now.
+				const speculative =
+					reason === "threshold"
+						? await this._takeSpeculativeCompaction(model, abortController.signal)
+						: undefined;
+				const speculativeFits =
+					speculative !== undefined &&
+					this._estimateTokensFrom(speculative.result.firstKeptEntryId) <
+						getCompactionThreshold(model.contextWindow, this._thresholdCompactionSettings(settings)) *
+							SPECULATIVE_MAX_KEPT_RATIO;
+				if (speculative && !speculativeFits) speculative.usageTracker.finish();
+				const tracker = speculative && speculativeFits ? speculative.usageTracker : usageTracker;
+				// Its successful requests are stored on the compaction entry, or recorded on failure.
+				committedTracker = tracker;
+				abortController.signal.throwIfAborted();
 				// Shared default summary generator, also used by manual compaction.
-				const compactResult = await this._runDefaultCompaction(
-					preparation,
-					model,
-					undefined,
-					abortController.signal,
-					reason,
-					usageTracker.onResponse,
-				);
+				const compactResult =
+					speculative && speculativeFits
+						? speculative.result
+						: await this._runDefaultCompaction(
+								preparation,
+								model,
+								undefined,
+								abortController.signal,
+								reason,
+								usageTracker.onResponse,
+							);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
 				details = {
 					...(compactResult.details && typeof compactResult.details === "object" ? compactResult.details : {}),
-					usageRequests: usageTracker.getSuccessfulResponses(),
+					usageRequests: tracker.getSuccessfulResponses(),
 				};
 			}
 			abortController.signal.throwIfAborted();
 
+			this._cancelSpeculativeCompaction();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			usageTracker.commit();
+			committedTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
@@ -3349,6 +3657,7 @@ export class AgentSession {
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
 			usageTracker.finish();
+			committedTracker.finish();
 			const message = error instanceof Error ? error.message : "compaction failed";
 			const aborted = abortController?.signal.aborted === true || cancelledByExtension || isAbortError(error);
 			if (started) {
@@ -3376,6 +3685,7 @@ export class AgentSession {
 			return false;
 		} finally {
 			usageTracker.finish();
+			committedTracker.finish();
 			if (this._autoCompactionAbortController === abortController) {
 				this._autoCompactionAbortController = undefined;
 			}
@@ -4204,7 +4514,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
+					streamFn: this._summaryStreamFn(),
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 					onResponse: usageTracker.onResponse,
@@ -4468,7 +4778,7 @@ export class AgentSession {
 			messages: this.messages,
 			hint: options.hint,
 			signal: options.signal,
-			streamFn: this.agent.streamFunction,
+			streamFn: this._summaryStreamFn(),
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});

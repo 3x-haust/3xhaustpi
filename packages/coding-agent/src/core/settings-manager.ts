@@ -11,6 +11,7 @@ import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import type {
+	CacheRetentionSetting,
 	CacheWarmingMode,
 	CompactionModelOverride,
 	DefaultProjectTrust,
@@ -28,6 +29,7 @@ import type {
 
 export type {
 	BranchSummarySettings,
+	CacheRetentionSetting,
 	CacheWarmingMode,
 	CodemodeMode,
 	CodemodeSettings,
@@ -52,6 +54,7 @@ export type {
 } from "./settings-schema.ts";
 /** Cache-warming profile. "idle" also warms between agent runs. */
 export const CACHE_WARMING_MODES = ["off", "streaming", "idle"] as const satisfies readonly CacheWarmingMode[];
+export const CACHE_RETENTION_SETTINGS = ["auto", "short", "long"] as const satisfies readonly CacheRetentionSetting[];
 
 const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<CompactionModelOverride> = {
 	reserveTokens: SETTINGS_DEFAULTS.compaction.reserveTokens,
@@ -902,6 +905,21 @@ export class SettingsManager {
 		};
 	}
 
+	getContextPruningSettings(): { enabled: boolean; protectRecentTokens: number; minSavingsTokens: number } {
+		const pruning = this.settings.contextPruning;
+		const defaults = SETTINGS_DEFAULTS.contextPruning;
+		return {
+			enabled: pruning?.enabled ?? defaults.enabled,
+			protectRecentTokens: pruning?.protectRecentTokens ?? defaults.protectRecentTokens,
+			minSavingsTokens: pruning?.minSavingsTokens ?? defaults.minSavingsTokens,
+		};
+	}
+
+	/** Whether compaction summarizes on the session's cached request prefix first. */
+	getCompactionReuseCache(): boolean {
+		return this.settings.compaction?.reuseCache ?? SETTINGS_DEFAULTS.compaction.reuseCache;
+	}
+
 	/** Absolute context size that triggers compaction on large windows; read only by the threshold check. */
 	getCompactionMaxContextTokens(): number {
 		return this.settings.compaction?.maxContextTokens ?? SETTINGS_DEFAULTS.compaction.maxContextTokens;
@@ -951,6 +969,12 @@ export class SettingsManager {
 		this.globalSettings.httpIdleTimeoutMs = Math.floor(timeoutMs);
 		this.markModified("httpIdleTimeoutMs");
 		this.save();
+	}
+
+	/** Prompt cache lifetime for session requests; see resolveSessionCacheRetention. */
+	getCacheRetention(): CacheRetentionSetting {
+		const value = this.settings.cacheRetention;
+		return value !== undefined && CACHE_RETENTION_SETTINGS.includes(value) ? value : SETTINGS_DEFAULTS.cacheRetention;
 	}
 
 	/** Read from global settings only because warming costs money. */

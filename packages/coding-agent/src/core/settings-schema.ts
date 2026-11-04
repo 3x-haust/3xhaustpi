@@ -25,9 +25,38 @@ const CompactionSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.compaction.maxContextTokens,
 		}),
 	),
+	reuseCache: Type.Optional(
+		Type.Boolean({
+			description:
+				"Summarize by appending an instruction to the conversation as the session sent it, so the provider reads it from prompt cache. Falls back to a standalone summary request when the model does not answer with a summary.",
+			default: SETTINGS_DEFAULTS.compaction.reuseCache,
+		}),
+	),
 	modelOverrides: Type.Optional(
 		Type.Record(Type.String(), CompactionModelOverrideSchema, {
 			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',
+		}),
+	),
+});
+
+const ContextPruningSettingsSchema = Type.Object({
+	enabled: Type.Optional(
+		Type.Boolean({
+			description:
+				"Replace old large tool results with a pointer to a file holding their text before compaction is needed.",
+			default: SETTINGS_DEFAULTS.contextPruning.enabled,
+		}),
+	),
+	protectRecentTokens: Type.Optional(
+		nonNegativeSafeInteger({
+			description: "Tool results inside this many most recent context tokens are never cleared.",
+			default: SETTINGS_DEFAULTS.contextPruning.protectRecentTokens,
+		}),
+	),
+	minSavingsTokens: Type.Optional(
+		nonNegativeSafeInteger({
+			description: "Clear only when at least this many tokens would be removed in one batch.",
+			default: SETTINGS_DEFAULTS.contextPruning.minSavingsTokens,
 		}),
 	),
 });
@@ -431,6 +460,14 @@ export const SettingsSchema = Type.Object(
 				default: SETTINGS_DEFAULTS.cacheWarming,
 			}),
 		),
+		contextPruning: Type.Optional(ContextPruningSettingsSchema),
+		cacheRetention: Type.Optional(
+			Type.Union([Type.Literal("auto"), Type.Literal("short"), Type.Literal("long")], {
+				description:
+					'Prompt cache lifetime for session requests. "auto" uses the long (1h) tier on subscription logins, where cache writes cost no extra money, and the provider default otherwise.',
+				default: SETTINGS_DEFAULTS.cacheRetention,
+			}),
+		),
 		websocketConnectTimeoutMs: Type.Optional(
 			timeoutSetting({
 				description: 'WebSocket connect or open handshake timeout in milliseconds; 0 or "disabled" disables it.',
@@ -501,6 +538,7 @@ export type PackageSource = Static<typeof PackageSourceSchema>;
 export type FullscreenExitOutput = NonNullable<SettingsInput["fullscreenExitOutput"]>;
 export type TuiMode = NonNullable<SettingsInput["tuiMode"]>;
 export type CacheWarmingMode = NonNullable<SettingsInput["cacheWarming"]>;
+export type CacheRetentionSetting = NonNullable<SettingsInput["cacheRetention"]>;
 export interface Settings extends Omit<SettingsInput, "queueMode" | "retry" | "skills" | "websockets"> {
 	retry?: RetrySettings;
 	skills?: string[];

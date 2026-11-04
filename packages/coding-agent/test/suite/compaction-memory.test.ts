@@ -70,7 +70,8 @@ describe("compaction memory and budget", () => {
 		const harness = await createHarness({
 			persistSession,
 			models: [{ id: "memory-faux", contextWindow, maxTokens: 128_000 }],
-			settings: { compaction: { keepRecentTokens: 100 } },
+			// These tests cover the standalone, batched summary request.
+			settings: { compaction: { keepRecentTokens: 100, reuseCache: false } },
 		});
 		harnesses.push(harness);
 		return harness;
