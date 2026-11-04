@@ -1,4 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { type FauxResponseFactory, fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,8 +33,13 @@ describe("AgentSession cache prefix stability with faux provider", () => {
 		const prefixes: string[] = [];
 		const toolNames: string[][] = [];
 		const respond: FauxResponseFactory = (context) => {
-			prefixes.push(JSON.stringify({ system: context.systemPrompt, tools: context.tools }));
-			toolNames.push(context.tools?.map((entry) => entry.name) ?? []);
+			prefixes.push(
+				JSON.stringify({
+					system: getCurrentSystemPrompt(context.messages),
+					tools: getCurrentTools(context.messages),
+				}),
+			);
+			toolNames.push(getCurrentTools(context.messages).map((entry) => entry.name));
 			return fauxAssistantMessage("ok");
 		};
 		harness.setResponses([respond, respond, respond]);
@@ -69,8 +75,13 @@ describe("AgentSession cache prefix stability with faux provider", () => {
 		const prefixes: string[] = [];
 		const firstMessages: string[] = [];
 		const respond: FauxResponseFactory = (context) => {
-			prefixes.push(JSON.stringify({ system: context.systemPrompt, tools: context.tools }));
-			firstMessages.push(JSON.stringify(context.messages[0]));
+			prefixes.push(
+				JSON.stringify({
+					system: getCurrentSystemPrompt(context.messages),
+					tools: getCurrentTools(context.messages),
+				}),
+			);
+			firstMessages.push(JSON.stringify(context.messages.find((message) => message.role !== "system")));
 			return fauxAssistantMessage("ok");
 		};
 		harness.setResponses([respond, respond, respond]);

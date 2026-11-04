@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "owner": "3x-haust/3xhaustpi",
   "upstream": "earendil-works/pi",
-  "upstreamBase": "e9e86e1c832de1edfff2d42041c8f9087d72a0cf",
+  "upstreamBase": "f9a26365568127461c47a07a37dcb42c140a3ac5",
   "candidateRefPattern": "refs/heads/candidates/3xhaustpi/*",
   "securityPatchSlaHours": 72,
   "policy": {

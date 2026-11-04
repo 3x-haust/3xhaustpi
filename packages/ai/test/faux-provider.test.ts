@@ -1,3 +1,4 @@
+import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	complete,
@@ -7,7 +8,6 @@ import {
 	fauxToolCall,
 	registerFauxProvider,
 	stream,
-	Type,
 } from "../src/compat.ts";
 import type { AssistantMessageEvent, Context, Usage } from "../src/types.ts";
 
@@ -395,43 +395,27 @@ describe("faux provider", () => {
 		expect(second.usage.input + second.usage.cacheRead).toBeGreaterThan(second.usage.input);
 	});
 
-	it.each([
-		{ nextPrompt: "hello", promptTokens: 3, cacheRead: 3, cacheWrite: 0 },
-		{ nextPrompt: "hello world", promptTokens: 4, cacheRead: 3, cacheWrite: 1 },
-		{ nextPrompt: "help", promptTokens: 3, cacheRead: 2, cacheWrite: 1 },
-		{ nextPrompt: "he", promptTokens: 2, cacheRead: 2, cacheWrite: 0 },
-	])(
-		"counts cached prompt tokens once for '$nextPrompt'",
-		async ({ nextPrompt, promptTokens, cacheRead, cacheWrite }) => {
-			const registration = registerFauxProvider();
-			registrations.push(registration);
-			const message = fauxAssistantMessage("done");
-			registration.setResponses([message, message]);
-			const options = { sessionId: "session-1", cacheRetention: "short" as const };
+	it("counts cached characters up to the first difference in the joined prompt", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		registration.setResponses([fauxAssistantMessage("a"), fauxAssistantMessage("b"), fauxAssistantMessage("c")]);
+		const options = { sessionId: "session-1", cacheRetention: "short" } as const;
+		const user = (content: string) => ({ role: "user" as const, content, timestamp: 1 });
 
-			const first = await complete(
-				registration.getModel(),
-				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
-				options,
-			);
-			expect(first.usage).toMatchObject({ input: 0, output: 1, cacheRead: 0, cacheWrite: 3, totalTokens: 4 });
+		// Prompt texts: "user:hello world" (16 characters), then 16 + 2 + "user:next" (9) = 27.
+		const first = await complete(registration.getModel(), { messages: [user("hello world")] }, options);
+		expect(first.usage).toMatchObject({ input: 0, cacheRead: 0, cacheWrite: 4 });
+		const extended = await complete(
+			registration.getModel(),
+			{ messages: [user("hello world"), user("next")] },
+			options,
+		);
+		expect(extended.usage).toMatchObject({ input: 0, cacheRead: 4, cacheWrite: 3 });
 
-			const second = await complete(
-				registration.getModel(),
-				{ messages: [{ role: "user", content: nextPrompt, timestamp: 2 }] },
-				options,
-			);
-			expect(second.usage).toMatchObject({
-				input: 0,
-				output: 1,
-				cacheRead,
-				cacheWrite,
-				totalTokens: promptTokens + 1,
-			});
-			expect(second.usage.input + second.usage.cacheRead + second.usage.cacheWrite).toBe(promptTokens);
-			expect(message.usage.totalTokens).toBe(0);
-		},
-	);
+		// The first message now differs after "user:hello w" (12 characters): "user:hello wide" + 2 + 9 = 26.
+		const edited = await complete(registration.getModel(), { messages: [user("hello wide"), user("next")] }, options);
+		expect(edited.usage).toMatchObject({ input: 0, cacheRead: 3, cacheWrite: 4 });
+	});
 
 	it("does not simulate caching when cacheRetention is none", async () => {
 		const registration = registerFauxProvider();

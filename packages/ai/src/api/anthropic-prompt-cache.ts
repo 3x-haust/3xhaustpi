@@ -1,14 +1,16 @@
 import type {
-	CacheControlEphemeral,
-	ContentBlockParam,
+	BetaCacheControlEphemeral as CacheControlEphemeral,
+	BetaContentBlockParam as ContentBlockParam,
 	MessageCreateParamsStreaming,
-} from "@anthropic-ai/sdk/resources/messages.js";
+} from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 
-type CacheableBlock = Extract<ContentBlockParam, { type: "text" | "image" | "tool_result" | "tool_use" }>;
+const CACHEABLE_BLOCK_TYPES = new Set(["text", "image", "tool_result", "tool_use", "tool_addition", "tool_removal"]);
+type CacheableBlock = ContentBlockParam & { cache_control?: CacheControlEphemeral | null };
 const CACHE_LOOKBACK_BLOCKS = 20;
 
 /**
  * Reserve two conversation breakpoints alongside tools and the complete system.
+ * Empty mid-conversation system messages (effort markers) carry no block and are skipped.
  * Prefer the preceding message boundary (including assistant continuations) if
  * its lookback still covers the preceding user boundary. Otherwise keep that
  * user boundary explicit, so large newly generated tool batches cannot hide it.
@@ -21,6 +23,14 @@ export function applyAnthropicPromptCache(
 ): void {
 	if (!cacheControl) return;
 
+	// Use block content everywhere, so a user message serializes the same bytes whether or
+	// not it currently carries a breakpoint and moving boundaries keep the cached prefix.
+	for (const message of params.messages) {
+		if (typeof message.content === "string") {
+			message.content = [{ type: "text", text: message.content }];
+		}
+	}
+
 	// A single system breakpoint covers both the OAuth identity and prompt.
 	if (Array.isArray(params.system) && params.system.length > 0) {
 		params.system[params.system.length - 1].cache_control = cacheControl;
@@ -31,20 +41,12 @@ export function applyAnthropicPromptCache(
 	let blocksAfterMessage = 0;
 	for (let i = params.messages.length - 1; i >= 0; i--) {
 		const message = params.messages[i];
-		if (typeof message.content === "string") {
-			message.content = [{ type: "text", text: message.content }];
-		}
-		const blocks = message.content;
+		const blocks = message.content as ContentBlockParam[];
 		let boundary: { block: CacheableBlock; position: number } | undefined;
 		for (let j = blocks.length - 1; j >= 0; j--) {
 			const block = blocks[j];
-			if (
-				block.type === "text" ||
-				block.type === "image" ||
-				block.type === "tool_result" ||
-				block.type === "tool_use"
-			) {
-				boundary = { block, position: blocksAfterMessage + blocks.length - 1 - j };
+			if (CACHEABLE_BLOCK_TYPES.has(block.type)) {
+				boundary = { block: block as CacheableBlock, position: blocksAfterMessage + blocks.length - 1 - j };
 				break;
 			}
 		}
@@ -57,7 +59,8 @@ export function applyAnthropicPromptCache(
 			continue;
 		}
 		preceding ??= boundary;
-		if (message.role === "user") {
+		// Mid-conversation system messages (tool changes) sit on the user side of a turn.
+		if (message.role !== "assistant") {
 			const selected = boundary.position - preceding.position < CACHE_LOOKBACK_BLOCKS ? preceding : boundary;
 			selected.block.cache_control = cacheControl;
 			return;

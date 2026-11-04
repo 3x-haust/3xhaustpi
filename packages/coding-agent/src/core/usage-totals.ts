@@ -32,7 +32,7 @@ export function getEntryUsage(entry: SessionEntry): Usage | undefined {
 	if (entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")) {
 		return entry.message.usage;
 	}
-	if (entry.type === "branch_summary" || entry.type === "compaction") {
+	if (entry.type === "branch_summary" || entry.type === "compaction" || entry.type === "usage") {
 		return entry.usage;
 	}
 	if (entry.type !== "custom" || entry.customType !== "pi.summarization_usage") return undefined;
@@ -85,13 +85,39 @@ export function getEntryUsage(entry: SessionEntry): Usage | undefined {
 	return usage as Usage;
 }
 
+/** Sum of two usages, keeping the optional token splits when either side reports them. */
+export function combineUsage(first: Usage, second: Usage): Usage {
+	return {
+		input: first.input + second.input,
+		output: first.output + second.output,
+		cacheRead: first.cacheRead + second.cacheRead,
+		cacheWrite: first.cacheWrite + second.cacheWrite,
+		...(first.cacheWrite1h !== undefined || second.cacheWrite1h !== undefined
+			? { cacheWrite1h: (first.cacheWrite1h ?? 0) + (second.cacheWrite1h ?? 0) }
+			: {}),
+		...(first.reasoning !== undefined || second.reasoning !== undefined
+			? { reasoning: (first.reasoning ?? 0) + (second.reasoning ?? 0) }
+			: {}),
+		totalTokens: first.totalTokens + second.totalTokens,
+		cost: {
+			input: first.cost.input + second.cost.input,
+			output: first.cost.output + second.cost.output,
+			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
+			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
+			total: first.cost.total + second.cost.total,
+			// A sum is provider-reported only when every part is.
+			totalFromProvider: first.cost.totalFromProvider === true && second.cost.totalFromProvider === true,
+		},
+	};
+}
+
 export interface UsageCostBreakdownEntry {
 	key: string;
 	cost: number;
 	tokens: number;
 }
 
-/** Group attributable assistant usage by model and all other usage into a separate bucket. */
+/** Group model-attributed usage by model and all other usage into a separate bucket. */
 export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdownEntry[] {
 	const totalsByKey = new Map<string, UsageTotals>();
 
@@ -101,7 +127,9 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 		const key =
 			entry.type === "message" && entry.message.role === "assistant"
 				? `${entry.message.provider}/${entry.message.responseModel ?? entry.message.model}`
-				: "Tools/summaries";
+				: entry.type === "usage"
+					? `${entry.provider}/${entry.model}`
+					: "Tools/summaries";
 
 		let totals = totalsByKey.get(key);
 		if (!totals) {

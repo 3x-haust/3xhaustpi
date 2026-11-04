@@ -8,7 +8,12 @@
  */
 
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/pi-ai";
+import {
+	type Context,
+	getInitialSystemMessage,
+	getSystemMessageText,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 
 /** Key for the system prompt and tool definitions of `context`, or undefined when it has neither. */
 export function prefixCacheKey(context: Pick<Context, "systemPrompt" | "tools">): string | undefined {
@@ -25,4 +30,11 @@ export function prefixCacheKey(context: Pick<Context, "systemPrompt" | "tools">)
 		)
 		.digest("hex");
 	return `pfx-${hash.slice(0, 40)}`;
+}
+
+/** {@link prefixCacheKey} for a normalized request, keyed by its leading system message. */
+export function transcriptPrefixCacheKey(context: Pick<TranscriptContext, "messages">): string | undefined {
+	const initial = getInitialSystemMessage(context.messages);
+	if (!initial) return undefined;
+	return prefixCacheKey({ systemPrompt: getSystemMessageText(initial), tools: initial.toolsAdded });
 }

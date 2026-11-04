@@ -3,9 +3,10 @@ import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamCodex } from "../src/api/openai-codex-responses.ts";
 import { stream as streamCompletions } from "../src/api/openai-completions.ts";
 import { stream as streamResponses } from "../src/api/openai-responses.ts";
-import type { Api, Context, Model, Usage } from "../src/types.ts";
+import type { Api, Model, Usage } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
-const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 0 }] };
+const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 0 }] });
 const token = `test.${Buffer.from(
 	JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } }),
 ).toString("base64")}.test`;
@@ -154,6 +155,8 @@ describe("provider cache usage normalization", () => {
 							service_tier: "priority",
 							usage: responseUsage,
 							error: status === "failed" ? { code: "server_error", message: "test failure" } : null,
+							// Only a token-limit incomplete maps to "length"; others are errors upstream.
+							incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
 						},
 					};
 					const fetch = vi.fn(async () => sseResponse([event]));
@@ -203,6 +206,7 @@ describe("provider cache usage normalization", () => {
 										status,
 										usage: responseUsage,
 										error: status === "failed" ? { code: "server_error", message: "test failure" } : null,
+										incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
 									},
 								}),
 							}),

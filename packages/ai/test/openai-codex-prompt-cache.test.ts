@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { streamSimple } from "../src/api/openai-codex-responses.ts";
 import { getModel } from "../src/compat.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 interface CapturedPayload {
 	prompt_cache_key?: string;
@@ -20,11 +21,11 @@ async function capturePayload(
 		headers: { "content-type": "text/event-stream" },
 	});
 	const request = streamSimple(
-		getModel("openai-codex", "gpt-5.5"),
-		{
+		getModel("openai-codex", "gpt-6-sol"),
+		normalizeContext({
 			systemPrompt: "Reply concisely.",
 			messages: [{ role: "user", content: "hello", timestamp: 0 }],
-		},
+		}),
 		{
 			apiKey,
 			cacheRetention,

@@ -1,11 +1,13 @@
 import {
 	type AssistantMessage,
 	contentText,
+	createInitialSystemMessage,
 	type ImageContent,
 	type Model,
 	type Models,
 	type RetryCallbacks,
 	type RetryPolicy,
+	toToolDeclaration,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
 import { runAgentLoop } from "../agent-loop.ts";
@@ -390,11 +392,15 @@ export class AgentHarness<
 		turnState: AgentHarnessTurnState<TContext, TSkill, TPromptTemplate, TTool>,
 		systemPrompt?: string,
 	): AgentContext {
-		return {
-			systemPrompt: systemPrompt ?? turnState.systemPrompt,
-			messages: turnState.messages.slice(),
-			tools: turnState.activeTools.map((tool) => this.bindToolContext(tool, turnState.toolContext)),
-		};
+		const tools = turnState.activeTools.map((tool) => this.bindToolContext(tool, turnState.toolContext));
+		const messages = turnState.messages.slice();
+		// The agent loop reads the prompt and tool declarations from the leading system message.
+		const initialMessage = createInitialSystemMessage(
+			systemPrompt ?? turnState.systemPrompt,
+			tools.map(toToolDeclaration),
+		);
+		if (initialMessage && messages[0]?.role !== "system") messages.unshift(initialMessage);
+		return { messages, tools };
 	}
 
 	private createStreamFn(
