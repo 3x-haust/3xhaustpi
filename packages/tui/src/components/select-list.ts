@@ -44,7 +44,6 @@ export class SelectList implements Component {
 	private selectedIndex: number = 0;
 	private mousePressedIndex: number | undefined;
 	private maxVisible: number = 5;
-	private showScrollInfo = true;
 	private theme: SelectListTheme;
 	private layout: SelectListLayoutOptions;
 
@@ -58,14 +57,6 @@ export class SelectList implements Component {
 		this.maxVisible = maxVisible;
 		this.theme = theme;
 		this.layout = layout;
-	}
-
-	setMaxVisible(maxVisible: number): void {
-		this.maxVisible = Math.max(0, Math.floor(maxVisible));
-	}
-
-	setScrollInfoVisible(visible: boolean): void {
-		this.showScrollInfo = visible;
 	}
 
 	setFilter(filter: string): void {
@@ -107,7 +98,7 @@ export class SelectList implements Component {
 		}
 
 		// Add scroll indicators if needed
-		if (this.showScrollInfo && (startIndex > 0 || endIndex < this.filteredItems.length)) {
+		if (startIndex > 0 || endIndex < this.filteredItems.length) {
 			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
 			// Truncate if too long for terminal
 			lines.push(this.theme.scrollInfo(truncateToWidth(scrollText, width - 2, "")));
@@ -204,7 +195,7 @@ export class SelectList implements Component {
 		descriptionSingleLine: string | undefined,
 		primaryColumnWidth: number,
 	): string {
-		const prefix = isSelected ? "› " : "  ";
+		const prefix = isSelected ? "→ " : "  ";
 		const prefixWidth = visibleWidth(prefix);
 
 		if (descriptionSingleLine && width > 40) {

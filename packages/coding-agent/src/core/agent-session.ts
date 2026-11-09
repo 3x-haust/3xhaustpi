@@ -27,7 +27,6 @@ import {
 	type AgentToolCallOutcome,
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
-	isReplayable,
 	type PrepareNextTurnContext,
 	runToolCall,
 	type StreamFn,
@@ -44,6 +43,7 @@ import type {
 	TextContent,
 	ToolResultMessage,
 	Usage,
+	UserMessage,
 } from "@earendil-works/pi-ai/compat";
 import {
 	clampThinkingLevel,
@@ -60,23 +60,15 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
-import { writeOutputFile } from "../utils/output-files.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { generateBugReportSummary } from "./bug-report.ts";
-import { type CacheHitRates, computeCacheHitRates } from "./cache-stats.ts";
-import {
-	type CacheWarmer,
-	type CacheWarmingStatus,
-	getPromptCacheTtlMs,
-	resolveSessionCacheRetention,
-} from "./cache-warmer.ts";
+import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
-	type CompactionSettings,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
@@ -84,14 +76,9 @@ import {
 	estimateProjectedContextTokens,
 	estimateTokens,
 	generateBranchSummary,
-	getCompactionThreshold,
 	prepareCompaction,
-	SummarizationAbortedError,
-	type SummarizationResponseCallback,
-	type SummaryCacheReuse,
 	shouldCompact,
 } from "./compaction/index.ts";
-import { formatClearedToolResult, selectStaleToolResults } from "./context-pruning.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -128,7 +115,6 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { formatLoopWarning, LoopGuard } from "./loop-guard.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -154,7 +140,6 @@ import {
 } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { BUILTIN_PATH_PREFIX, createSyntheticSourceInfo, isSyntheticPath, type SourceInfo } from "./source-info.ts";
-import { createSummarizationUsageTracker } from "./summarization-usage.ts";
 import {
 	buildSystemPrompt,
 	buildSystemPromptSections,
@@ -165,7 +150,7 @@ import {
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { addUsageToTotals, combineUsage, createUsageTotals, getEntryUsage } from "./usage-totals.ts";
+import { addUsageToTotals, combineUsage, createUsageTotals } from "./usage-totals.ts";
 import {
 	findLatestResponse,
 	getBranchSelection,
@@ -385,39 +370,12 @@ export interface SessionStats {
 		total: number;
 	};
 	cost: number;
-	/** Prompt-cache hit rates on the current branch. */
-	cache: CacheHitRates;
 	contextUsage?: ContextUsage;
 }
 
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
-}
-
-/** Share of the compaction threshold at which the summary starts in the background. */
-const SPECULATIVE_COMPACTION_RATIO = 0.85;
-/** A background summary is used only if the entries it keeps stay below this share of the threshold. */
-const SPECULATIVE_MAX_KEPT_RATIO = 0.6;
-
-/** Usage kinds of requests sent only to write the prompt cache (CacheWarmer, AgentSession.warm). */
-const CACHE_WRITE_USAGE_KINDS = new Set(["cache_warm", "cache_prewarm"]);
-
-/**
- * When `model`'s provider last wrote the branch's prompt cache: the later of the last assistant
- * message (`lastAssistantAt`, ms) and the latest warm-up on the branch. A cache refreshed a minute
- * ago is warm even when the last answer is older than its lifetime.
- */
-function lastCacheWrite(branch: readonly SessionEntry[], model: Model<any>, lastAssistantAt: number): number {
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index];
-		if (entry.type !== "usage" || !CACHE_WRITE_USAGE_KINDS.has(entry.kind) || entry.provider !== model.provider) {
-			continue;
-		}
-		const warmedAt = new Date(entry.timestamp).getTime();
-		return Number.isNaN(warmedAt) ? lastAssistantAt : Math.max(lastAssistantAt, warmedAt);
-	}
-	return lastAssistantAt;
 }
 
 function estimateMessagesTokens(messages: AgentMessage[]): number {
@@ -432,9 +390,20 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 // AgentSession Class
 // ============================================================================
 
-/** A provider-side summary abort is a cancellation, not a failure; other AbortErrors still fail. */
-function isAbortError(error: unknown): boolean {
-	return error instanceof SummarizationAbortedError;
+/**
+ * Index of the model to cycle to, or undefined when there is nothing to switch to.
+ * When the current model is not in the list (currentIndex -1), forward picks the first
+ * entry and backward the last, so a one-entry list still selects its only model.
+ */
+function getNextCycleIndex(
+	currentIndex: number,
+	length: number,
+	direction: "forward" | "backward",
+): number | undefined {
+	if (length === 0) return undefined;
+	if (currentIndex === -1) return direction === "forward" ? 0 : length - 1;
+	if (length === 1) return undefined;
+	return direction === "forward" ? (currentIndex + 1) % length : (currentIndex - 1 + length) % length;
 }
 
 export class AgentSession {
@@ -448,6 +417,7 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	private _promptPreflightCount = 0;
 	private _agentRunAbortRequested = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
@@ -456,6 +426,8 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	/** Queued user messages whose images are normalized when they are delivered. */
+	private _queuedMessagesWithImages = new WeakSet<AgentMessage>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
@@ -480,8 +452,6 @@ export class AgentSession {
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
-	/** Notices the model rerunning an identical call that keeps returning an identical result. */
-	private readonly _loopGuard = new LoopGuard();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -529,14 +499,6 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
-	/** A threshold summary started early in the background; see `_maybeStartSpeculativeCompaction`. */
-	private _speculativeCompaction?: {
-		branchIds: string[];
-		modelKey: string;
-		abortController: AbortController;
-		result: Promise<CompactionResult | undefined>;
-		usageTracker: ReturnType<typeof createSummarizationUsageTracker>;
-	};
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 
 	// Tool registry for extension getTools/setTools
@@ -640,18 +602,6 @@ export class AgentSession {
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
 
-	/**
-	 * The session stream function for summaries, given the request options the agent loop gives
-	 * session requests: thinking budgets, so a budget-thinking model summarizes at the configured
-	 * budget (and a summary on the cached prefix sends the same thinking settings), and the
-	 * `before_provider_request` transform, so extensions see and shape every provider request.
-	 */
-	private _summaryStreamFn(): StreamFn {
-		const streamFn = this.agent.streamFunction;
-		const { thinkingBudgets, onPayload } = this.agent;
-		return (model, context, options) => streamFn(model, context, { thinkingBudgets, onPayload, ...options });
-	}
-
 	private async _getSummarizationRequestAuth(
 		selectedModel: Model<any>,
 		signal?: AbortSignal,
@@ -704,22 +654,47 @@ export class AgentSession {
 		return model?.provider === message.provider && model.id === message.model ? model : undefined;
 	}
 
-	/**
-	 * Record the selection on the current branch when the branch implies another one, so a resume
-	 * restores it. Tree navigation can leave the latest `model_change` on another branch; responses
-	 * cannot record a virtual selection because they name physical models. Responses do record a
-	 * physical selection unless the branch holds a virtual one; checking a physical selection against
-	 * responses would record it on every prompt while `prepareRequest` redirects to another model.
-	 */
+	/** Record the live model and thinking level on the current branch, so a resume restores them. */
 	private _recordSelection(): void {
+		const branch = this.sessionManager.getBranch();
+		this._recordModelSelection(branch);
+		this._recordThinkingLevel(branch);
+	}
+
+	/**
+	 * Record the model on the current branch when the branch implies another one. Tree navigation
+	 * can leave the latest `model_change` on another branch; responses cannot record a virtual
+	 * selection because they name physical models. Responses do record a physical selection unless
+	 * the branch holds a virtual one; checking a physical selection against responses would record
+	 * it on every prompt while `prepareRequest` redirects to another model.
+	 */
+	private _recordModelSelection(branch: SessionEntry[]): void {
 		const model = this.model;
 		if (!model) return;
 		const getModel = (provider: string, modelId: string) => this._modelRuntime.getModel(provider, modelId);
-		const recorded = getBranchSelection(this.sessionManager.getBranch(), getModel);
+		const recorded = getBranchSelection(branch, getModel);
 		if (!recorded || (recorded.provider === model.provider && recorded.modelId === model.id)) return;
 		const recordedModel = getModel(recorded.provider, recorded.modelId);
 		if (!isVirtualModel(model) && !(recordedModel && isVirtualModel(recordedModel))) return;
 		this.sessionManager.appendModelChange(model.provider, model.id);
+	}
+
+	/**
+	 * Record the thinking level on the current branch when the branch implies another one (#11451).
+	 * Tree navigation can leave the latest `thinking_level_change` on another branch. The recorded
+	 * level is compared after clamping to the current model, so a level clamped on resume (e.g.
+	 * `xhigh` running as `high`) is not recorded over the requested one.
+	 */
+	private _recordThinkingLevel(branch: SessionEntry[]): void {
+		const recorded = branch.findLast((entry) => entry.type === "thinking_level_change");
+		if (!recorded) return;
+		const recordedLevel = recorded.thinkingLevel as ThinkingLevel;
+		const availableLevels = this.getAvailableThinkingLevels();
+		const effective = availableLevels.includes(recordedLevel)
+			? recordedLevel
+			: this._clampThinkingLevel(recordedLevel, availableLevels);
+		if (effective === this.thinkingLevel) return;
+		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
 	}
 
 	/** The model whose limits apply to the conversation. */
@@ -795,27 +770,13 @@ export class AgentSession {
 			...(resizeOptions ? { resizeOptions } : {}),
 		});
 
-		// The guard sees the result the model will see, after extension rewrites. Nested calls
-		// return to their parent tool, not to the model, so they are not tracked.
-		const warning =
-			parentToolCallId === undefined
-				? formatLoopWarning(
-						toolCall.name,
-						this._loopGuard.record(
-							toolCall.name,
-							args,
-							normalizedContent.map((block) => (block.type === "text" ? block.text : block.type)).join("\n"),
-						),
-					)
-				: undefined;
-
-		if (!hookResult && normalizedContent === content && !warning) {
+		if (!hookResult && normalizedContent === content) {
 			return undefined;
 		}
 
 		// The hook result already dropped structured content that replaced content no longer matches.
 		return {
-			content: warning ? [...normalizedContent, { type: "text", text: warning }] : normalizedContent,
+			content: normalizedContent,
 			details: hookResult?.details,
 			structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
 			isError: hookResult?.isError ?? isError,
@@ -863,83 +824,21 @@ export class AgentSession {
 		return this._nestedToolCalls.execute(parentToolCallId, name, args, options);
 	}
 
-	/** Compaction settings plus the absolute context cap, which only the threshold check reads. */
-	private _thresholdCompactionSettings(settings: CompactionSettings): CompactionSettings {
-		return { ...settings, maxContextTokens: this.settingsManager.getCompactionMaxContextTokens() };
-	}
-
 	/** Whether `projection`, the current session projection, exceeds the compaction threshold of `model`. */
 	private _exceedsCompactionThreshold(model: Model<any>, projection: SessionProjection): boolean {
 		if (model.contextWindow <= 0) return false;
 		return shouldCompact(
 			estimateProjectedContextTokens(projection, this.sessionManager.getBranch()).tokens,
 			model.contextWindow,
-			this._thresholdCompactionSettings(this.settingsManager.getCompactionSettings(this.model)),
+			this.settingsManager.getCompactionSettings(this.model),
 		);
-	}
-
-	/**
-	 * Replace old large tool results with pointers to files holding their text. See
-	 * context-pruning.ts for when this pays for the cache break it causes.
-	 */
-	private async _pruneStaleToolResults(model: Model<any> | undefined): Promise<void> {
-		if (!model || isVirtualModel(model) || model.contextWindow <= 0) return;
-		const settings = this.settingsManager.getContextPruningSettings();
-		if (!settings.enabled) return;
-		const projection = this.sessionManager.buildSessionProjection();
-		const lastAssistant = projection.messages.findLast((message) => message.role === "assistant");
-		if (!lastAssistant) return;
-		const branch = this.sessionManager.getBranch();
-		const retention = resolveSessionCacheRetention(
-			this.settingsManager.getCacheRetention(),
-			model,
-			this._modelRuntime,
-		);
-		// Providers without a published lifetime (OpenAI) keep entries for minutes to an hour.
-		// Assuming the long end only delays clearing until context pressure requires it.
-		const ttlMs = getPromptCacheTtlMs(model, { cacheRetention: retention }) ?? 60 * 60_000;
-		const stale = selectStaleToolResults({
-			entries: projection.entries,
-			branch,
-			settings,
-			contextTokens: estimateProjectedContextTokens(projection, branch).tokens,
-			compactionThreshold: getCompactionThreshold(
-				model.contextWindow,
-				this._thresholdCompactionSettings(this.settingsManager.getCompactionSettings(model)),
-			),
-			cacheWarm: Date.now() - lastCacheWrite(branch, model, lastAssistant.timestamp) < ttlMs,
-		});
-		if (stale.length === 0) return;
-		for (const result of stale) {
-			const text = result.message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
-			let savedPath: string | undefined;
-			try {
-				savedPath = await writeOutputFile("pi-cleared", ".txt", text);
-			} catch {
-				// Without a file the pointer tells the model to rerun the tool instead.
-			}
-			const editId = this.sessionManager.appendContextEdit(result.entryId, {
-				content: formatClearedToolResult(result.message, savedPath),
-			});
-			const entry = this.sessionManager.getEntry(editId);
-			if (entry) this._emit({ type: "entry_appended", entry });
-		}
-		this._refreshFinalizedContext();
 	}
 
 	private async _compactBeforeNextAssistantResponse(context: AgentContext): Promise<AgentContext> {
-		await this._pruneStaleToolResults(this.model);
 		const projection = this.sessionManager.buildSessionProjection();
 		// A virtual selection is checked in prepareRequest, against the model the request is routed to.
 		const model = this.model;
 		if (!model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
-			if (model && !isVirtualModel(model) && model.contextWindow > 0) {
-				this._maybeStartSpeculativeCompaction(
-					estimateProjectedContextTokens(projection, this.sessionManager.getBranch()).tokens,
-					model.contextWindow,
-					this.settingsManager.getCompactionSettings(model),
-				);
-			}
 			return { ...context, messages: projection.messages };
 		}
 		await this._runAutoCompaction("threshold", false);
@@ -951,7 +850,6 @@ export class AgentSession {
 		this.agent.prepareRequest = async (request, signal) => {
 			const failed = this._failedResponse;
 			this._failedResponse = undefined;
-			await this._pruneStaleToolResults(this.agent.state.model);
 			const prepare = async () => {
 				const projection = this.sessionManager.buildSessionProjection();
 				const canonicalContext = {
@@ -1285,28 +1183,31 @@ export class AgentSession {
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
-			if (messageText) {
-				// Check steering queue first
-				const steeringIndex = this._steeringMessages.indexOf(messageText);
-				if (steeringIndex !== -1) {
-					this._steeringMessages.splice(steeringIndex, 1);
+			// Check steering queue first
+			const steeringIndex = this._steeringMessages.indexOf(messageText);
+			if (steeringIndex !== -1) {
+				this._steeringMessages.splice(steeringIndex, 1);
+				this._emitQueueUpdate();
+			} else {
+				// Check follow-up queue
+				const followUpIndex = this._followUpMessages.indexOf(messageText);
+				if (followUpIndex !== -1) {
+					this._followUpMessages.splice(followUpIndex, 1);
 					this._emitQueueUpdate();
-				} else {
-					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
-					if (followUpIndex !== -1) {
-						this._followUpMessages.splice(followUpIndex, 1);
-						this._emitQueueUpdate();
-					}
 				}
+			}
+			// Normalize queued images at delivery, before events and persistence see the message,
+			// so they get the same resize as idle prompts with the current model's limits (#11738).
+			if (this._queuedMessagesWithImages.has(event.message)) {
+				this._queuedMessagesWithImages.delete(event.message);
+				await this._normalizeQueuedMessageImages(event.message);
 			}
 		}
 
 		// Emit to extensions first, then notify public listeners.
 		await this._emitExtensionEvent(event);
+		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
 
-		// Persist finalized messages before notifying listeners so completion-triggered
-		// stats/entry reads include this request (and any extension usage overrides).
 		// Handle session persistence
 		if (event.type === "message_end") {
 			let entryId: string | undefined;
@@ -1330,13 +1231,7 @@ export class AgentSession {
 			}
 			if (entryId) this._entryIdsByMessage.set(event.message, entryId);
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
-		}
 
-		// Notify all listeners after persistence, but before retry-completion events.
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
-
-		if (event.type === "message_end") {
-			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
 				const assistantMsg = event.message as AssistantMessage;
 				this._lastAssistantMessage = assistantMsg;
@@ -1658,11 +1553,6 @@ export class AgentSession {
 	/** Current effective system prompt, including changes not yet sent to the model. */
 	get systemPrompt(): string {
 		return buildSystemPrompt(this._runSystemPromptOptions ?? this._baseSystemPromptOptions);
-	}
-
-	/** Options the current system prompt is built from (appended text, context files, skills, tools). */
-	get systemPromptOptions(): Readonly<NormalizedBuildSystemPromptOptions> {
-		return this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
 	}
 
 	/** Current retry attempt (0 if not retrying) */
@@ -2097,20 +1987,6 @@ export class AgentSession {
 		}
 	}
 
-	/** before_agent_start for a run, with the tool loadout the run will use. */
-	private async _beforeAgentStart(trigger: BeforeAgentStartTrigger) {
-		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-		const result = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
-		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
-		// which updates the live loadout instead. An explicit edit wins; otherwise the live
-		// loadout is authoritative, so a setActiveTools() call is not undone here.
-		const handlerEditedTools =
-			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
-		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
-		return result;
-	}
-
 	/**
 	 * Prepare a run and return its starting messages: compact first when needed, emit
 	 * before_agent_start, apply the run's prompt options and tool loadout, and build the starting
@@ -2125,7 +2001,15 @@ export class AgentSession {
 			await this._checkCompaction(lastAssistant, false);
 		}
 
-		const result = await this._beforeAgentStart(trigger);
+		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+		const result = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
+		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
+		// which updates the live loadout instead. An explicit edit wins; otherwise the live
+		// loadout is authoritative, so a setActiveTools() call is not undone here.
+		const handlerEditedTools =
+			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
 
 		const messages: AgentMessage[] = [];
 		if (trigger.messageType === "custom") {
@@ -2267,54 +2151,6 @@ export class AgentSession {
 	}
 
 	/**
-	 * Write the prompt cache the next prompt will read: the request a prompt would send now, with a
-	 * placeholder for the user's words, stopped at the model's first output (Agent.warm). Call it when
-	 * a prompt is coming - a conversation opened, the user typing - so the first call reads its whole
-	 * prefix instead of paying for what is new since the cache was last written: on a fresh session
-	 * with the shared prompt cache, everything after the system prompt and tools another session
-	 * already sent.
-	 *
-	 * The transcript is the session's projection, as the real request's is; the rest of that
-	 * preparation - pruning, compaction, retry state - is left to the real request. The prompt is
-	 * the one a run would build: `before_agent_start` runs as it does for a message. A handler that
-	 * shapes the prompt from the message's own words gets "." here and writes a cache the message
-	 * misses - warming is best-effort. Skipped while a run is active (it keeps its own cache), on a
-	 * virtual model (the request goes to whichever model routing picks), and when a one-token
-	 * request would not write the entry the real request reads (`isReplayable`: Anthropic budget
-	 * thinking). Resolves once the request finished or was skipped.
-	 */
-	async warm(signal?: AbortSignal): Promise<{ warmed: boolean; cacheWrite?: number }> {
-		if (!this.isIdle || isVirtualModel(this.agent.state.model)) return { warmed: false };
-		const level = this.agent.state.thinkingLevel;
-		if (!isReplayable(this.agent.state.model, { reasoning: level === "off" ? undefined : level })) {
-			return { warmed: false };
-		}
-		const { systemPromptOptions } = await this._beforeAgentStart({ messageType: "user", prompt: "." });
-		if (!this.isIdle || signal?.aborted) return { warmed: false };
-		const projection = this.sessionManager.buildSessionProjection().messages;
-		const update = this._preparePromptAndToolLoadout(systemPromptOptions, projection);
-		const user: AgentMessage = { role: "user", content: [{ type: "text", text: "." }], timestamp: Date.now() };
-		try {
-			const message = await this.agent.warm(update ? [update, user] : [user], { signal, messages: projection });
-			// A stopped warm-up ends as aborted; an error means nothing was written.
-			if (!message || message.stopReason === "error") return { warmed: false };
-			const usage = message.usage;
-			if (usage && usage.input + usage.cacheRead + usage.cacheWrite > 0) {
-				this.sessionManager.appendUsage(
-					"cache_prewarm",
-					message.provider,
-					message.responseModel ?? message.model,
-					usage,
-				);
-			}
-			return { warmed: true, ...(usage ? { cacheWrite: usage.cacheWrite } : {}) };
-		} catch {
-			// Best-effort, like refresh warming: a failed warm-up costs the real request nothing.
-			return { warmed: false };
-		}
-	}
-
-	/**
 	 * Send a prompt to the agent.
 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
 	 * - Expands file-based prompt templates by default
@@ -2341,11 +2177,31 @@ export class AgentSession {
 			}
 		}
 
-		if (this._compactionAbortController !== undefined) {
+		if (this._compactionAbortController !== undefined || this._branchSummaryAbortController !== undefined) {
 			throw new Error(
 				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
 			);
 		}
+
+		// Reserve the context through async input hooks and auth checks so tree navigation cannot
+		// start meanwhile (#9154). _startRun marks the run active synchronously, so there is no gap.
+		this._promptPreflightCount++;
+		let trigger: BeforeAgentStartTrigger | undefined;
+		try {
+			trigger = await this._preparePrompt(text, options);
+		} finally {
+			this._promptPreflightCount--;
+		}
+		if (trigger) await this._startRun(trigger, () => preflightResult?.("started"));
+	}
+
+	/**
+	 * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+	 * Returns the run trigger, or undefined when the prompt was handled or queued.
+	 */
+	private async _preparePrompt(text: string, options?: PromptOptions): Promise<BeforeAgentStartTrigger | undefined> {
+		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		const preflightResult = options?.preflightResult;
 
 		// Emit input event for extension interception (before skill/template expansion)
 		const processedInput = await this._runInputHandlers(
@@ -2356,7 +2212,7 @@ export class AgentSession {
 		);
 		if (!processedInput) {
 			preflightResult?.("handled");
-			return;
+			return undefined;
 		}
 		const { text: currentText, images: currentImages } = processedInput;
 
@@ -2380,7 +2236,7 @@ export class AgentSession {
 				await this._queueSteer(expandedText, currentImages);
 			}
 			preflightResult?.("queued");
-			return;
+			return undefined;
 		}
 
 		// Validate model
@@ -2403,9 +2259,7 @@ export class AgentSession {
 			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
 
-		await this._startRun({ messageType: "user", prompt: expandedText, images: currentImages }, () =>
-			preflightResult?.("started"),
-		);
+		return { messageType: "user", prompt: expandedText, images: currentImages };
 	}
 
 	/**
@@ -2540,11 +2394,9 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+		if (images?.length) this._queuedMessagesWithImages.add(message);
+		this.agent.steer(message);
 	}
 
 	/**
@@ -2557,7 +2409,24 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({ role: "user", content, timestamp: Date.now() });
+		const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+		if (images?.length) this._queuedMessagesWithImages.add(message);
+		this.agent.followUp(message);
+	}
+
+	/** Replace a queued user message's images in place with normalized ones, appending hints to its text. */
+	private async _normalizeQueuedMessageImages(message: UserMessage): Promise<void> {
+		if (typeof message.content === "string") return;
+		const [first, ...rest] = message.content;
+		if (first?.type !== "text") return;
+		const images = rest.filter((block): block is ImageContent => block.type === "image");
+		const normalized = await this._normalizePromptImages(images);
+		const text = normalized.hints.length > 0 ? `${first.text}\n\n${normalized.hints.join("\n")}` : first.text;
+		message.content = [
+			{ type: "text", text },
+			...rest.filter((block) => block.type !== "image"),
+			...normalized.images,
+		];
 	}
 
 	/**
@@ -2834,14 +2703,10 @@ export class AgentSession {
 		const scopedModels = this._scopedModels.filter((scoped) =>
 			availableIds.has(`${scoped.model.provider}\0${scoped.model.id}`),
 		);
-		if (scopedModels.length <= 1) return undefined;
-
 		const currentModel = this.model;
-		let currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
-
-		if (currentIndex === -1) currentIndex = 0;
-		const len = scopedModels.length;
-		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
+		const currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
+		const nextIndex = getNextCycleIndex(currentIndex, scopedModels.length, direction);
+		if (nextIndex === undefined) return undefined;
 		const next = scopedModels[nextIndex];
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
 
@@ -2870,14 +2735,10 @@ export class AgentSession {
 		options: ModelMutationOptions,
 	): Promise<ModelCycleResult | undefined> {
 		const availableModels = this._modelRuntime.getAvailableSnapshot();
-		if (availableModels.length <= 1) return undefined;
-
 		const currentModel = this.model;
-		let currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
-
-		if (currentIndex === -1) currentIndex = 0;
-		const len = availableModels.length;
-		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
+		const currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
+		const nextIndex = getNextCycleIndex(currentIndex, availableModels.length, direction);
+		if (nextIndex === undefined) return undefined;
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
@@ -3020,27 +2881,9 @@ export class AgentSession {
 		customInstructions: string | undefined,
 		signal: AbortSignal,
 		reason: "manual" | "threshold" | "overflow",
-		onResponse?: SummarizationResponseCallback,
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
 		const request = await this._getSummarizationRequestAuth(model, signal);
-		// The provider cache holds the session model's requests only. Overflow recovery uses the
-		// standalone request: the cached conversation may itself be what overflowed, while the
-		// standalone request truncates tool results.
-		const sessionModel = this.agent.state.model;
-		const cacheReuse: SummaryCacheReuse | undefined =
-			reason !== "overflow" &&
-			this.settingsManager.getCompactionReuseCache() &&
-			request.model.provider === sessionModel.provider &&
-			request.model.id === sessionModel.id
-				? {
-						convertMessages: async (messages: AgentMessage[]) =>
-							this.agent.convertToLlm(
-								this.agent.transformContext ? await this.agent.transformContext(messages, signal) : messages,
-							),
-						sessionId: this.sessionManager.getSessionId(),
-					}
-				: undefined;
 		return compact(
 			preparation,
 			request.model,
@@ -3049,13 +2892,11 @@ export class AgentSession {
 			customInstructions,
 			signal,
 			request.thinkingLevel,
-			this._summaryStreamFn(),
+			this.agent.streamFunction,
 			request.env,
 			this.settingsManager.getRetrySettings(),
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
 			undefined, // sessionId
-			onResponse,
-			cacheReuse,
 		);
 	}
 
@@ -3081,7 +2922,6 @@ export class AgentSession {
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
-		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 		let fromExtension = false;
@@ -3151,25 +2991,19 @@ export class AgentSession {
 					customInstructions,
 					this._compactionAbortController.signal,
 					"manual",
-					usageTracker.onResponse,
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
 				usage = result.usage;
-				details = {
-					...(result.details && typeof result.details === "object" ? result.details : {}),
-					usageRequests: usageTracker.getSuccessfulResponses(),
-				};
+				details = result.details;
 			}
 
 			if (this._compactionAbortController.signal.aborted) {
 				throw new Error("Compaction cancelled");
 			}
 
-			this._cancelSpeculativeCompaction();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			usageTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
@@ -3208,9 +3042,8 @@ export class AgentSession {
 			});
 			return compactionResult;
 		} catch (error) {
-			usageTracker.finish();
 			const message = error instanceof Error ? error.message : String(error);
-			const aborted = this._compactionAbortController.signal.aborted || cancelledByExtension || isAbortError(error);
+			const aborted = this._compactionAbortController.signal.aborted || cancelledByExtension;
 			const errorMessage = aborted ? undefined : `Compaction failed: ${message}`;
 			this._clearManualCompactionState();
 			this._emit({
@@ -3230,7 +3063,6 @@ export class AgentSession {
 			});
 			throw error;
 		} finally {
-			usageTracker.finish();
 			this._clearManualCompactionState();
 		}
 	}
@@ -3241,7 +3073,6 @@ export class AgentSession {
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
-		this._cancelSpeculativeCompaction();
 	}
 
 	/**
@@ -3402,110 +3233,10 @@ export class AgentSession {
 		} else {
 			contextTokens = directContextTokens;
 		}
-		if (shouldCompact(contextTokens, contextWindow, this._thresholdCompactionSettings(settings))) {
+		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			return await this._runAutoCompaction("threshold", false);
 		}
-		this._maybeStartSpeculativeCompaction(contextTokens, contextWindow, settings);
 		return false;
-	}
-
-	/**
-	 * Start the threshold summary in the background once context reaches
-	 * `SPECULATIVE_COMPACTION_RATIO` of the threshold, so the agent does not wait for it when the
-	 * threshold is reached. The session is append-only, so the summary of the prefix stays valid
-	 * as long as the branch still starts with the entries it saw. Skipped when extensions handle
-	 * compaction, because they may need to see the final preparation.
-	 */
-	private _maybeStartSpeculativeCompaction(
-		contextTokens: number,
-		contextWindow: number,
-		settings: CompactionSettings,
-	): void {
-		const model = this.model;
-		if (!model || isVirtualModel(model) || this._speculativeCompaction) return;
-		if (!settings.enabled || this._extensionRunner.hasHandlers("session_before_compact")) return;
-		const threshold = getCompactionThreshold(contextWindow, this._thresholdCompactionSettings(settings));
-		if (contextTokens < threshold * SPECULATIVE_COMPACTION_RATIO) return;
-		const branch = this.sessionManager.getBranch();
-		const preparation = prepareCompaction(branch, settings);
-		if (!preparation) return;
-		const abortController = new AbortController();
-		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
-		const result = this._runDefaultCompaction(
-			preparation,
-			model,
-			undefined,
-			abortController.signal,
-			"threshold",
-			usageTracker.onResponse,
-		).catch(() => undefined);
-		this._speculativeCompaction = {
-			branchIds: branch.map((entry) => entry.id),
-			modelKey: `${model.provider}/${model.id}`,
-			abortController,
-			result,
-			usageTracker,
-		};
-	}
-
-	/**
-	 * Take the background summary if it still matches the branch and model, and drop it either way.
-	 * Waiting for it ends when `signal` aborts (Esc, dispose), which also aborts the summary.
-	 */
-	private async _takeSpeculativeCompaction(
-		model: Model<any>,
-		signal: AbortSignal,
-	): Promise<
-		{ result: CompactionResult; usageTracker: ReturnType<typeof createSummarizationUsageTracker> } | undefined
-	> {
-		const speculative = this._speculativeCompaction;
-		if (!speculative) return undefined;
-		this._speculativeCompaction = undefined;
-		const branch = this.sessionManager.getBranch();
-		const matches =
-			speculative.modelKey === `${model.provider}/${model.id}` &&
-			speculative.branchIds.length <= branch.length &&
-			speculative.branchIds.every((id, index) => branch[index]?.id === id) &&
-			!branch.slice(speculative.branchIds.length).some((entry) => entry.type === "compaction");
-		if (!matches || signal.aborted) {
-			this._dropSpeculativeCompaction(speculative);
-			return undefined;
-		}
-		let onAbort: (() => void) | undefined;
-		const aborted = new Promise<undefined>((resolve) => {
-			onAbort = () => resolve(undefined);
-			signal.addEventListener("abort", onAbort, { once: true });
-		});
-		try {
-			const result = await Promise.race([speculative.result, aborted]);
-			if (!result || signal.aborted) {
-				this._dropSpeculativeCompaction(speculative);
-				return undefined;
-			}
-			return { result, usageTracker: speculative.usageTracker };
-		} finally {
-			if (onAbort) signal.removeEventListener("abort", onAbort);
-		}
-	}
-
-	/** Abort a background summary and record what its requests cost once they settle. */
-	private _dropSpeculativeCompaction(speculative: NonNullable<AgentSession["_speculativeCompaction"]>): void {
-		speculative.abortController.abort();
-		void speculative.result.then(() => speculative.usageTracker.finish());
-	}
-
-	private _cancelSpeculativeCompaction(): void {
-		const speculative = this._speculativeCompaction;
-		this._speculativeCompaction = undefined;
-		if (speculative) this._dropSpeculativeCompaction(speculative);
-	}
-
-	/** Estimated context tokens of the projection from `entryId` to the end of the branch. */
-	private _estimateTokensFrom(entryId: string): number {
-		const entries = this.sessionManager.buildSessionProjection().entries;
-		const start = entries.findIndex((entry) => entry.sourceEntry.id === entryId);
-		if (start === -1) return Number.POSITIVE_INFINITY;
-		return estimateMessagesTokens(entries.slice(start).flatMap((entry) => entry.messages));
 	}
 
 	/**
@@ -3522,8 +3253,6 @@ export class AgentSession {
 		const model = this.model;
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
-		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "compaction");
-		let committedTracker = usageTracker;
 		let started = false;
 		let fromExtension = false;
 		let cancelledByExtension = false;
@@ -3584,48 +3313,23 @@ export class AgentSession {
 				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
-				// A background summary of an earlier prefix keeps more recent entries verbatim, which is
-				// fine as long as they fit; otherwise summarize now.
-				const speculative =
-					reason === "threshold"
-						? await this._takeSpeculativeCompaction(model, abortController.signal)
-						: undefined;
-				const speculativeFits =
-					speculative !== undefined &&
-					this._estimateTokensFrom(speculative.result.firstKeptEntryId) <
-						getCompactionThreshold(model.contextWindow, this._thresholdCompactionSettings(settings)) *
-							SPECULATIVE_MAX_KEPT_RATIO;
-				if (speculative && !speculativeFits) speculative.usageTracker.finish();
-				const tracker = speculative && speculativeFits ? speculative.usageTracker : usageTracker;
-				// Its successful requests are stored on the compaction entry, or recorded on failure.
-				committedTracker = tracker;
-				abortController.signal.throwIfAborted();
 				// Shared default summary generator, also used by manual compaction.
-				const compactResult =
-					speculative && speculativeFits
-						? speculative.result
-						: await this._runDefaultCompaction(
-								preparation,
-								model,
-								undefined,
-								abortController.signal,
-								reason,
-								usageTracker.onResponse,
-							);
+				const compactResult = await this._runDefaultCompaction(
+					preparation,
+					model,
+					undefined,
+					abortController.signal,
+					reason,
+				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
-				details = {
-					...(compactResult.details && typeof compactResult.details === "object" ? compactResult.details : {}),
-					usageRequests: tracker.getSuccessfulResponses(),
-				};
+				details = compactResult.details;
 			}
 			abortController.signal.throwIfAborted();
 
-			this._cancelSpeculativeCompaction();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			committedTracker.commit();
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
@@ -3661,10 +3365,8 @@ export class AgentSession {
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
-			usageTracker.finish();
-			committedTracker.finish();
 			const message = error instanceof Error ? error.message : "compaction failed";
-			const aborted = abortController?.signal.aborted === true || cancelledByExtension || isAbortError(error);
+			const aborted = abortController?.signal.aborted === true || cancelledByExtension;
 			if (started) {
 				const errorMessage = aborted
 					? undefined
@@ -3689,8 +3391,6 @@ export class AgentSession {
 			}
 			return false;
 		} finally {
-			usageTracker.finish();
-			committedTracker.finish();
 			if (this._autoCompactionAbortController === abortController) {
 				this._autoCompactionAbortController = undefined;
 			}
@@ -4113,6 +3813,13 @@ export class AgentSession {
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		if (this.isStreaming) {
+			throw new Error("Wait for the current response to finish before reloading.");
+		}
+		if (this.isCompacting) {
+			throw new Error("Wait for compaction to finish before reloading.");
+		}
+
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
@@ -4420,7 +4127,7 @@ export class AgentSession {
 		targetId: string,
 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
-		if (this.isStreaming) {
+		if (this.isStreaming || this._promptPreflightCount > 0) {
 			throw new Error("Wait for the current response to finish before navigating the session tree.");
 		}
 		if (this.isCompacting) {
@@ -4470,8 +4177,8 @@ export class AgentSession {
 		};
 
 		// Set up abort controller for summarization
-		this._branchSummaryAbortController = new AbortController();
-		const usageTracker = createSummarizationUsageTracker(this.sessionManager, "branchSummary");
+		const abortController = new AbortController();
+		this._branchSummaryAbortController = abortController;
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown; usage?: Usage } | undefined;
@@ -4482,7 +4189,7 @@ export class AgentSession {
 				const result = (await this._extensionRunner.emit({
 					type: "session_before_tree",
 					preparation,
-					signal: this._branchSummaryAbortController.signal,
+					signal: abortController.signal,
 				})) as SessionBeforeTreeResult | undefined;
 
 				if (result?.cancel) {
@@ -4511,7 +4218,7 @@ export class AgentSession {
 			let summaryDetails: unknown;
 			let summaryUsage: Usage | undefined;
 			if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
-				const signal = this._branchSummaryAbortController.signal;
+				const signal = abortController.signal;
 				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 				const result = await generateBranchSummary(entriesToSummarize, {
 					...(await this._getSummarizationRequestAuth(this.model!, signal)),
@@ -4519,10 +4226,9 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this._summaryStreamFn(),
+					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
-					onResponse: usageTracker.onResponse,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };
@@ -4535,7 +4241,6 @@ export class AgentSession {
 				summaryDetails = {
 					readFiles: result.readFiles || [],
 					modifiedFiles: result.modifiedFiles || [],
-					usageRequests: usageTracker.getSuccessfulResponses(),
 				};
 			} else if (extensionSummary) {
 				summaryText = extensionSummary.summary;
@@ -4572,7 +4277,6 @@ export class AgentSession {
 					fromExtension,
 					summaryUsage,
 				);
-				usageTracker.commit();
 				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 
 				// Attach label to the summary entry
@@ -4596,7 +4300,8 @@ export class AgentSession {
 			this._refreshFinalizedContext();
 			this._restoreToolsFromTranscript();
 
-			// Emit session_tree event
+			// The selected context is installed; session_tree handlers may now prompt or navigate again.
+			this._branchSummaryAbortController = undefined;
 			await this._extensionRunner.emit({
 				type: "session_tree",
 				newLeafId: this.sessionManager.getLeafId(),
@@ -4609,8 +4314,10 @@ export class AgentSession {
 
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
-			usageTracker.finish();
-			this._branchSummaryAbortController = undefined;
+			// A navigation started from session_tree owns the controller now; do not clear it.
+			if (this._branchSummaryAbortController === abortController) {
+				this._branchSummaryAbortController = undefined;
+			}
 			this._resolveIdleWaitIfIdle();
 		}
 	}
@@ -4649,8 +4356,11 @@ export class AgentSession {
 		const usageTotals = createUsageTotals();
 
 		for (const entry of this.sessionManager.getEntries()) {
-			const usage = getEntryUsage(entry);
-			if (usage) addUsageToTotals(usageTotals, usage);
+			if (entry.type === "usage") {
+				addUsageToTotals(usageTotals, entry.usage);
+			} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
+				addUsageToTotals(usageTotals, entry.usage);
+			}
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;
@@ -4658,12 +4368,16 @@ export class AgentSession {
 				userMessages++;
 			} else if (message.role === "toolResult") {
 				toolResults++;
+				if (message.usage) {
+					addUsageToTotals(usageTotals, message.usage);
+				}
 			} else if (message.role === "assistant") {
 				assistantMessages++;
 				const assistantMsg = message as AssistantMessage;
 				if (Array.isArray(assistantMsg.content)) {
 					toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
 				}
+				addUsageToTotals(usageTotals, assistantMsg.usage);
 			}
 		}
 
@@ -4683,7 +4397,6 @@ export class AgentSession {
 				total: usageTotals.input + usageTotals.output + usageTotals.cacheRead + usageTotals.cacheWrite,
 			},
 			cost: usageTotals.cost,
-			cache: computeCacheHitRates(this.sessionManager.getBranch()),
 			contextUsage: this.getContextUsage(),
 		};
 	}
@@ -4783,7 +4496,7 @@ export class AgentSession {
 			messages: this.messages,
 			hint: options.hint,
 			signal: options.signal,
-			streamFn: this._summaryStreamFn(),
+			streamFn: this.agent.streamFunction,
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});

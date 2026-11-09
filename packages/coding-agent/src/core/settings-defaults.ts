@@ -3,7 +3,6 @@ import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } from "@earendil-works/pi-ai/utils/re
 /** Runtime defaults shared by settings accessors and the published JSON Schema. */
 export const SETTINGS_DEFAULTS = {
 	transport: "auto",
-	sharedPromptCache: false,
 	sessionShareDestination: "auto",
 	steeringMode: "one-at-a-time",
 	followUpMode: "one-at-a-time",
@@ -11,13 +10,6 @@ export const SETTINGS_DEFAULTS = {
 		enabled: true,
 		reserveTokens: 16384,
 		keepRecentTokens: 20000,
-		maxContextTokens: 300000,
-		reuseCache: true,
-	},
-	contextPruning: {
-		enabled: true,
-		protectRecentTokens: 40000,
-		minSavingsTokens: 20000,
 	},
 	branchSummary: {
 		reserveTokens: 16384,
@@ -66,8 +58,7 @@ export const SETTINGS_DEFAULTS = {
 		mode: "on",
 		inlineBudget: 3000,
 	},
-	cacheWarming: "streaming",
-	cacheRetention: "auto",
+	cacheWarming: "idle",
 	tuiMode: "fullscreen",
 	fullscreenExitOutput: "transcript",
 	fullscreenScrollbar: "auto",

@@ -286,9 +286,6 @@ export class AgentSessionRuntime {
 			selectedText = extractUserMessageText(selectedEntry.message.content);
 		}
 
-		// Finalize an interrupted response in the source session before taking
-		// the branch snapshot, so its usage cannot leak into the child.
-		await this.session.abort();
 		const previousSessionFile = this.session.sessionFile;
 		if (this.session.sessionManager.isPersisted()) {
 			const currentSessionFile = this.session.sessionFile;
@@ -333,11 +330,13 @@ export class AgentSessionRuntime {
 			return { cancelled: false, selectedText };
 		}
 
-		// Keep the source manager alive for any late summarization responses.
-		const sessionManager = targetLeafId
-			? this.session.sessionManager.forkInMemory(targetLeafId)
-			: SessionManager.inMemory(this.cwd);
+		const sessionManager = this.session.sessionManager;
 		await this.teardownCurrent("fork", sessionManager.getSessionFile());
+		if (!targetLeafId) {
+			sessionManager.newSession({ parentSession: previousSessionFile });
+		} else {
+			sessionManager.createBranchedSession(targetLeafId);
+		}
 		this.apply(
 			await this.createRuntime({
 				cwd: this.cwd,
@@ -402,13 +401,20 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
+	/**
+	 * Dispose the session for process exit. Also waits for credential writes in progress: an OAuth
+	 * refresh may already have spent the old single-use refresh token, so exiting before the new one
+	 * is saved would lose the login (#11692).
+	 */
 	async dispose(): Promise<void> {
+		await this.session.abort();
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",
 		});
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
+		await this.services.modelRuntime.settleCredentialWrites();
 	}
 }
 

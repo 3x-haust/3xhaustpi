@@ -2,7 +2,6 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
 	collectCacheMisses,
-	computeCacheHitRates,
 	computeCacheWaste,
 	detectCacheMiss,
 	type ModelPriceSource,
@@ -174,45 +173,5 @@ describe("detectCacheMiss", () => {
 
 	it("returns undefined for the first turn of a session", () => {
 		expect(detectCacheMiss([], turn1, models)).toBeUndefined();
-	});
-});
-
-describe("computeCacheHitRates", () => {
-	it("returns zeros for a session without prompt usage", () => {
-		expect(computeCacheHitRates([])).toEqual({
-			hitRate: 0,
-			reusableHitRate: 0,
-			reusableTokens: 0,
-			missedReusableTokens: 0,
-		});
-	});
-
-	it("separates the overall hit rate from the reusable-prefix hit rate", () => {
-		const rates = computeCacheHitRates([
-			entry(assistant({ cacheWrite: 1000 })),
-			entry(assistant({ cacheRead: 900, cacheWrite: 300 })),
-			entry(assistant({ cacheRead: 1200, input: 100 })),
-		]);
-		// Prompt tokens: 1000 + 1200 + 1300 = 3500; reads: 2100.
-		expect(rates.hitRate).toBeCloseTo(2100 / 3500);
-		// Reusable: min(1000, 1200) + min(1200, 1300) = 2200; read within it: 900 + 1200.
-		expect(rates.reusableTokens).toBe(2200);
-		expect(rates.missedReusableTokens).toBe(100);
-		expect(rates.reusableHitRate).toBeCloseTo(2100 / 2200);
-	});
-
-	it("resets the reusable prefix at compactions and model changes and skips failed requests", () => {
-		const failed = { ...assistant({ input: 5000 }), stopReason: "error" } as AssistantMessage;
-		const rates = computeCacheHitRates([
-			entry(assistant({ cacheWrite: 1000 })),
-			entry(failed),
-			{ type: "compaction", id: "c", parentId: null, timestamp: "" } as SessionEntry,
-			entry(assistant({ input: 400 })),
-			entry(assistant({ input: 500, model: "other-model" })),
-			entry(assistant({ cacheRead: 500, model: "other-model" })),
-		]);
-		expect(rates.reusableTokens).toBe(500);
-		expect(rates.missedReusableTokens).toBe(0);
-		expect(rates.hitRate).toBeCloseTo(500 / 2400);
 	});
 });

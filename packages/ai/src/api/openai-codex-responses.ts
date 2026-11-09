@@ -106,7 +106,6 @@ interface RequestBody {
 	text?: { verbosity?: string };
 	include?: string[];
 	prompt_cache_key?: string;
-	max_output_tokens?: number;
 	[key: string]: unknown;
 }
 
@@ -186,11 +185,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 			reject(new Error("Request was aborted"));
 			return;
 		}
-		const timeout = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => {
+		const onAbort = () => {
 			clearTimeout(timeout);
 			reject(new Error("Request was aborted"));
-		});
+		};
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -278,27 +281,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				getDeclaredTools(normalizedContext.messages),
 				model.compat?.supportsOpenAIGrammarTools ?? false,
 			);
-			const resourceSessionId =
-				options?.cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId);
-			const promptCacheKey =
-				options?.cacheRetention === "none" ? undefined : (options?.promptCacheKey ?? resourceSessionId);
-			const codexPromptCacheKey = clampOpenAIPromptCacheKey(promptCacheKey);
-			let body = buildRequestBody(
-				model,
-				normalizedContext,
-				options,
-				codexPromptCacheKey,
-				grammarToolInputProperties,
-			);
+			const cacheSessionId = options?.cacheRetention === "none" ? undefined : options?.sessionId;
+			const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
+			let body = buildRequestBody(model, normalizedContext, options, codexSessionId, grammarToolInputProperties);
 			const nextBody = await options?.onPayload?.(body, model);
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
 			}
-			// Codex routes its cache by the session header and prompt_cache_key together; a shared key
-			// under per-session headers does not hit, so a shared key goes in both. Connection reuse,
-			// fallbacks and cleanup stay keyed by the per-session resourceSessionId.
-			const cacheRoutingId = codexPromptCacheKey ?? resourceSessionId;
-			const websocketRequestId = cacheRoutingId || uuidv7();
+			const websocketRequestId = codexSessionId || uuidv7();
 			// Codex expects an originator on every request; it is not attribution.
 			const identityHeaders = { originator: "pi", ...getIdentityHeaders(model, options?.identity) };
 			const sseHeaders = buildSSEHeaders(
@@ -307,7 +297,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				options?.headers,
 				accountId,
 				apiKey,
-				cacheRoutingId,
+				codexSessionId,
 			);
 			const websocketHeaders = buildWebSocketHeaders(
 				identityHeaders,
@@ -322,9 +312,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
 			const transport = options?.transport || "auto";
 			let startEmitted = false;
-			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(resourceSessionId);
+			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
 			if (websocketDisabledForSession) {
-				recordWebSocketSseFallback(resourceSessionId);
+				recordWebSocketSseFallback(cacheSessionId);
 			}
 
 			if (transport !== "sse" && !websocketDisabledForSession) {
@@ -350,7 +340,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							},
 							httpTimeoutMs,
 							websocketConnectTimeoutMs,
-							resourceSessionId,
+							cacheSessionId,
 							accountId,
 							grammarToolInputProperties,
 							options,
@@ -392,11 +382,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 								requestBytes: new TextEncoder().encode(bodyJson).byteLength,
 							}),
 						);
-						recordWebSocketFailure(resourceSessionId, error);
+						recordWebSocketFailure(cacheSessionId, error);
 						if (websocketStarted) {
 							throw error;
 						}
-						recordWebSocketSseFallback(resourceSessionId);
+						recordWebSocketSseFallback(cacheSessionId);
 						break;
 					}
 				}
@@ -602,11 +592,6 @@ function buildRequestBody(
 		body.service_tier = options.serviceTier;
 	}
 
-	if (options?.maxTokens !== undefined) {
-		// Codex rejects max_output_tokens below 16, like OpenAI Responses (a 1-token warm-up failed)
-		body.max_output_tokens = Math.max(16, Math.floor(options.maxTokens));
-	}
-
 	if (transcriptTools.requestTools.length > 0) {
 		body.tools = convertResponsesTools(transcriptTools.requestTools, {
 			strict: null,
@@ -707,7 +692,6 @@ async function processStream(
 		stream,
 		model,
 		{
-			createResponseError: createCodexResponseError,
 			serviceTier: options?.serviceTier,
 			grammarToolInputProperties,
 			resolveServiceTier: resolveCodexServiceTier,
@@ -738,13 +722,6 @@ class CodexProtocolError extends Error {
 		this.payload = options?.payload;
 		this.cause = options?.cause;
 	}
-}
-
-function createCodexResponseError(event: Extract<ResponseStreamEvent, { type: "response.failed" }>): Error {
-	return new CodexApiError(event.response?.error?.message || "Codex response failed", {
-		code: event.response?.error?.code,
-		payload: { ...event },
-	});
 }
 
 class ProviderStreamEventCallbackError extends Error {
@@ -806,6 +783,13 @@ async function* mapCodexEvents(
 				code,
 				payload: event,
 			});
+		}
+
+		if (type === "response.failed") {
+			const response = (event as { response?: { error?: { code?: string; message?: string } } }).response;
+			const code = response?.error?.code;
+			const message = response?.error?.message;
+			throw new CodexApiError(message || "Codex response failed", { code, payload: event });
 		}
 
 		if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {
@@ -1591,7 +1575,6 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
-				createResponseError: createCodexResponseError,
 				serviceTier: options?.serviceTier,
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,

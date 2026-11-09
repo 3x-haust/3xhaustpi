@@ -38,8 +38,6 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
-import { getEntryUsage } from "./usage-totals.ts";
-
 export const CURRENT_SESSION_VERSION = 3;
 
 export interface SessionHeader {
@@ -1167,12 +1165,8 @@ export class SessionManager {
 	 * first assistant reply) keeps the prompt on disk if the first turn never completes (#10000).
 	 */
 	private _hasConversation(): boolean {
-		// Billable usage (for example a failed summarization attempt) is persisted as well; cache
-		// warming alone does not create a session file.
 		return this.fileEntries.some(
-			(e) =>
-				(e.type === "message" && (e.message.role === "user" || e.message.role === "assistant")) ||
-				(e.type !== "session" && e.type !== "usage" && getEntryUsage(e) !== undefined),
+			(e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"),
 		);
 	}
 
@@ -1639,15 +1633,6 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
-	}
-
-	/** Copy a selected branch into an independent in-memory manager without replacing the source. */
-	forkInMemory(leafId: string): SessionManager {
-		const fork = SessionManager.inMemory(this.cwd);
-		fork.fileEntries = this.fileEntries.slice();
-		fork._buildIndex();
-		fork.createBranchedSession(leafId);
-		return fork;
 	}
 
 	/**

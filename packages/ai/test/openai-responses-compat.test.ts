@@ -35,14 +35,17 @@ async function captureOpenAIResponseHeaders(
 	sessionId: string | null;
 	clientRequestId: string | null;
 	xSessionId: string | null;
+	legacySessionId: string | null;
 }> {
 	const captured = {
 		sessionId: null as string | null,
 		clientRequestId: null as string | null,
 		xSessionId: null as string | null,
+		legacySessionId: null as string | null,
 	};
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-		captured.sessionId = getHeader(init?.headers, "session_id");
+		captured.sessionId = getHeader(init?.headers, "session-id");
+		captured.legacySessionId = getHeader(init?.headers, "session_id");
 		captured.clientRequestId = getHeader(init?.headers, "x-client-request-id");
 		captured.xSessionId = getHeader(init?.headers, "x-session-id");
 		return new Response("data: [DONE]\n\n", {
@@ -295,39 +298,8 @@ describe("openai-responses provider defaults", () => {
 		const captured = await captureOpenAIResponseHeaders({ sessionId: "session-123" });
 
 		expect(captured.sessionId).toBe("session-123");
+		expect(captured.legacySessionId).toBeNull();
 		expect(captured.clientRequestId).toBe("session-123");
-	});
-
-	it("routes prompt_cache_key by an explicit promptCacheKey while the session id stays per session", async () => {
-		let capturedPayload: Pick<CapturedResponsesPayload, "prompt_cache_key"> | undefined;
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response("data: [DONE]\n\n", {
-				status: 200,
-				headers: { "content-type": "text/event-stream" },
-			}),
-		);
-
-		const stream = streamOpenAIResponses(
-			getModel("openai", "gpt-5.4"),
-			normalizeContext({
-				systemPrompt: "sys",
-				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			}),
-			{
-				apiKey: "test-key",
-				sessionId: "session-123",
-				promptCacheKey: "pfx-shared",
-				onPayload: (payload) => {
-					capturedPayload = payload as Pick<CapturedResponsesPayload, "prompt_cache_key">;
-				},
-			},
-		);
-
-		for await (const event of stream) {
-			if (event.type === "done" || event.type === "error") break;
-		}
-
-		expect(capturedPayload?.prompt_cache_key).toBe("pfx-shared");
 	});
 
 	it("clamps prompt_cache_key to OpenAI's 64-character limit", async () => {
@@ -468,7 +440,7 @@ describe("openai-responses provider defaults", () => {
 		expect(capturedPayload?.prompt_cache_key).toBe("session-opencode");
 	});
 
-	it("can omit OpenAI session_id header while preserving other affinity data", async () => {
+	it("can omit OpenAI session-id header while preserving other affinity data", async () => {
 		const proxyModel: Model<"openai-responses"> = {
 			...getModel("openai", "gpt-5.4"),
 			provider: "opencode",
@@ -495,7 +467,7 @@ describe("openai-responses provider defaults", () => {
 		const captured = await captureOpenAIResponseHeaders({
 			sessionId: "session-123",
 			headers: {
-				session_id: "override-session",
+				"session-id": "override-session",
 				"x-client-request-id": "override-request",
 			},
 		});

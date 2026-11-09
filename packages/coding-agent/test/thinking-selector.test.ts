@@ -29,10 +29,10 @@ describe("thinking selector", () => {
 				.find((line) => line.includes(level));
 
 		expect(selector.getSelectList().getSelectedItem()?.label).toBe("✓ medium");
-		expect(getLevelRow("medium")?.startsWith("› ✓ medium")).toBe(true);
+		expect(getLevelRow("medium")?.startsWith("→ ✓ medium")).toBe(true);
 		selector.handleInput("\x1b[B");
 		expect(getLevelRow("medium")?.startsWith("  ✓ medium")).toBe(true);
-		expect(getLevelRow("high")?.startsWith("›   high")).toBe(true);
+		expect(getLevelRow("high")?.startsWith("→   high")).toBe(true);
 	});
 
 	it("uses the configured save binding", () => {

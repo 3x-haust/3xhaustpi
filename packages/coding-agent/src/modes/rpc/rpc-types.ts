@@ -6,11 +6,10 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AuthEvent, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { ContextUsage, ToolExposure } from "../../core/extensions/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -58,7 +57,6 @@ export type RpcCommand =
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
-	| { id?: string; type: "warm" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "fork"; entryId: string }
@@ -73,48 +71,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" }
-
-	// Context
-	| { id?: string; type: "get_context" }
-
-	// Auth (for clients that draw their own login UI)
-	| { id?: string; type: "get_login_providers" }
-	| { id?: string; type: "login"; provider: string; authType: "oauth" | "api_key" }
-	| { id?: string; type: "login_cancel"; loginId: string }
-	| { id?: string; type: "logout"; provider: string };
-
-/** One provider a client can offer in its own login UI. */
-export interface RpcLoginProvider {
-	id: string;
-	name: string;
-	authType: "oauth" | "api_key";
-	/** Label of the login method, e.g. "Claude Pro/Max" or "Anthropic API key" */
-	label?: string;
-	/** OAuth that signs in to a paid subscription (Claude Pro, ChatGPT Plus...) */
-	subscription: boolean;
-	/** Already logged in (any method) */
-	configured: boolean;
-}
-
-/**
- * Emitted while a `login` command runs. `login_event` is progress to show
- * (open this URL, enter this device code); `login_prompt` needs an answer,
- * sent back as an `extension_ui_response` with the same `id`.
- */
-export type RpcLoginOutput =
-	| { type: "login_event"; loginId: string; event: AuthEvent }
-	| {
-			type: "login_prompt";
-			loginId: string;
-			id: string;
-			prompt: {
-				type: "text" | "secret" | "select" | "manual_code";
-				message: string;
-				placeholder?: string;
-				options?: readonly { id: string; label: string; description?: string }[];
-			};
-	  };
+	| { id?: string; type: "get_commands" };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -130,61 +87,6 @@ export interface RpcSlashCommand {
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
 	sourceInfo: SourceInfo;
-}
-
-// ============================================================================
-// RPC Context (for get_context response)
-// ============================================================================
-
-/** One system prompt section as the model receives it (tag included). */
-export interface RpcContextSection {
-	/** `preamble`, `tools`, `rules`, `docs`, `addendum`, `project_context`, `skills`, `cwd`, or an extension section */
-	name: string;
-	text: string;
-	tokens: number;
-}
-
-/** A tool registered in the session. */
-export interface RpcContextTool {
-	name: string;
-	description: string;
-	/** Declared to the model on the next request */
-	active: boolean;
-	exposure: ToolExposure;
-	/** Namespace such as `mcp__docs` */
-	namespace?: string;
-	sourceInfo: SourceInfo;
-	/** Estimated tokens of the declaration (name, description, parameter schema) */
-	schemaTokens: number;
-}
-
-/** One message of the current context, summarized. */
-export interface RpcContextMessage {
-	role: string;
-	tokens: number;
-	/** First characters of the text, whitespace collapsed */
-	preview: string;
-	toolName?: string;
-	toolCalls?: string[];
-	isError?: boolean;
-}
-
-export interface RpcContextReport {
-	cwd: string;
-	/** Full system prompt text */
-	systemPrompt: string;
-	systemPromptTokens: number;
-	/** An extension replaced the whole prompt; `sections` is empty */
-	forced: boolean;
-	sections: RpcContextSection[];
-	/** Each `--append-system-prompt` part, in order (together they form the `addendum` section) */
-	appendSystemPrompt: Array<{ text: string; tokens: number }>;
-	/** AGENTS.md / CLAUDE.md files loaded into `project_context` */
-	contextFiles: Array<{ path: string; content: string; tokens: number }>;
-	skills: Array<{ name: string; description: string; path: string; modelInvocable: boolean; sourceInfo: SourceInfo }>;
-	tools: RpcContextTool[];
-	messages: RpcContextMessage[];
-	contextUsage?: ContextUsage;
 }
 
 // ============================================================================
@@ -293,32 +195,7 @@ export type RpcResponse =
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
-	| {
-			id?: string;
-			type: "response";
-			command: "warm";
-			success: true;
-			data: { warmed: boolean; cacheWrite?: number };
-	  }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
-
-	// Auth
-	| {
-			id?: string;
-			type: "response";
-			command: "get_login_providers";
-			success: true;
-			data: { providers: RpcLoginProvider[] };
-	  }
-	| {
-			id?: string;
-			type: "response";
-			command: "login";
-			success: true;
-			data: { provider: string; authType: "oauth" | "api_key" };
-	  }
-	| { id?: string; type: "response"; command: "login_cancel"; success: true; data: { cancelled: boolean } }
-	| { id?: string; type: "response"; command: "logout"; success: true }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
@@ -363,7 +240,6 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcSlashCommand[] };
 	  }
-	| { id?: string; type: "response"; command: "get_context"; success: true; data: RpcContextReport }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };

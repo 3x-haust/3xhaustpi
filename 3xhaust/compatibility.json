@@ -5,7 +5,7 @@
     "name": "3x-haust/3xhaustpi",
     "lineage": "standalone-source-port",
     "importedFrom": "earendil-works/pi",
-    "upstreamCommit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+    "upstreamCommit": "130ce6dc747c104925125d1e881dc80dcc6ac7ae",
     "syncStrategy": "reviewed-source-candidate-pr",
     "stablePromotionRequiresExactCommitReceipt": true
   },
@@ -24,37 +24,51 @@
       "name": "@earendil-works/pi-ai",
       "workspace": "packages/ai",
       "version": "1.5.0",
-      "requiredExports": [".", "./oauth"]
+      "requiredExports": [
+        ".",
+        "./oauth"
+      ]
     },
     {
       "name": "@earendil-works/pi-agent-core",
       "workspace": "packages/agent",
       "version": "1.5.0",
-      "requiredExports": [".", "./node"]
+      "requiredExports": [
+        ".",
+        "./node"
+      ]
     },
     {
       "name": "@3xhaust/semantic-contract",
       "workspace": "packages/semantic-contract",
       "version": "0.1.1",
-      "requiredExports": ["."]
+      "requiredExports": [
+        "."
+      ]
     },
     {
       "name": "@3xhaust/core",
       "workspace": "packages/core",
       "version": "0.1.1",
-      "requiredExports": ["."]
+      "requiredExports": [
+        "."
+      ]
     },
     {
       "name": "@3xhaust/pi-adapter",
       "workspace": "packages/pi-adapter",
       "version": "0.1.1",
-      "requiredExports": ["."]
+      "requiredExports": [
+        "."
+      ]
     },
     {
       "name": "@3xhaust/pi-session",
       "workspace": "packages/pi-session",
       "version": "0.1.1",
-      "requiredExports": ["."]
+      "requiredExports": [
+        "."
+      ]
     }
   ],
   "embedding": {

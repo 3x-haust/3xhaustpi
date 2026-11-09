@@ -553,12 +553,6 @@ Response:
       "total": 105000
     },
     "cost": 0.45,
-    "cache": {
-      "hitRate": 0.42,
-      "reusableHitRate": 0.95,
-      "reusableTokens": 42000,
-      "missedReusableTokens": 2100
-    },
     "contextUsage": {
       "tokens": 60000,
       "contextWindow": 200000,
@@ -568,27 +562,9 @@ Response:
 }
 ```
 
-`tokens` and `cost` include assistant messages, usage reported by tools, and compaction/branch-summary generation across the full session, including pre-compaction history and abandoned branches. Forks include copied history, not just requests made after the fork. Streaming updates are not additional requests. See [Cache token accounting](cache-token-accounting.md) for bucket definitions, cache-hit rates, and reload/fork semantics. `contextUsage` contains the actual current context-window estimate used for compaction and footer display.
-
-`cache` covers the current branch only. `hitRate` is cache reads over all prompt tokens of successful assistant requests; `reusableHitRate` is cache reads over the prompt tokens the previous request on the same model had already sent (what a perfect cache would serve), reset at compactions and branch summaries. Both are `0` when there is nothing to measure.
+`tokens` and `cost` include assistant messages, usage reported by tools, and compaction/branch-summary generation across the full session. `contextUsage` contains the actual current context-window estimate used for compaction and footer display.
 
 `contextUsage` is omitted when no model or context window is available. `contextUsage.tokens` and `contextUsage.percent` are `null` immediately after compaction until a fresh post-compaction assistant response provides valid usage data.
-
-### warm
-
-Write the prompt cache the next prompt will read, without running a turn: Pi sends the request a prompt would send now, with `.` as the user's message, and stops it at the model's first output. The transcript and queues do not change and no session events are emitted. Send it when a prompt is coming (a conversation opened, the user typing), so the first real request reads its prefix from cache. With `--shared-prompt-cache`, a fresh session reuses the system prompt and tools another session already cached.
-
-```json
-{"type": "warm"}
-```
-
-The response arrives once the warm-up request has finished or was skipped:
-
-```json
-{"type": "response", "command": "warm", "success": true, "data": {"warmed": true, "cacheWrite": 18234}}
-```
-
-`warmed` is `false` when nothing was sent or the request failed: a run is active (it keeps its own cache warm), the model is virtual, or the model uses Anthropic budget thinking, where a one-token request would key a different cache entry. `cacheWrite` is the provider's reported cache-write token count for the warm-up when it reported usage before the stop; many providers report usage only at the end of a response, so it can be `0` or missing even when the cache was written. A successful warm-up is recorded as a `usage` entry of kind `cache_prewarm`.
 
 ### export_html
 
@@ -856,59 +832,6 @@ Each command has:
   - `baseDir`: Package base directory, when applicable
 
 **Note**: Built-in TUI commands (`/settings`, `/hotkeys`, etc.) are not included. They are handled only in interactive mode and would not execute if sent via `prompt`.
-
-## Context
-
-### get_context
-
-Get what the model receives on the next request, broken into parts a client can show, each with a token estimate (characters / 4, multi-byte text weighted, as compaction estimates it). Read-only; nothing is sent to the model.
-
-```json
-{"type": "get_context"}
-```
-
-Response:
-```json
-{
-  "type": "response",
-  "command": "get_context",
-  "success": true,
-  "data": {
-    "cwd": "/home/user/myproject",
-    "systemPrompt": "You are a coding assistant ...",
-    "systemPromptTokens": 4210,
-    "forced": false,
-    "sections": [
-      {"name": "preamble", "text": "You are a coding assistant ...", "tokens": 30},
-      {"name": "tools", "text": "<tools>\n- read: ...\n</tools>", "tokens": 120},
-      {"name": "addendum", "text": "<addendum>\n...\n</addendum>", "tokens": 1800}
-    ],
-    "appendSystemPrompt": [{"text": "# Role\n...", "tokens": 1500}],
-    "contextFiles": [{"path": "/home/user/myproject/AGENTS.md", "content": "...", "tokens": 600}],
-    "skills": [
-      {"name": "code-review", "description": "...", "path": "/skills/code-review/SKILL.md", "modelInvocable": true, "sourceInfo": {"...": "..."}}
-    ],
-    "tools": [
-      {"name": "read", "description": "Read the contents of a file ...", "active": true, "exposure": "direct", "sourceInfo": {"path": "builtin:read", "...": "..."}, "schemaTokens": 310}
-    ],
-    "messages": [
-      {"role": "user", "tokens": 42, "preview": "Fix the login redirect"},
-      {"role": "assistant", "tokens": 80, "preview": "Reading the router. [read]", "toolCalls": ["read"]},
-      {"role": "toolResult", "tokens": 900, "preview": "import { Router } ...", "toolName": "read"}
-    ],
-    "contextUsage": {"tokens": 18000, "contextWindow": 200000, "percent": 9}
-  }
-}
-```
-
-- `systemPrompt`: the full system prompt text. `systemPromptTokens` estimates it.
-- `sections`: the prompt's ordered sections as the model receives them, tags included: `preamble`, `tools`, `rules`, `docs`, `addendum` (every `--append-system-prompt` part joined), `project_context` (context files), `skills`, `cwd`, and any section an extension adds. Empty when `forced` is `true` (an extension replaced the whole prompt).
-- `appendSystemPrompt`: each `--append-system-prompt` part, in order.
-- `contextFiles`: `AGENTS.md` / `CLAUDE.md` files loaded into `project_context`.
-- `skills`: loaded skills. Skills with `modelInvocable: false` are left out of the prompt.
-- `tools`: every registered tool. `active` tools are declared to the model on the next request; `schemaTokens` estimates the declaration (name, description, parameter schema). `sourceInfo.path` is `builtin:<name>` for built-in tools and the extension's file for extension tools; MCP tools carry a `namespace` such as `mcp__docs`.
-- `messages`: the current context, one entry per message, with `preview` (first 160 characters, whitespace collapsed), `toolName` for tool results and `toolCalls` for assistant messages that call tools.
-- `contextUsage`: the same estimate as `get_session_stats`.
 
 ## Model object
 

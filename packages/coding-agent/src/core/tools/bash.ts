@@ -92,6 +92,20 @@ export interface BashOperations {
 	) => Promise<{ exitCode: number | null }>;
 }
 
+/**
+ * Timeout of the local shell backend. Its message keeps the `timeout:<seconds>` form custom operations throw.
+ * `shellExit` is set when the shell itself exited before the deadline, so the tool was only still waiting
+ * because background processes kept writing to the inherited stdout/stderr pipes (#11613).
+ */
+class ShellTimeoutError extends Error {
+	readonly shellExit: { exitCode: number; afterSeconds: number } | undefined;
+
+	constructor(timeout: number | undefined, shellExit: { exitCode: number; afterSeconds: number } | undefined) {
+		super(`timeout:${timeout}`);
+		this.shellExit = shellExit;
+	}
+}
+
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return {
@@ -120,7 +134,13 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				child.stdin?.end(command);
 			}
 			if (child.pid) trackDetachedChildPid(child.pid);
+			const startedAt = performance.now();
+			let shellExitedAfterMs: number | undefined;
+			child.once("exit", () => {
+				shellExitedAfterMs = performance.now() - startedAt;
+			});
 			let timedOut = false;
+			let exitedBeforeDeadlineAfterMs: number | undefined;
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			const onAbort = () => {
 				if (child.pid) killProcessTree(child.pid);
@@ -131,6 +151,9 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (timeoutMs !== undefined) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
+						exitedBeforeDeadlineAfterMs = shellExitedAfterMs;
+						// Also when the shell already exited: on Unix the group kill still reaches background
+						// processes holding the pipes. Windows cannot find them once the shell pid is gone.
 						if (child.pid) killProcessTree(child.pid);
 					}, timeoutMs);
 				}
@@ -148,13 +171,19 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (signal?.aborted) {
 					throw new Error("aborted");
 				}
-				if (timedOut) {
-					throw new Error(`timeout:${timeout}`);
-				}
 				// A signal-killed shell has no exit code. Use the standard shell convention so
 				// callers do not mistake the termination for a successful command.
 				const signalCode = child.signalCode;
-				return { exitCode: exitCode ?? (signalCode ? 128 + (osConstants.signals[signalCode] ?? 0) : 1) };
+				const resolvedExitCode = exitCode ?? (signalCode ? 128 + (osConstants.signals[signalCode] ?? 0) : 1);
+				if (timedOut) {
+					throw new ShellTimeoutError(
+						timeout,
+						exitedBeforeDeadlineAfterMs !== undefined
+							? { exitCode: resolvedExitCode, afterSeconds: Math.round(exitedBeforeDeadlineAfterMs / 100) / 10 }
+							: undefined,
+					);
+				}
+				return { exitCode: resolvedExitCode };
 			} finally {
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -239,40 +268,6 @@ export interface ShellToolConfig {
 	tempFilePrefix: string;
 }
 
-/**
- * Truncated output keeps its first lines as well as its last ones. The command's own header,
- * the first compiler error and the test runner's banner are often at the start, while the
- * summary and the final error are at the end.
- */
-const HEAD_MAX_LINES = 100;
-const HEAD_MAX_BYTES = 8 * 1024;
-
-/** Join the head and a tail shortened so both fit the usual output budget. */
-export function formatHeadAndTail(
-	head: { text: string; lines: number },
-	tail: string,
-	tailStart: number,
-	totalLines: number,
-): { text: string; tailStart: number } | undefined {
-	const tailLines = tail.split("\n");
-	let start = tailStart;
-	let bytes = Buffer.byteLength(tail, "utf-8");
-	const byteBudget = DEFAULT_MAX_BYTES - Buffer.byteLength(head.text, "utf-8");
-	const lineBudget = DEFAULT_MAX_LINES - head.lines;
-	let drop = 0;
-	while (drop < tailLines.length - 1 && (bytes > byteBudget || tailLines.length - drop > lineBudget)) {
-		bytes -= Buffer.byteLength(tailLines[drop], "utf-8") + 1;
-		drop++;
-		start++;
-	}
-	if (start <= head.lines + 1 || start > totalLines) return undefined;
-	const omitted = start - head.lines - 1;
-	return {
-		text: `${head.text}\n\n[... ${omitted} lines omitted ...]\n\n${tailLines.slice(drop).join("\n")}`,
-		tailStart: start,
-	};
-}
-
 export function createShellToolDefinition(
 	cwd: string,
 	config: ShellToolConfig,
@@ -291,8 +286,6 @@ export function createShellToolDefinition(
 		parameters: bashSchema,
 		outputSchema: bashOutputSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		// A command can read or change any file, so it must not race edits or writes in the same batch.
-		executionMode: "exclusive",
 		async execute(
 			_toolCallId,
 			{ command, timeout }: { command: string; timeout?: number },
@@ -367,11 +360,7 @@ export function createShellToolDefinition(
 				emitOutputUpdate();
 				const snapshot = output.snapshot({ persistIfTruncated: true });
 				await output.closeTempFile();
-				const head =
-					snapshot.truncation.truncated && !snapshot.truncation.lastLinePartial
-						? await output.readHead(HEAD_MAX_LINES, HEAD_MAX_BYTES).catch(() => undefined)
-						: undefined;
-				return { ...snapshot, head };
+				return snapshot;
 			};
 
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
@@ -382,11 +371,7 @@ export function createShellToolDefinition(
 					details = { truncation, fullOutputPath: snapshot.fullOutputPath };
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
-					const headAndTail =
-						snapshot.head && formatHeadAndTail(snapshot.head, text, startLine, truncation.totalLines);
-					if (headAndTail) {
-						text = `${headAndTail.text}\n\n[Showing lines 1-${snapshot.head?.lines} and ${headAndTail.tailStart}-${endLine} of ${truncation.totalLines}. Full output: ${snapshot.fullOutputPath}]`;
-					} else if (truncation.lastLinePartial) {
+					if (truncation.lastLinePartial) {
 						const lastLineSize = formatSize(output.getLastLineBytes());
 						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${snapshot.fullOutputPath}]`;
 					} else if (truncation.truncatedBy === "lines") {
@@ -419,7 +404,13 @@ export function createShellToolDefinition(
 					}
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
+						let status = `Command timed out after ${timeoutSecs} seconds`;
+						if (err instanceof ShellTimeoutError && err.shellExit) {
+							// Both facts matter: the command's real result, and that its background processes
+							// were still writing output when the timeout hit (#11613).
+							status += `. The shell exited with code ${err.shellExit.exitCode} after ${err.shellExit.afterSeconds} seconds, but background processes it started kept writing output until the timeout.`;
+						}
+						throw new Error(appendStatus(text, status));
 					}
 					throw err;
 				}

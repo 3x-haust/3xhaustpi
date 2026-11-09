@@ -9,9 +9,8 @@ import {
 	normalizeContext,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { CacheWarmer } from "../src/core/cache-warmer.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -83,10 +82,9 @@ describe("createAgentSession stream options", () => {
 	async function captureStreamOptions(
 		api: Api,
 		settings: Partial<Settings>,
-		requestOptions: SimpleStreamOptions | ((sessionId: string) => SimpleStreamOptions) = {},
+		requestOptions: SimpleStreamOptions = {},
 		extensionFactory?: ExtensionFactory,
 		providerEvent?: unknown,
-		sessionOptions: { sharedPromptCache?: boolean } = {},
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
@@ -129,17 +127,14 @@ describe("createAgentSession stream options", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
-			...sessionOptions,
 		});
 
 		try {
-			const options =
-				typeof requestOptions === "function" ? requestOptions(sessionManager.getSessionId()) : requestOptions;
 			if (providerEvent === undefined) {
 				const stream = await session.agent.streamFunction(
 					model,
-					normalizeContext({ systemPrompt: "Shared system prompt", messages: [] }),
-					options,
+					normalizeContext({ messages: [] }),
+					requestOptions,
 				);
 				await stream.result();
 			} else {
@@ -201,36 +196,6 @@ describe("createAgentSession stream options", () => {
 			expect(fixture.session.cacheWarmingStatus?.nextWarmAt).toBeGreaterThan(Date.now());
 			fixture.session.agent.state.messages = fixture.session.agent.state.messages.slice(1);
 			expect(fixture.session.cacheWarmingStatus?.reason).toBe("conversation context changed");
-		} finally {
-			fixture.dispose();
-		}
-	});
-
-	it("does not hand side requests on the session's routing id to cache warming", async () => {
-		const fixture = await createCacheWarmingSession();
-		try {
-			await fixture.session.prompt("test");
-			const warmer = (fixture.session as unknown as { _cacheWarmer: CacheWarmer })._cacheWarmer;
-			const start = vi.spyOn(warmer, "start");
-			const { model } = fixture.session.agent.state;
-			const context = normalizeContext({
-				messages: [{ role: "user", content: "summarize", timestamp: Date.now() }],
-			});
-			const send = async (sideRequest?: "warm" | "summary") =>
-				(
-					await fixture.session.agent.streamFunction(model, context, {
-						sessionId: fixture.session.sessionId,
-						sideRequest,
-					})
-				).result();
-
-			// A cached-prefix summary and a warm-up end in a turn no later request repeats.
-			await send("summary");
-			await send("warm");
-			expect(start).not.toHaveBeenCalled();
-			expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled");
-			await send();
-			expect(start).toHaveBeenCalledTimes(1);
 		} finally {
 			fixture.dispose();
 		}
@@ -301,139 +266,6 @@ describe("createAgentSession stream options", () => {
 
 		expect(options?.maxRetries).toBe(2);
 		expect(options?.maxRetryDelayMs).toBe(3000);
-	});
-
-	it("applies the cacheRetention setting to session requests unless the caller sets one", async () => {
-		const fromSetting = await captureStreamOptions(
-			"anthropic-messages",
-			{ cacheRetention: "short" },
-			(sessionId) => ({
-				sessionId,
-			}),
-		);
-		const explicit = await captureStreamOptions("anthropic-messages", { cacheRetention: "long" }, (sessionId) => ({
-			sessionId,
-			cacheRetention: "none",
-		}));
-
-		expect(fromSetting?.cacheRetention).toBe("short");
-		expect(explicit?.cacheRetention).toBe("none");
-	});
-
-	it("leaves promptCacheKey unset unless the shared prompt cache is enabled", async () => {
-		const options = await captureStreamOptions("openai-responses", {}, (sessionId) => ({ sessionId }));
-
-		expect(options?.promptCacheKey).toBeUndefined();
-	});
-
-	it("derives a prefix promptCacheKey for session requests when sharedPromptCache is set", async () => {
-		const fromSetting = await captureStreamOptions("openai-responses", { sharedPromptCache: true }, (sessionId) => ({
-			sessionId,
-		}));
-		const fromOption = await captureStreamOptions(
-			"openai-responses",
-			{},
-			(sessionId) => ({ sessionId }),
-			undefined,
-			undefined,
-			{
-				sharedPromptCache: true,
-			},
-		);
-
-		expect(fromSetting?.promptCacheKey).toMatch(/^pfx-[0-9a-f]{40}$/);
-		// Two sessions with the same system prompt and tools share the key.
-		expect(fromOption?.promptCacheKey).toBe(fromSetting?.promptCacheKey);
-		expect(fromSetting?.sessionId).not.toBe(fromOption?.sessionId);
-	});
-
-	it("keeps standalone requests and explicit keys out of the shared prefix key", async () => {
-		const standalone = await captureStreamOptions(
-			"openai-responses",
-			{ sharedPromptCache: true },
-			{ sessionId: "summary-request" },
-		);
-		const explicit = await captureStreamOptions("openai-responses", { sharedPromptCache: true }, (sessionId) => ({
-			sessionId,
-			promptCacheKey: "caller-key",
-		}));
-
-		expect(standalone?.promptCacheKey).toBeUndefined();
-		expect(explicit?.promptCacheKey).toBe("caller-key");
-	});
-
-	it("warms the request the first prompt sends, under the same shared cache key", async () => {
-		const api: Api = "openai-responses";
-		const model = createModel(api);
-		const settingsManager = SettingsManager.inMemory({});
-		// An app's own part of the prompt, ahead of the conversation: the warm-up has to carry it too.
-		const lead: ExtensionFactory = (pi) => {
-			pi.on("before_agent_start", (event) => {
-				event.systemPromptOptions.sections.servers = "<servers>one</servers>";
-			});
-			pi.on("context", (event) => {
-				const at = event.messages.findIndex((message) => message.role !== "system");
-				const note = { role: "user" as const, content: [{ type: "text" as const, text: "lead" }], timestamp: 0 };
-				return { messages: [...event.messages.slice(0, at), note, ...event.messages.slice(at)] };
-			});
-		};
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, extensionFactories: [lead] });
-		await resourceLoader.reload();
-		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
-		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
-		const requests: { messages: unknown[]; promptCacheKey?: string; maxTokens?: number }[] = [];
-		modelRegistry.registerProvider(model.provider, {
-			api,
-			streamSimple: (_model, context, options) => {
-				requests.push({
-					messages: context.messages.map(({ timestamp: _t, ...message }) => message),
-					promptCacheKey: options?.promptCacheKey,
-					maxTokens: options?.maxTokens,
-				});
-				return createDoneStream(api, 100);
-			},
-		});
-		const sessionManager = SessionManager.inMemory(cwd);
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model,
-			modelRuntime: getModelRuntime(modelRegistry),
-			settingsManager,
-			sessionManager,
-			resourceLoader,
-			sharedPromptCache: true,
-		});
-		try {
-			expect(await session.warm()).toEqual({ warmed: true, cacheWrite: 0 });
-			expect(session.messages).toEqual([]);
-			await session.prompt("hi");
-			const [warm, real] = requests;
-			expect(warm.maxTokens).toBe(1);
-			expect(warm.promptCacheKey).toMatch(/^pfx-/);
-			expect(warm.promptCacheKey).toBe(real.promptCacheKey);
-			expect(warm.messages.slice(0, -1)).toEqual(real.messages.slice(0, -1));
-			expect(JSON.stringify(warm.messages[0])).toContain("<servers>one</servers>");
-			expect(warm.messages.map((message) => (message as { role: string }).role)).toEqual(["system", "user", "user"]);
-			const usage = sessionManager.getEntries().filter((entry) => entry.type === "usage");
-			expect(usage.map((entry) => entry.type === "usage" && entry.kind)).toEqual(["cache_prewarm"]);
-		} finally {
-			session.dispose();
-			modelRegistry.unregisterProvider(model.provider);
-		}
-	});
-
-	it("skips warm() when a one-token request would change Anthropic's thinking budget", async () => {
-		const fixture = await createCacheWarmingSession();
-		try {
-			fixture.session.agent.state.model = { ...fixture.session.agent.state.model, reasoning: true };
-			fixture.session.agent.state.thinkingLevel = "medium";
-			expect(await fixture.session.warm()).toEqual({ warmed: false });
-			expect(fixture.providerCalls()).toBe(0);
-		} finally {
-			fixture.dispose();
-		}
 	});
 
 	// Regression test for #9784.

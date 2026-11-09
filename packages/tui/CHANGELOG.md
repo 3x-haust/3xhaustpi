@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed Markdown rendering HTML comments (`<!-- ... -->`) as visible text ([#11710](https://github.com/earendil-works/pi/issues/11710))
+- Fixed fullscreen Kitty images in Orca showing only their first row. Orca's xterm.js image addon stores images in the cells they cover. `TuiAltScreen` now draws Kitty images after clearing and writing the rows they cover on every terminal, not only WezTerm ([#11835](https://github.com/earendil-works/pi/issues/11835))
+
 ## [1.5.0] - 2026-11-02
 
 ### Added
@@ -303,10 +310,6 @@
 ### Fixed
 
 - Fixed long image fallback paths overflowing narrow terminals, shortened home-directory paths, and made absolute paths clickable when terminal hyperlinks are available ([#7262](https://github.com/earendil-works/pi/pull/7262)).
-
-### Fixed
-
-- Fixed duplicate large bracketed paste events inserting the same content twice; an immediate repeat now expands the compact marker without adding another copy.
 
 ## [0.82.1] - 2026-07-25
 

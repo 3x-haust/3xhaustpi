@@ -18,8 +18,7 @@ Add `"$schema": "https://pi.dev/schemas/settings.schema.json"` to `settings.json
 | `enabledModels` | `string[]` | All available models | Model patterns used for startup selection and model cycling. Uses the same format as `--models`. |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in the transcript. |
 | `showCacheMissNotices` | boolean | `false` | Show notices for significant cache misses, successful cache warming, compaction usage, and provider recovery. |
-| `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"streaming"` | Keep eligible provider prompt caches warm during active runs or, with `"idle"`, between runs. Global setting only. |
-| `cacheRetention` | `"auto" \| "short" \| "long"` | `"auto"` | Prompt cache lifetime for session requests. `auto` uses the long (1h) tier on subscription logins for models that offer it (cache writes cost no extra money there) and the provider default otherwise; an explicit `PI_CACHE_RETENTION` still applies. |
+| `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"idle"` | Keep eligible provider prompt caches warm during active runs and, with `"idle"`, for up to 30 minutes between runs. `"streaming"` warms only during active runs. Global setting only. |
 
 Cache warming runs only when the model declares a cache lifetime and Pi estimates at least $0.05 in avoided cache-miss cost. Refresh usage counts toward session totals but does not enter model context. `/session` shows the next decision; extensions can override it with `cache_warming_decision`. See [Prompt Cache Lifetimes](models.md#prompt-cache-lifetimes).
 
@@ -74,11 +73,6 @@ CLI tool options override this setting for one invocation. `--tools` with only `
 | `compaction.enabled` | boolean | `true` | Enable automatic compaction. |
 | `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts. |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
-| `compaction.maxContextTokens` | number | `300000` | Compact at this context size even on larger windows; `0` disables the cap. |
-| `compaction.reuseCache` | boolean | `true` | Summarize threshold and manual compactions by appending an instruction to the conversation as the session sent it, so the provider reads it from prompt cache. Falls back to the standalone summary request when the reply is not a summary. |
-| `contextPruning.enabled` | boolean | `true` | Replace old large text tool results (500+ tokens) with a pointer to a temp file holding their text, using context edits. Runs after the prompt cache expired, or while it is warm only once context reaches 80% of the compaction threshold. Results from `SKILL.md` reads are kept. |
-| `contextPruning.protectRecentTokens` | number | `40000` | Tool results within this many most recent context tokens are never cleared. |
-| `contextPruning.minSavingsTokens` | number | `20000` | Clear only when one batch removes at least this many tokens, so the cache breaks rarely. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
 
 <a id="per-model-compaction-overrides"></a>
@@ -128,7 +122,6 @@ See [Themes](themes.md) and [Terminal Setup](terminal-setup.md) for format and p
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `transport` | `"auto" \| "sse" \| "websocket" \| "websocket-cached"` | `"auto"` | Preferred transport for AI providers that support multiple transports. |
-| `sharedPromptCache` | boolean | `false` | Send a prompt-cache key derived from the system prompt and tool definitions instead of the session id, so sessions with the same prefix share one cache entry on providers that route their cache by key (OpenAI `prompt_cache_key`; Codex also gets it as its session header). `--shared-prompt-cache` or `PI_SHARED_PROMPT_CACHE=1` enables it for one run, including `--mode rpc`. |
 | `httpProxy` | string | None | Proxy URL applied as `HTTP_PROXY` and `HTTPS_PROXY` for Pi-managed HTTP clients. **Can only be set in agent-directory settings.** |
 | `httpIdleTimeoutMs` | number \| `"disabled"` | `300000` | HTTP header and body idle timeout in milliseconds. Set to `0` or `"disabled"` to disable. |
 | `websocketConnectTimeoutMs` | number \| `"disabled"` | `15000` | WebSocket connection timeout in milliseconds. Set to `0` or `"disabled"` to disable. |

@@ -147,11 +147,8 @@ describe("generateSummary reasoning options", () => {
 		const requestContext = completeSimpleMock.mock.calls[0][1] as TranscriptContext;
 		const prompt = JSON.stringify(requestContext.messages);
 		// Regression test for #9652: clear boundaries and continuation wording avoid the reasoning-extraction false positive.
-		// The fork bounds the transcript with <conversation> tags instead of markdown headings.
-		expect(prompt).toContain("<conversation>\\n[User]: Summarize this.\\n</conversation>");
-		expect(prompt).toContain(
-			"</conversation>\\n\\nThe messages above are earlier context from an ongoing conversation.",
-		);
+		expect(prompt).toContain("# Conversation\\n[User]: Summarize this.");
+		expect(prompt).toContain("# Instructions\\nThe messages above are earlier context from an ongoing conversation.");
 	});
 
 	it("applies custom instructions to the turn prefix summary of a split turn", async () => {
@@ -319,37 +316,5 @@ describe("generateSummary reasoning options", () => {
 			totalTokens: 40,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, totalFromProvider: false },
 		});
-		// Summaries reserve the model output limit, capped by a share of the context window (#9512).
-		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([8192, 8192]);
-	});
-
-	it("starts history and split-turn summaries concurrently", async () => {
-		// Given: a split compaction whose first provider request is held open.
-		let releaseHistory: ((message: AssistantMessage) => void) | undefined;
-		const history = new Promise<AssistantMessage>((resolve) => {
-			releaseHistory = resolve;
-		});
-		completeSimpleMock.mockImplementationOnce(() => history).mockResolvedValueOnce(mockSummaryResponse);
-		const preparation: CompactionPreparation = {
-			firstKeptEntryId: "entry-keep",
-			messagesToSummarize: messages,
-			turnPrefixMessages: messages,
-			isSplitTurn: true,
-			tokensBefore: 600_000,
-			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
-			settings: { enabled: true, reserveTokens: 20_000, keepRecentTokens: 2_000 },
-		};
-
-		// When: compaction starts but the history response has not completed.
-		const pending = compact(preparation, createModel(false), "test-key");
-		await Promise.resolve();
-		await Promise.resolve();
-		const callsBeforeHistoryCompleted = completeSimpleMock.mock.calls.length;
-		if (!releaseHistory) throw new Error("History compaction did not start");
-		releaseHistory(mockSummaryResponse);
-		await pending;
-
-		// Then: the independent split-turn request was already dispatched.
-		expect(callsBeforeHistoryCompleted).toBe(2);
 	});
 });

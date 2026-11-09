@@ -128,37 +128,17 @@ export class OutputAccumulator {
 
 		await new Promise<void>((resolve, reject) => {
 			const onError = (error: Error) => {
-				stream.off("close", onClose);
+				stream.off("finish", onFinish);
 				reject(error);
 			};
-			const onClose = () => {
+			const onFinish = () => {
 				stream.off("error", onError);
 				resolve();
 			};
 			stream.once("error", onError);
-			stream.once("close", onClose);
+			stream.once("finish", onFinish);
 			stream.end();
 		});
-	}
-
-	/**
-	 * The first complete lines of the output, up to `maxLines` lines and `maxBytes` bytes. Call after
-	 * `finish()` and `closeTempFile()`. Undefined when the output was never written to a file.
-	 */
-	async readHead(maxLines: number, maxBytes: number): Promise<{ text: string; lines: number } | undefined> {
-		if (!this.tempFilePath) return undefined;
-		const file = await open(this.tempFilePath, "r");
-		try {
-			const buffer = Buffer.alloc(maxBytes);
-			const { bytesRead } = await file.read(buffer, 0, maxBytes, 0);
-			const text = new TextDecoder().decode(buffer.subarray(0, bytesRead), { stream: true });
-			const lines = text.split("\n");
-			// The last piece is a partial line unless the whole output fit.
-			const complete = lines.slice(0, Math.min(lines.length - 1, maxLines));
-			return complete.length === 0 ? undefined : { text: complete.join("\n"), lines: complete.length };
-		} finally {
-			await file.close();
-		}
 	}
 
 	/**

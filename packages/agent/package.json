@@ -10,10 +10,6 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
-		"./node": {
-			"types": "./dist/node.d.ts",
-			"import": "./dist/node.js"
-		},
 		"./package.json": "./package.json"
 	},
 	"files": [
@@ -24,18 +20,11 @@
 		"clean": "node ../../scripts/package-files.mjs clean dist",
 		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest --run",
-		"benchmark:tools": "node --experimental-strip-types benchmark/tool-call-benchmark-cli.ts",
-		"test:harness": "vitest --run --config vitest.harness.config.ts",
-		"coverage:harness": "vitest --run --config vitest.harness.config.ts --coverage",
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.5.0",
-		"@earendil-works/pi-schema": "1.5.0",
-		"diff": "8.0.4",
-		"ignore": "7.0.8",
-		"typebox": "1.3.27",
-		"yaml": "2.9.0"
+		"@earendil-works/pi-schema": "1.5.0"
 	},
 	"keywords": [
 		"ai",
@@ -56,7 +45,6 @@
 	},
 	"devDependencies": {
 		"@types/node": "22.19.19",
-		"@vitest/coverage-v8": "4.1.12",
 		"vitest": "4.1.12"
 	}
 }

@@ -110,7 +110,6 @@ function convertToolResultOutput<TApi extends Api>(
 }
 
 export interface OpenAIResponsesStreamOptions {
-	createResponseError?: (event: Extract<ResponseStreamEvent, { type: "response.failed" }>) => Error;
 	onProviderStreamEvent?: StreamOptions["onProviderStreamEvent"];
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
@@ -803,11 +802,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.failed") {
 			sawTerminalResponseEvent = true;
 			output.rawStopReason = event.response?.status;
-			// Failed responses can still report billed input, cache, and output tokens.
-			if (event.response) finalizeResponse(event.response);
-			if (options?.createResponseError) {
-				throw options.createResponseError(event);
-			}
 			const error = event.response?.error;
 			const details = event.response?.incomplete_details;
 			const msg = error

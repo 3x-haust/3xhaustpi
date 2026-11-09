@@ -62,7 +62,6 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
-	sharedPromptCache?: CreateAgentSessionOptions["sharedPromptCache"];
 }
 
 /**
@@ -229,7 +228,6 @@ export async function createAgentSessionFromServices(
 		excludeTools: options.excludeTools,
 		noTools: options.noTools,
 		customTools: options.customTools,
-		sharedPromptCache: options.sharedPromptCache,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 }

@@ -4,17 +4,14 @@
  */
 
 import {
-	type Api,
 	type AssistantMessage,
 	type ClientIdentity,
 	EventStream,
 	getCurrentTools,
 	getToolStateChanges,
-	type Model,
 	mergeClientIdentity,
 	normalizeContext,
 	PI_ATTRIBUTION,
-	type SimpleStreamOptions,
 	type SystemMessage,
 	type ToolResultMessage,
 	type ToolStateChanges,
@@ -27,7 +24,6 @@ import type {
 	AgentEvent,
 	AgentLoopConfig,
 	AgentMessage,
-	AgentStreamOptions,
 	AgentTool,
 	AgentToolCall,
 	AgentToolCallOutcome,
@@ -388,72 +384,6 @@ function withToolChanges(message: SystemMessage, { toolsAdded, toolsRemoved }: T
 }
 
 /**
- * Whether replaying a request with a one-token output cap leaves its cache entry untouched.
- * Anthropic's budget-based thinking (Claude models without adaptive thinking) derives
- * `budget_tokens` from `max_tokens`; the replay would get a different budget, which Anthropic keys
- * the message cache on, and the model could still think for thousands of tokens.
- */
-export function isReplayable(model: Model<Api>, options: Pick<SimpleStreamOptions, "reasoning"> | undefined): boolean {
-	if (!options?.reasoning || model.api !== "anthropic-messages") return true;
-	return (model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true;
-}
-
-/**
- * Send the request the next turn would send, with `pending` as its new messages, and stop at the
- * first thing the model answers. Nothing is added to the context and no event is emitted.
- *
- * A prompt cache is written as the provider reads the prompt, so a request cut off after its
- * first output token leaves the same entry the real one would have. Sent ahead of the real turn
- * (a conversation opening, the user starting to type), the real turn then reads it all instead of
- * paying for whatever is new since the cache was last written. The prefix only holds when this is
- * the request the turn makes: the same tool declarations and context transform, which is why it
- * runs them rather than building a request of its own. `prepareRequest` is not called - it may
- * compact or clear retry state, which a request nobody asked for must not do - so a caller whose
- * requests it projects passes the projected transcript as `context` instead. Returns undefined
- * without sending when a one-token request would not write the real request's entry
- * ({@link isReplayable}).
- */
-export async function warmAgentRequest(
-	pending: AgentMessage[],
-	context: AgentContext,
-	config: AgentLoopConfig,
-	signal: AbortSignal | undefined,
-	streamFn?: StreamFn,
-): Promise<AssistantMessage | undefined> {
-	const { model, reasoning } = config;
-	if (!isReplayable(model, { reasoning })) return undefined;
-	let messages = [...context.messages, ...declareToolChanges(context, pending)];
-	if (config.transformContext) messages = await config.transformContext(messages, signal);
-	const llmContext = normalizeContext({ messages: await config.convertToLlm(messages) });
-	const apiKey = (config.getApiKey ? await config.getApiKey(model.provider) : undefined) || config.apiKey;
-	// Providers may raise the cap (OpenAI and Codex take at least 16), so the stop is ours.
-	const controller = new AbortController();
-	const stop = () => controller.abort();
-	if (signal?.aborted) return undefined;
-	signal?.addEventListener("abort", stop, { once: true });
-	try {
-		const options: AgentStreamOptions = {
-			...config,
-			reasoning,
-			apiKey,
-			maxTokens: 1,
-			maxRetries: 0,
-			identity: mergeClientIdentity(DEFAULT_AGENT_IDENTITY, config.identity),
-			signal: controller.signal,
-			sideRequest: "warm",
-		};
-		const response = await (streamFn ?? getDefaultStreamFn())(model, llmContext, options);
-		for await (const event of response) {
-			if (event.type !== "start") break;
-		}
-		controller.abort();
-		return await response.result();
-	} finally {
-		signal?.removeEventListener("abort", stop);
-	}
-}
-
-/**
  * Stream an assistant response from the LLM.
  * This is where AgentMessage[] gets transformed to Message[] for the LLM.
  */
@@ -599,27 +529,7 @@ async function executeToolCalls(
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
 	}
-	const isExclusive = (toolCall: AgentToolCall) =>
-		currentContext.tools?.find((t) => t.name === toolCall.name)?.executionMode === "exclusive";
-	if (!toolCalls.some(isExclusive)) {
-		return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
-	}
-	// Run parallel segments separated by exclusive calls, in source order.
-	const segments: AgentToolCall[][] = [];
-	for (const toolCall of toolCalls) {
-		const last = segments.at(-1);
-		if (isExclusive(toolCall) || !last || isExclusive(last[0])) segments.push([toolCall]);
-		else last.push(toolCall);
-	}
-	const messages: ToolResultMessage[] = [];
-	let terminate = true;
-	for (const segment of segments) {
-		const batch = await executeToolCallsParallel(currentContext, assistantMessage, segment, config, signal, emit);
-		messages.push(...batch.messages);
-		terminate &&= batch.terminate;
-		if (signal?.aborted) break;
-	}
-	return { messages, terminate: messages.length > 0 && terminate };
+	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
 }
 
 type ExecutedToolCallBatch = {

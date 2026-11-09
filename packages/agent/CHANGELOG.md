@@ -1,5 +1,7 @@
 # Changelog
 
+## [Unreleased]
+
 ## [1.5.0] - 2026-11-02
 
 ### Breaking Changes
@@ -163,17 +165,6 @@
 - Fixed JSONL session forks and torn-tail repairs to publish atomically, avoiding partially written or corrupted sessions after interrupted writes ([#7707](https://github.com/earendil-works/pi/pull/7707) by [@davidbrai](https://github.com/davidbrai)).
 
 ## [0.83.0] - 2026-07-29
-
-### Added
-
-- Added the `"exclusive"` per-tool execution mode: the call waits for the earlier calls of its batch, runs alone, and holds back later calls, which still run in parallel with each other.
-- Added a deterministic agent-loop tool-call benchmark for parallel and sequential execution, with execution and contract success rates, orphaned calls, throughput, p50/p95/p99 batch latency, and optional acceptance checks.
-
-### Changed
-
-- Changed compaction summaries to preserve operational evidence, including command outcomes, validation results, unresolved errors, and delegated session lineage.
-- Changed compaction transcript serialization to omit assistant reasoning, retain tool-call identity and result status, bound large arguments and results, and preserve both ends of truncated output.
-- Changed split-turn compaction to generate prior-history and turn-prefix summaries concurrently.
 
 ## [0.82.1] - 2026-07-25
 
