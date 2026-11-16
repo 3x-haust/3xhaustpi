@@ -2,7 +2,7 @@ import { type Static, type TSchemaOptions, Type } from "typebox";
 import { ModelThinkingLevelSchema } from "./pi-ai-schemas.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 
-function nonNegativeSafeInteger(options: { default?: number; description?: string } = {}) {
+function nonNegativeSafeInteger(options: { default?: number } = {}) {
 	return Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER, ...options });
 }
 
@@ -19,44 +19,9 @@ const CompactionSettingsSchema = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.compaction.enabled })),
 	reserveTokens: Type.Optional(nonNegativeSafeInteger({ default: SETTINGS_DEFAULTS.compaction.reserveTokens })),
 	keepRecentTokens: Type.Optional(nonNegativeSafeInteger({ default: SETTINGS_DEFAULTS.compaction.keepRecentTokens })),
-	maxContextTokens: Type.Optional(
-		nonNegativeSafeInteger({
-			description: "Compact at this context size even when the window is larger; 0 disables.",
-			default: SETTINGS_DEFAULTS.compaction.maxContextTokens,
-		}),
-	),
-	reuseCache: Type.Optional(
-		Type.Boolean({
-			description:
-				"Summarize by appending an instruction to the conversation as the session sent it, so the provider reads it from prompt cache. Falls back to a standalone summary request when the model does not answer with a summary.",
-			default: SETTINGS_DEFAULTS.compaction.reuseCache,
-		}),
-	),
 	modelOverrides: Type.Optional(
 		Type.Record(Type.String(), CompactionModelOverrideSchema, {
 			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',
-		}),
-	),
-});
-
-const ContextPruningSettingsSchema = Type.Object({
-	enabled: Type.Optional(
-		Type.Boolean({
-			description:
-				"Replace old large tool results with a pointer to a file holding their text before compaction is needed.",
-			default: SETTINGS_DEFAULTS.contextPruning.enabled,
-		}),
-	),
-	protectRecentTokens: Type.Optional(
-		nonNegativeSafeInteger({
-			description: "Tool results inside this many most recent context tokens are never cleared.",
-			default: SETTINGS_DEFAULTS.contextPruning.protectRecentTokens,
-		}),
-	),
-	minSavingsTokens: Type.Optional(
-		nonNegativeSafeInteger({
-			description: "Clear only when at least this many tokens would be removed in one batch.",
-			default: SETTINGS_DEFAULTS.contextPruning.minSavingsTokens,
 		}),
 	),
 });
@@ -261,13 +226,6 @@ export const SettingsSchema = Type.Object(
 				{ default: SETTINGS_DEFAULTS.transport },
 			),
 		),
-		sharedPromptCache: Type.Optional(
-			Type.Boolean({
-				description:
-					"Key session requests by a hash of system prompt and tools, so sessions with the same prefix share one provider cache entry.",
-				default: SETTINGS_DEFAULTS.sharedPromptCache,
-			}),
-		),
 		sessionShareDestination: Type.Optional(
 			Type.Union([Type.Literal("auto"), Type.Literal("gist"), Type.Literal("radius")], {
 				description:
@@ -460,14 +418,6 @@ export const SettingsSchema = Type.Object(
 				default: SETTINGS_DEFAULTS.cacheWarming,
 			}),
 		),
-		contextPruning: Type.Optional(ContextPruningSettingsSchema),
-		cacheRetention: Type.Optional(
-			Type.Union([Type.Literal("auto"), Type.Literal("short"), Type.Literal("long")], {
-				description:
-					'Prompt cache lifetime for session requests. "auto" uses the long (1h) tier on subscription logins, where cache writes cost no extra money, and the provider default otherwise.',
-				default: SETTINGS_DEFAULTS.cacheRetention,
-			}),
-		),
 		websocketConnectTimeoutMs: Type.Optional(
 			timeoutSetting({
 				description: 'WebSocket connect or open handshake timeout in milliseconds; 0 or "disabled" disables it.',
@@ -538,7 +488,6 @@ export type PackageSource = Static<typeof PackageSourceSchema>;
 export type FullscreenExitOutput = NonNullable<SettingsInput["fullscreenExitOutput"]>;
 export type TuiMode = NonNullable<SettingsInput["tuiMode"]>;
 export type CacheWarmingMode = NonNullable<SettingsInput["cacheWarming"]>;
-export type CacheRetentionSetting = NonNullable<SettingsInput["cacheRetention"]>;
 export interface Settings extends Omit<SettingsInput, "queueMode" | "retry" | "skills" | "websockets"> {
 	retry?: RetrySettings;
 	skills?: string[];

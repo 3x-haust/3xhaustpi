@@ -29,12 +29,10 @@ Both use closely related structured formats and track file operations cumulative
 Auto-compaction triggers when:
 
 ```
-contextTokens > min(contextWindow - reserveTokens, maxContextTokens)
+contextTokens > contextWindow - reserveTokens
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). It only decides when compaction starts. Summary requests use the model's output limit, reduced when needed so input and output fit the context window. `maxContextTokens` (default 300000, `0` disables it) caps the threshold on large windows, so a 1M-token model does not resend close to 1M tokens on every request before compacting.
-
-When a request has no reported usage yet, its tokens are estimated from characters, with Hangul, CJK, and other multi-byte characters weighted so that non-English text is not undercounted.
+By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). It only decides when compaction starts. Summary requests use the model's output limit, reduced when needed so input and output fit the context window.
 
 During a multi-turn agent run, Pi checks the canonical projected context after tools finish and their results are appended, before starting the next assistant response. If the threshold is crossed, Pi compacts during `prepareNextTurn`, then performs the existing catch-up steering poll before `turn_start`. It skips this between-turn check when the completed tool batch terminates the run and no queued message requires another response. Pi also checks before a new user prompt and performs final-attempt overflow recovery after the low-level run ends.
 
@@ -46,7 +44,7 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 1. **Find cut point**: Walk backwards through the finalized session projection, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
 2. **Extract messages**: Collect projected messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present. Preserve active instructions, prohibitions, decisions, unfinished tasks, blockers, and operational identifiers; deduplicate historical detail first
+3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
 5. **Rebuilds context**: Session rebuilds the context for the next request, using summary + messages from `firstKeptEntryId` onwards
 
@@ -123,29 +121,9 @@ Split user-message span (one span exceeds budget):
   turnPrefixMessages = [usr, ass, tool, ass, tool, tool]
 ```
 
-For split user-message spans, Pi generates two summaries concurrently and merges them:
-1. **History summary**: Previous context (if any). If there are no newly compacted history messages, reuse the previous checkpoint verbatim when its UTF-8 byte upper bound fits the summary allowance; otherwise re-summarize it
-2. **User-message-span prefix summary**: The early part of the split user-message span, including any custom compaction focus
-
-### Cached-Prefix Summaries
-
-With `compaction.reuseCache` (default `true`), threshold and manual compaction first summarize on the session's own request: every message before the first kept entry, converted and transformed exactly as session requests send them, followed by one instruction to write the checkpoint without calling tools. The provider then reads the conversation from its prompt cache. The request keeps the session routing ID and cache retention and is marked as a side request, so cache warming keeps refreshing the session request instead. It runs only when the summarizing model is the session model; overflow recovery always uses the standalone request. When the reply calls a tool or has no text, compaction falls back to the standalone request described below; provider errors and aborts fail as they would there.
-
-### Background Summaries
-
-Once context reaches 85% of the compaction threshold, Pi starts the threshold summary in the background while the agent keeps working. When the threshold is reached, that summary is used if the branch still starts with the entries it saw, the model is unchanged, and the entries it keeps verbatim stay below 60% of the threshold; otherwise Pi summarizes again. Waiting for it ends on Esc or dispose, which also aborts it. It is skipped when an extension handles `session_before_compact`. The request usage of a summary that goes unused is recorded like that of a failed one.
-
-### Summary Budgets and Failure Safety
-
-Summary requests reserve the model's output limit, capped at half of its context window (a quarter for the split-span prefix summary), so long reasoning does not truncate the summary. The prompt asks for a compact checkpoint; the allowance is a ceiling, not a target.
-
-Summarization accounts for the system prompt, instructions, previous checkpoint, output allowance, and 256 tokens of framing headroom. UTF-8 byte length is used as a deliberately conservative input-token upper bound, including multilingual text and opaque payloads. Oversized histories are folded in chronological batches, keeping tool calls and their results together. Each batch receives the preceding checkpoint and the same custom focus. When a large checkpoint blocks the next message, a bounded checkpoint-only condensation pass runs first. A checkpoint too large to fit by itself is folded from ordered UTF-8-safe fragments; raw user messages/tool exchanges are never silently split or dropped. Resizing must reduce byte length, permits at most two consecutive reductions without consuming a new source batch, and disallows recursive fragment splitting. Usage from successful batches and resizing calls is aggregated into the final compaction result. All prefix batches keep the prefix summary format, without conflicting checkpoint headings.
-
-No intermediate checkpoint is persisted. Aborted, empty, or length-truncated responses fail compaction without replacing the original history. A single message/tool exchange that cannot fit, or a checkpoint that still cannot fit after bounded resizing, is rejected rather than silently truncated; reduce that input or switch to a larger-context model. Conservative batching can require additional requests and repeated checkpoint input, so it is a safety trade-off, not a promise of lower cost for every transcript.
-
-### Prompt Prefix Stability
-
-Compaction necessarily replaces the old conversation prefix with a new summary. The first request after compaction cannot reuse the replaced portion of the old prompt cache; unchanged system/tool prefixes may still be reusable depending on the provider. The committed summary and retained messages are not rewritten between compactions, so subsequent delta-only turns can extend the same prefix. No rolling memory is injected on every turn.
+For split user-message spans, Pi generates two summaries and merges them:
+1. **History summary**: Previous context (if any)
+2. **User-message-span prefix summary**: The early part of the split user-message span
 
 ### Cut Point Rules
 
@@ -184,7 +162,7 @@ interface CompactionDetails {
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations and individual successful response snapshots in `details.usageRequests`, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their aggregate LLM `usage` when available. Failed, aborted, or discarded built-in summary responses are saved as non-context usage records so retries and partial failures still contribute exactly once to session totals. See [Cache token accounting](cache-token-accounting.md).
+Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work.
 
 See [`prepareCompaction()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
 
@@ -223,7 +201,7 @@ After navigation with summary:
 
 Default compaction and branch summarization track files cumulatively. Both extract file operations from tool calls in the messages being summarized. Compaction also carries file lists from the previous Pi-generated compaction. Branch summarization carries file lists from Pi-generated branch summaries in the entries it summarizes.
 
-File tracking therefore accumulates across default compactions and nested default branch summaries. Pi does not automatically carry file lists from extension-generated summaries whose `fromHook` field is `true`; extensions manage their own `details` format. Before updating a built-in compaction summary, its exact generated trailing file-list footer is removed from the LLM input and regenerated from `details`; this avoids repeatedly summarizing and duplicating metadata.
+File tracking therefore accumulates across default compactions and nested default branch summaries. Pi does not automatically carry file lists from extension-generated summaries whose `fromHook` field is `true`; extensions manage their own `details` format.
 
 ### BranchSummaryEntry Structure
 
@@ -285,10 +263,6 @@ Compaction summaries use this format:
 ## Critical Context
 - [Data needed to continue]
 
-## User Requests (verbatim)
-- "First user request, quoted exactly"
-- "A later correction"
-
 <read-files>
 path/to/file1.ts
 path/to/file2.ts
@@ -298,8 +272,6 @@ path/to/file2.ts
 path/to/changed.ts
 </modified-files>
 ```
-
-The model is asked to keep the summary under 800 words. The `User Requests (verbatim)` section is written by code, not by the model: it quotes every summarized user message (each clipped to 1500 characters), carries the quotes of earlier compactions forward, and keeps the first request plus the most recent ones within 12000 characters.
 
 ### Message Serialization
 
@@ -316,7 +288,7 @@ This prevents the model from treating it as a conversation to continue.
 
 Thinking blocks are omitted. Providers return summaries of the real reasoning, and replayed thinking is often not part of the model's live context, so including it could make the summarization request larger than the context it summarizes.
 
-Tool results keep their first and last 1000 characters during serialization. The middle is replaced with a marker indicating how many characters were omitted. Tool names, call IDs, and success/error status are included; assistant reasoning is omitted, and oversized tool payload arguments use stable digests. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
+Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
 
 ## Custom Summarization via Extensions
 
@@ -451,8 +423,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000,
-    "maxContextTokens": 300000
+    "keepRecentTokens": 20000
   }
 }
 ```
@@ -462,7 +433,6 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Free context tokens below which auto-compaction starts |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
-| `maxContextTokens` | `300000` | Compact at this context size even when the window is larger; `0` disables the cap |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

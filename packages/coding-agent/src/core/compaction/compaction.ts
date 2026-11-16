@@ -5,7 +5,7 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage, AgentStreamOptions, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	contentText,
 	getCurrentSystemMessage,
@@ -17,7 +17,6 @@ import {
 } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
-	Message,
 	Model,
 	SimpleStreamOptions,
 	SystemMessage,
@@ -122,15 +121,12 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
-	/** Absolute context size that triggers compaction on large windows. 0 or undefined disables the cap. */
-	maxContextTokens?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
-	maxContextTokens: 300000,
 };
 
 // ============================================================================
@@ -270,19 +266,7 @@ export function estimateProjectedContextTokens(
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > getCompactionThreshold(contextWindow, settings);
-}
-
-/**
- * Context size above which compaction runs. On a 1M window, waiting for the window edge means
- * every request near the end resends close to 1M tokens, so large windows compact at
- * `maxContextTokens` instead.
- */
-export function getCompactionThreshold(contextWindow: number, settings: CompactionSettings): number {
-	const windowThreshold = contextWindow - settings.reserveTokens;
-	return settings.maxContextTokens && settings.maxContextTokens > 0
-		? Math.min(windowThreshold, settings.maxContextTokens)
-		: windowThreshold;
+	return contextTokens > contextWindow - settings.reserveTokens;
 }
 
 // ============================================================================
@@ -291,31 +275,15 @@ export function getCompactionThreshold(contextWindow: number, settings: Compacti
 
 const ESTIMATED_IMAGE_CHARS = 4800;
 
-/**
- * Character count weighted so that `/ 4` approximates tokens for non-English text too. Tokenizers
- * spend about one token per Hangul, CJK or kana character and about two characters per token for
- * Cyrillic, Greek or accented Latin, while `length / 4` assumes English. Korean text was
- * undercounted about four times, so compaction triggered only after the provider overflowed.
- */
-export function estimateWeightedChars(text: string): number {
-	let weighted = text.length;
-	for (let i = 0; i < text.length; i++) {
-		const code = text.charCodeAt(i);
-		if (code < 0x80) continue;
-		weighted += code >= 0x0800 ? 3 : 1;
-	}
-	return weighted;
-}
-
 function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {
-		return estimateWeightedChars(content);
+		return content.length;
 	}
 
 	let chars = 0;
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			chars += estimateWeightedChars(block.text);
+			chars += block.text.length;
 		} else if (block.type === "image") {
 			chars += ESTIMATED_IMAGE_CHARS;
 		}
@@ -352,11 +320,11 @@ export function estimateTokens(message: AgentMessage): number {
 			const assistant = message as AssistantMessage;
 			for (const block of assistant.content) {
 				if (block.type === "text") {
-					chars += estimateWeightedChars(block.text);
+					chars += block.text.length;
 				} else if (block.type === "thinking") {
-					chars += estimateWeightedChars(block.thinking);
+					chars += block.thinking.length;
 				} else if (block.type === "toolCall") {
-					chars += block.name.length + estimateWeightedChars(JSON.stringify(block.arguments));
+					chars += block.name.length + JSON.stringify(block.arguments).length;
 				}
 			}
 			return Math.ceil(chars / 4);
@@ -367,12 +335,12 @@ export function estimateTokens(message: AgentMessage): number {
 			return Math.ceil(chars / 4);
 		}
 		case "bashExecution": {
-			chars = estimateWeightedChars(message.command) + estimateWeightedChars(message.output);
+			chars = message.command.length + message.output.length;
 			return Math.ceil(chars / 4);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
-			chars = estimateWeightedChars(message.summary);
+			chars = message.summary.length;
 			return Math.ceil(chars / 4);
 		}
 	}
@@ -560,10 +528,6 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
-## Operational Evidence
-- [Exact commands and outcomes, validation evidence, unresolved errors/root causes, and delegated child session lineage]
-- [Or "(none)" if no operational evidence exists]
-
 ## Next Steps
 1. [Ordered list of what should happen next]
 
@@ -571,20 +535,15 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Prioritize durable user instructions, explicit prohibitions, decisions and their rationale, unresolved work, and exact paths/tool identifiers needed to resume. Distinguish verified results from plans; never mark unverified work as done. Deduplicate repeated facts and collapse completed work that no longer affects continuation. Do not copy file-list metadata tags: file tracking is appended separately.
-Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
 const UPDATE_SUMMARIZATION_INSTRUCTIONS = `Update the existing structured summary with new information. RULES:
-- CARRY FORWARD every still-active user instruction, prohibition, decision, unresolved task/blocker, and continuation-critical fact from the previous summary, even when the new messages do not mention it
+- PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
-- Remove constraints or unresolved work ONLY when the new messages explicitly supersede or resolve them; silence is not resolution
-- Deduplicate facts and collapse completed historical detail before shortening active instructions or unresolved work
-- Distinguish observed tool outcomes from plans and retain exact identifiers needed to resume
-- Do not copy file-list metadata tags: file tracking is appended separately
-- Do not write a "User Requests (verbatim)" section; it is maintained automatically
+- If something is no longer relevant, you may remove it
 
 Use this EXACT format:
 
@@ -607,122 +566,17 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale] (preserve all previous, add new)
 
-## Operational Evidence
-- [Preserve exact commands/outcomes, validation evidence, unresolved errors/root causes, and delegated child session lineage]
-- [Remove only evidence that is explicitly superseded and retain the replacement]
-
 ## Next Steps
 1. [Update based on current state]
 
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise and the whole summary under 800 words. Do not quote the user's messages in full; they are appended verbatim automatically. Preserve exact file paths, function names, and error messages.`;
-
-const USER_REQUESTS_HEADING = "## User Requests (verbatim)";
-const MAX_USER_REQUEST_CHARS = 1500;
-const MAX_USER_REQUESTS_CHARS = 12_000;
-/** Ends a verbatim section: the next heading, the split-turn separator or the file-list footer. */
-const USER_REQUESTS_END = /\n(## |---\n|<read-files>|<modified-files>)/;
-const OMITTED_REQUESTS_LINE = /^- \[\d+ earlier requests omitted\]$/;
-
-/**
- * The user's own words, appended to every summary by code. Summaries paraphrase requests and drop
- * corrections, and having the model copy them would cost output tokens and time on every
- * compaction. Earlier quotes come from the previous summary, so they survive repeated compactions.
- */
-export function formatUserRequestsSection(previousSummary: string | undefined, messages: AgentMessage[]): string {
-	const previous = previousSummary ? extractUserRequests(previousSummary) : [];
-	const current = messages.flatMap((message) => {
-		if (message.role !== "user") return [];
-		const text = contentText(message.content).trim();
-		if (!text) return [];
-		const clipped = text.length > MAX_USER_REQUEST_CHARS ? `${text.slice(0, MAX_USER_REQUEST_CHARS)} [...]` : text;
-		return [`- ${JSON.stringify(clipped)}`];
-	});
-	const quotes = [...previous, ...current];
-	if (quotes.length === 0) return "";
-	// Keep the first request, which usually states the task, and as many recent ones as fit.
-	const kept: string[] = [];
-	let size = quotes[0].length;
-	for (let i = quotes.length - 1; i > 0 && size + quotes[i].length <= MAX_USER_REQUESTS_CHARS; i--) {
-		kept.unshift(quotes[i]);
-		size += quotes[i].length;
-	}
-	const omitted = quotes.length - 1 - kept.length;
-	const lines = [quotes[0], ...(omitted > 0 ? [`- [${omitted} earlier requests omitted]`] : []), ...kept];
-	return `\n\n${USER_REQUESTS_HEADING}\n${lines.join("\n")}`;
-}
-
-function extractUserRequests(summary: string): string[] {
-	const start = summary.indexOf(USER_REQUESTS_HEADING);
-	if (start === -1) return [];
-	const body = summary.slice(start + USER_REQUESTS_HEADING.length);
-	const end = body.search(USER_REQUESTS_END);
-	return (end === -1 ? body : body.slice(0, end))
-		.split("\n")
-		.filter((line) => line.startsWith("- ") && !OMITTED_REQUESTS_LINE.test(line));
-}
-
-/** Remove a verbatim section from a summary, so the code-built one is the only copy. */
-export function stripUserRequests(summary: string): string {
-	const start = summary.indexOf(USER_REQUESTS_HEADING);
-	if (start === -1) return summary;
-	const rest = summary.slice(start + USER_REQUESTS_HEADING.length);
-	const end = rest.search(USER_REQUESTS_END);
-	if (end === -1) return summary.slice(0, start).trimEnd();
-	return `${summary.slice(0, start).trimEnd()}\n\n${rest.slice(end + 1)}`.trimEnd();
-}
-
-/**
- * Output reservation for one summary request. It follows the model's output limit, so long
- * reasoning does not truncate the summary (#9512), and leaves at least half the context window
- * for the summarized input. The prompt asks for a compact checkpoint, not for this many tokens.
- */
-function summaryOutputBudget(model: Model<string>, splitPrefix = false): number {
-	const contextShare = Math.max(1, Math.floor(model.contextWindow / (splitPrefix ? 4 : 2)));
-	return Math.max(1, Math.min(model.maxTokens > 0 ? model.maxTokens : contextShare, contextShare));
-}
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 ${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
-
-const CACHED_SUMMARY_PREAMBLE = `Pause the task. Do not call any tools and do not continue the work in this reply.
-The conversation above will be removed from your context and replaced by the summary you write now. Later messages are kept verbatim, and the work will resume from your summary.`;
-
-const CACHED_SUMMARIZATION_PROMPT = `${CACHED_SUMMARY_PREAMBLE}
-
-${SUMMARIZATION_PROMPT.replace("The messages above are a conversation to summarize. ", "")}`;
-
-const CACHED_UPDATE_SUMMARIZATION_PROMPT = `${CACHED_SUMMARY_PREAMBLE}
-The conversation starts with the summary of an earlier compaction. Merge it with the messages that follow it.
-
-${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
-
-/**
- * How a summary request can reuse the provider's prompt cache. Instead of a fresh request that
- * repeats the conversation as text, the summary request sends the conversation exactly as the
- * session sent it, with the same tools and system prompt, and appends one instruction. The provider
- * then reads the whole conversation from cache, so the summary costs about a tenth of its input.
- */
-export interface SummaryCacheReuse {
-	/** Convert session messages the way session requests do, so the request prefix is byte-identical. */
-	convertMessages: (messages: AgentMessage[]) => Promise<Message[]>;
-	/** Session routing ID. OpenAI-compatible providers key their prompt cache on it. */
-	sessionId: string;
-}
-
-/** The model answered the cached summary request with something other than a summary. */
-export class CachedSummaryRejectedError extends Error {}
-
-/**
- * The provider ended a summary request as aborted without the caller cancelling it. Compaction
- * treats it as a cancellation (history stays, no error is shown), unlike other AbortErrors.
- */
-export class SummarizationAbortedError extends Error {
-	override name = "AbortError";
-}
 
 /**
  * Returns an error message when a summarization response cannot safely be persisted.
@@ -740,7 +594,6 @@ export function getSummarizationFailure(response: AssistantMessage, label: strin
 
 function createSummarizationOptions(
 	model: Model<any>,
-	maxTokens: number,
 	apiKey: string | undefined,
 	headers: Record<string, string> | undefined,
 	env: Record<string, string> | undefined,
@@ -748,15 +601,12 @@ function createSummarizationOptions(
 	thinkingLevel: ThinkingLevel | undefined,
 	sessionId: string | undefined,
 ): SimpleStreamOptions {
-	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env, sessionId };
+	const options: SimpleStreamOptions = { signal, apiKey, headers, env, sessionId };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		options.reasoning = thinkingLevel;
 	}
 	return options;
 }
-
-/** Observes each actual provider response, not synthetic aborts during retry backoff. */
-export type SummarizationResponseCallback = (response: AssistantMessage) => void;
 
 /**
  * Shared choke point for every compaction/branch-summary summarization call. Wraps the
@@ -772,24 +622,18 @@ export async function completeSummarization(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
-	onResponse?: SummarizationResponseCallback,
 ): Promise<AssistantMessage> {
 	// Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available;
-	// callers without a session ID, including branch summaries, receive a fresh routing ID. A
-	// summary is never the request a session stream function keeps warm.
-	const requestOptions: AgentStreamOptions = {
+	// callers without a session ID, including branch summaries, receive a fresh routing ID.
+	const requestOptions: SimpleStreamOptions = {
 		...options,
 		cacheRetention: "none",
 		sessionId: options.sessionId ?? uuidv7(),
-		sideRequest: "summary",
 	};
-	const produce = async (): Promise<AssistantMessage> => {
-		const response = await (streamFn
+	const produce = async (): Promise<AssistantMessage> =>
+		streamFn
 			? (await streamFn(model, context, requestOptions)).result()
-			: completeSimple(model, context, requestOptions));
-		onResponse?.(response);
-		return response;
-	};
+			: completeSimple(model, context, requestOptions);
 	return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
 }
 
@@ -813,7 +657,6 @@ export async function generateSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
-	onResponse?: SummarizationResponseCallback,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -831,7 +674,6 @@ export async function generateSummary(
 			retry,
 			callbacks,
 			sessionId,
-			onResponse,
 		)
 	).text;
 }
@@ -867,175 +709,47 @@ export async function generateSummaryWithUsage(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
-	onResponse?: SummarizationResponseCallback,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = summaryOutputBudget(model);
-	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
-	return summarizeInBatches(
-		currentMessages,
+	// Use update prompt if we have a previous summary, otherwise initial prompt
+	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+	if (customInstructions) {
+		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
+	}
+
+	// Serialize conversation to text so model doesn't try to continue it
+	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
+	const llmMessages = convertToLlm(currentMessages);
+	const conversationText = serializeConversation(llmMessages);
+
+	// Build the prompt with conversation wrapped in tags
+	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+	if (previousSummary) {
+		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+	}
+	promptText += basePrompt;
+
+	const completionOptions = createSummarizationOptions(model, apiKey, headers, env, signal, thinkingLevel, sessionId);
+
+	const response = await completeSummarization(
 		model,
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
-		SUMMARIZATION_PROMPT + focus,
-		UPDATE_SUMMARIZATION_PROMPT + focus,
-		previousSummary,
-		"Summarization",
+		buildSummarizationContext(promptText),
+		completionOptions,
 		streamFn,
 		retry,
 		callbacks,
-		onResponse,
 	);
-}
 
-function checkpointFragments(checkpoint: string, maxBytes: number): AgentMessage[] {
-	const fragments: string[] = [];
-	let fragment = "";
-	let bytes = 0;
-	for (const character of checkpoint) {
-		const size = Buffer.byteLength(character, "utf8");
-		if (bytes + size > maxBytes && fragment) {
-			fragments.push(fragment);
-			fragment = "";
-			bytes = 0;
-		}
-		fragment += character;
-		bytes += size;
+	const failure = getSummarizationFailure(response, "Summarization");
+	if (failure) {
+		throw new Error(failure);
 	}
-	if (fragment) fragments.push(fragment);
-	return fragments.map((text, index) => ({
-		role: "user",
-		content: `[Previous checkpoint fragment ${index}]\n${text}`,
-		timestamp: Date.now(),
-	}));
-}
-
-function summaryPrompt(conversation: string, previous: string | undefined, instructions: string): string {
-	const checkpoint = previous ? `<previous-summary>\n${previous}\n</previous-summary>\n\n` : "";
-	return `<conversation>\n${conversation}\n</conversation>\n\n${checkpoint}${instructions}`;
-}
-
-/**
- * Fold oversized histories at message boundaries instead of silently dropping old instructions.
- * UTF-8 bytes are an intentionally conservative token upper bound (including CJK/base64).
- * No intermediate checkpoint is persisted: any failure leaves the original history intact.
- */
-async function summarizeInBatches(
-	messages: AgentMessage[],
-	model: Model<string>,
-	options: SimpleStreamOptions,
-	initialPrompt: string,
-	updatePrompt: string,
-	previousSummary: string | undefined,
-	label: string,
-	streamFn?: StreamFn,
-	retry?: RetryPolicy,
-	callbacks?: RetryCallbacks,
-	onResponse?: SummarizationResponseCallback,
-	allowCheckpointSplit = true,
-): Promise<{ text: string; usage: Usage }> {
-	const serialized: string[] = [];
-	for (const message of convertToLlm(messages)) {
-		const text = serializeConversation([message]);
-		if (!text) continue;
-		// Keep a tool call and its results together so the outcome retains its command/path context.
-		if (message.role === "toolResult" && serialized.length > 0) {
-			serialized[serialized.length - 1] += `\n\n${text}`;
-		} else {
-			serialized.push(text);
-		}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Summarization attempted to call a tool");
 	}
-	let index = 0;
-	let summary = previousSummary;
-	let usage: Usage | undefined;
-	let consecutiveResizes = 0;
-	// Leave framing headroom; output and UTF-8 input are different units, so adapt each request.
-	const contextBudget = model.contextWindow - 256;
-	do {
-		if (options.signal?.aborted) throw new DOMException(`${label} aborted`, "AbortError");
-		let instructions = `${summary ? updatePrompt : initialPrompt}\n\nKeep the checkpoint compact. Prefer active constraints and unfinished work over historical detail.`;
-		let bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + summaryPrompt("", summary, instructions), "utf8");
-		const nextBytes = index < serialized.length ? Buffer.byteLength(serialized[index], "utf8") : 0;
-		let maxTokens = Math.min(options.maxTokens ?? 1, contextBudget - bytes - nextBytes);
-		const resizeOnly = maxTokens < 1 && summary !== undefined && index < serialized.length;
-		if (resizeOnly) {
-			if (consecutiveResizes >= 2)
-				throw new Error(`${label} failed: checkpoint resizing made insufficient progress`);
-			instructions +=
-				"\n\nCondense the previous checkpoint substantially before incorporating more messages. Deduplicate historical detail, but retain all active instructions, prohibitions, decisions, and unfinished work. Keep the same section format.";
-			bytes = Buffer.byteLength(SUMMARIZATION_SYSTEM_PROMPT + summaryPrompt("", summary, instructions), "utf8");
-			maxTokens = Math.min(options.maxTokens ?? 1, contextBudget - bytes);
-		}
-		if (maxTokens < 1) {
-			if (summary && allowCheckpointSplit && consecutiveResizes < 2) {
-				const sourceNote =
-					"\n\nThe conversation contains ordered fragments of an existing checkpoint, not new user requests. Condense them without dropping active constraints, decisions, blockers, or unfinished work.";
-				const resized = await summarizeInBatches(
-					checkpointFragments(summary, Math.max(1, Math.floor(model.contextWindow / 4))),
-					model,
-					{
-						...options,
-						maxTokens: Math.max(1, Math.min(options.maxTokens ?? 1, 1024, Math.floor(model.contextWindow / 16))),
-					},
-					initialPrompt + sourceNote,
-					updatePrompt + sourceNote,
-					undefined,
-					label,
-					streamFn,
-					retry,
-					callbacks,
-					onResponse,
-					false,
-				);
-				if (Buffer.byteLength(resized.text, "utf8") >= Buffer.byteLength(summary, "utf8")) {
-					throw new Error(`${label} failed: checkpoint resizing made no progress`);
-				}
-				summary = resized.text;
-				usage = usage ? combineUsage(usage, resized.usage) : resized.usage;
-				consecutiveResizes++;
-				continue;
-			}
-			throw new Error(`${label} failed: a message or previous summary exceeds the summarization context budget`);
-		}
-		const inputBudget = contextBudget - maxTokens;
-		const batch: string[] = [];
-		while (!resizeOnly && index < serialized.length) {
-			const messageBytes = Buffer.byteLength(serialized[index], "utf8") + (batch.length > 0 ? 2 : 0);
-			if (bytes + messageBytes > inputBudget) break;
-			batch.push(serialized[index++]);
-			bytes += messageBytes;
-		}
-		const promptText = summaryPrompt(batch.join("\n\n"), summary, instructions);
-		const response = await completeSummarization(
-			model,
-			buildSummarizationContext(promptText),
-			{ ...options, maxTokens },
-			streamFn,
-			retry,
-			callbacks,
-			onResponse,
-		);
-		if (options.signal?.aborted || response.stopReason === "aborted") {
-			if (options.signal?.aborted) throw new DOMException("Compaction cancelled", "AbortError");
-			throw new SummarizationAbortedError(`${label} aborted`);
-		}
-		const failure = getSummarizationFailure(response, label);
-		if (failure) throw new Error(failure);
-		if (response.content.some((block) => block.type === "toolCall")) {
-			throw new Error(`${label} attempted to call a tool`);
-		}
-		const text = contentText(response.content);
-		if (!text.trim()) throw new Error(`${label} failed: summary was empty`);
-		if (resizeOnly) {
-			if (Buffer.byteLength(text, "utf8") >= Buffer.byteLength(summary!, "utf8")) {
-				throw new Error(`${label} failed: checkpoint resizing made no progress`);
-			}
-			consecutiveResizes++;
-		} else {
-			consecutiveResizes = 0;
-		}
-		summary = text;
-		usage = usage ? combineUsage(usage, response.usage) : response.usage;
-	} while (index < serialized.length);
-	return { text: summary!, usage: usage! };
+
+	const textContent = contentText(response.content);
+
+	return { text: textContent, usage: response.usage };
 }
 
 // ============================================================================
@@ -1051,11 +765,6 @@ export interface CompactionPreparation {
 	turnPrefixMessages: AgentMessage[];
 	/** Whether this is a split turn (cut point in middle of turn) */
 	isSplitTurn: boolean;
-	/**
-	 * Every model-visible message before the first kept entry, as session requests sent them,
-	 * including system messages and the previous summary. Used to reuse the prompt cache.
-	 */
-	prefixMessages?: AgentMessage[];
 	tokensBefore: number;
 	/** Summary from previous compaction, for iterative update */
 	previousSummary?: string;
@@ -1167,18 +876,7 @@ export function prepareCompaction(
 	let previousSummary: string | undefined;
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
-		const prevCompaction = projectedEntries[prevCompactionIndex].sourceEntry as CompactionEntry;
-		previousSummary = prevCompaction.summary;
-		// The generated footer is carried deterministically in details, not rewritten by the LLM.
-		if (!prevCompaction.fromHook && prevCompaction.details) {
-			const details = prevCompaction.details as Partial<CompactionDetails>;
-			if (Array.isArray(details.readFiles) && Array.isArray(details.modifiedFiles)) {
-				const footer = formatFileOperations(details.readFiles, details.modifiedFiles);
-				if (footer && previousSummary.endsWith(footer)) {
-					previousSummary = previousSummary.slice(0, -footer.length);
-				}
-			}
-		}
+		previousSummary = (projectedEntries[prevCompactionIndex].sourceEntry as CompactionEntry).summary;
 		// The canonical projection has already selected the previous compaction's retained tail.
 		boundaryStart = prevCompactionIndex + 1;
 	}
@@ -1217,7 +915,6 @@ export function prepareCompaction(
 		messagesToSummarize,
 		turnPrefixMessages,
 		isSplitTurn: cutPoint.isSplitTurn,
-		prefixMessages: projectedEntries.slice(0, cutPoint.firstKeptEntryIndex).flatMap((entry) => entry.messages),
 		tokensBefore,
 		previousSummary,
 		fileOps,
@@ -1242,8 +939,7 @@ Create a concise checkpoint of the user's request and the progress shown above. 
 ## Context Needed to Continue
 - [Information from these messages needed to understand the later work]
 
-Only summarize information explicitly present above. Do not infer or recreate later messages.
-Preserve the user's active instructions and prohibitions, decisions and rationale, unfinished tasks, blockers, and exact file/tool identifiers needed to continue. Separate verified outcomes from planned work. Do not copy file-list metadata tags; tracking is appended separately.`;
+Only summarize information explicitly present above. Do not infer or recreate later messages.`;
 
 /**
  * Generate summaries for compaction using prepared data.
@@ -1266,8 +962,6 @@ export async function compact(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
-	onResponse?: SummarizationResponseCallback,
-	cacheReuse?: SummaryCacheReuse,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -1275,95 +969,55 @@ export async function compact(
 		turnPrefixMessages,
 		isSplitTurn,
 		tokensBefore,
-		previousSummary: storedPreviousSummary,
+		previousSummary,
 		fileOps,
 	} = preparation;
-	// The verbatim requests are rebuilt by code below, so the model never reads or rewrites them.
-	const previousSummary = storedPreviousSummary === undefined ? undefined : stripUserRequests(storedPreviousSummary);
 
 	// Generate summaries and merge into one
-	let summary: string | undefined;
-	let summaryUsage: Usage | undefined;
+	let summary: string;
+	let summaryUsage: Usage;
 
-	if (cacheReuse && preparation.prefixMessages && preparation.prefixMessages.length > 0) {
-		try {
-			const result = await generateCachedPrefixSummary(
-				preparation.prefixMessages,
-				storedPreviousSummary !== undefined,
+	if (isSplitTurn && turnPrefixMessages.length > 0) {
+		let historyText = previousSummary ?? "No prior history.";
+		let historyUsage: Usage | undefined;
+		if (messagesToSummarize.length > 0) {
+			const historyResult = await generateSummaryWithUsage(
+				messagesToSummarize,
 				model,
+				undefined,
 				apiKey,
 				headers,
-				env,
 				signal,
-				thinkingLevel,
-				streamFn,
-				retry,
-				callbacks,
-				onResponse,
 				customInstructions,
-				cacheReuse,
-			);
-			summary = result.text;
-			summaryUsage = result.usage;
-		} catch (error) {
-			// Provider errors would fail the standalone request the same way, so only a reply that
-			// ignored the instruction falls back to it.
-			if (!(error instanceof CachedSummaryRejectedError)) throw error;
-		}
-	}
-
-	// The cached request, when it succeeded, summarized every message before the cut, including a
-	// split turn's prefix.
-	const cached = summary !== undefined && summaryUsage !== undefined;
-	if (!cached && isSplitTurn && turnPrefixMessages.length > 0) {
-		// Reuse is safe only when the checkpoint fits the summary budget even under the byte upper bound.
-		const resizeHistory =
-			previousSummary !== undefined && Buffer.byteLength(previousSummary, "utf8") > summaryOutputBudget(model);
-		const historyPromise =
-			messagesToSummarize.length > 0 || resizeHistory
-				? generateSummaryWithUsage(
-						messagesToSummarize,
-						model,
-						undefined,
-						apiKey,
-						headers,
-						signal,
-						customInstructions,
-						previousSummary,
-						thinkingLevel,
-						streamFn,
-						env,
-						retry,
-						callbacks,
-						sessionId,
-						onResponse,
-					)
-				: Promise.resolve(undefined);
-		// History and turn-prefix summaries are independent, so they run concurrently.
-		const [historyResult, turnPrefixResult] = await Promise.all([
-			historyPromise,
-			generateTurnPrefixSummary(
-				turnPrefixMessages,
-				model,
-				apiKey,
-				headers,
-				env,
-				signal,
+				previousSummary,
 				thinkingLevel,
 				streamFn,
+				env,
 				retry,
 				callbacks,
 				sessionId,
-				onResponse,
-				customInstructions,
-			),
-		]);
-		// With no newly compacted history, reuse a fitting checkpoint verbatim.
-		const historyText = historyResult?.text ?? previousSummary ?? "No prior history.";
+			);
+			historyText = historyResult.text;
+			historyUsage = historyResult.usage;
+		}
+		const turnPrefixResult = await generateTurnPrefixSummary(
+			turnPrefixMessages,
+			model,
+			apiKey,
+			headers,
+			env,
+			signal,
+			thinkingLevel,
+			streamFn,
+			retry,
+			callbacks,
+			sessionId,
+			customInstructions,
+		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
-		summaryUsage = historyResult ? combineUsage(historyResult.usage, turnPrefixResult.usage) : turnPrefixResult.usage;
-	} else if (!cached) {
+		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
+	} else {
 		// Just generate history summary
 		const result = await generateSummaryWithUsage(
 			messagesToSummarize,
@@ -1380,16 +1034,10 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
-			onResponse,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
 	}
-
-	if (summary === undefined || summaryUsage === undefined) throw new Error("Compaction produced no summary");
-	// The model's copy (or the reused previous checkpoint's) is replaced by the code-built one.
-	summary = stripUserRequests(summary);
-	summary += formatUserRequestsSection(storedPreviousSummary, [...messagesToSummarize, ...turnPrefixMessages]);
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -1408,68 +1056,6 @@ export async function compact(
 	};
 }
 
-/** Summarize the cached conversation prefix by appending one instruction to it. See {@link SummaryCacheReuse}. */
-async function generateCachedPrefixSummary(
-	prefixMessages: AgentMessage[],
-	hasPreviousSummary: boolean,
-	model: Model<any>,
-	apiKey: string | undefined,
-	headers: Record<string, string> | undefined,
-	env: Record<string, string> | undefined,
-	signal: AbortSignal | undefined,
-	thinkingLevel: ThinkingLevel | undefined,
-	streamFn: StreamFn | undefined,
-	retry: RetryPolicy | undefined,
-	callbacks: RetryCallbacks | undefined,
-	onResponse: SummarizationResponseCallback | undefined,
-	customInstructions: string | undefined,
-	cacheReuse: SummaryCacheReuse,
-): Promise<{ text: string; usage: Usage }> {
-	let instruction = hasPreviousSummary ? CACHED_UPDATE_SUMMARIZATION_PROMPT : CACHED_SUMMARIZATION_PROMPT;
-	if (customInstructions) instruction = `${instruction}\n\nAdditional focus: ${customInstructions}`;
-	const llmMessages = await cacheReuse.convertMessages(prefixMessages);
-	const context = normalizeContext({
-		messages: [
-			...llmMessages,
-			{ role: "user", content: [{ type: "text", text: instruction }], timestamp: Date.now() },
-		],
-	});
-	// Changing thinking settings normally invalidates the cached messages. Models that take effort
-	// changes as mid-conversation messages keep the cache, so they summarize at low effort, which
-	// is faster.
-	const summaryLevel =
-		(model.compat as { supportsMidConvoEffort?: boolean } | undefined)?.supportsMidConvoEffort === true &&
-		thinkingLevel &&
-		thinkingLevel !== "off"
-			? "low"
-			: thinkingLevel;
-	// The request reads the session's cache: same routing ID and prefix, and retention is left to
-	// the session stream function. It ends in an instruction no later request repeats, so it must
-	// not become the request cache warming refreshes. No output cap: the provider sizes it from
-	// the request, as for session turns.
-	const options: AgentStreamOptions = { signal, apiKey, headers, env, sessionId: cacheReuse.sessionId };
-	if (model.reasoning && summaryLevel && summaryLevel !== "off") options.reasoning = summaryLevel;
-	options.sideRequest = "summary";
-	const produce = async (): Promise<AssistantMessage> => {
-		const response = await (streamFn
-			? (await streamFn(model, context, options)).result()
-			: completeSimple(model, context, options));
-		onResponse?.(response);
-		return response;
-	};
-	const response = await retryAssistantCall(produce, retry, signal, callbacks);
-	if (signal?.aborted) throw new DOMException("Compaction cancelled", "AbortError");
-	if (response.stopReason === "aborted") throw new SummarizationAbortedError("Cached summarization aborted");
-	const failure = getSummarizationFailure(response, "Cached summarization");
-	if (failure) throw new Error(failure);
-	if (response.content.some((block) => block.type === "toolCall")) {
-		throw new CachedSummaryRejectedError("Cached summarization attempted to call a tool");
-	}
-	const text = contentText(response.content).trim();
-	if (!text) throw new CachedSummaryRejectedError("Cached summarization returned no text");
-	return { text, usage: response.usage };
-}
-
 /**
  * Generate a summary for a turn prefix (when splitting a turn).
  */
@@ -1485,22 +1071,34 @@ async function generateTurnPrefixSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
-	onResponse?: SummarizationResponseCallback,
 	customInstructions?: string,
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = summaryOutputBudget(model, true);
-	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
-	return summarizeInBatches(
-		messages,
+	const llmMessages = convertToLlm(messages);
+	const conversationText = serializeConversation(llmMessages);
+	let promptText = `# Conversation\n${conversationText}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	if (customInstructions) {
+		promptText = `${promptText}\n\nAdditional focus: ${customInstructions}`;
+	}
+
+	const response = await completeSummarization(
 		model,
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
-		TURN_PREFIX_SUMMARIZATION_PROMPT + focus,
-		`${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nMerge new prefix messages into <previous-summary> using only the Original Request, Progress So Far, and Context Needed to Continue sections above. Carry forward all active instructions, prohibitions, decisions, blockers, exact operational evidence, and unfinished work even when not repeated. Remove them only when explicitly superseded or resolved; silence is not resolution. Deduplicate completed historical detail.${focus}`,
-		undefined,
-		"Turn prefix summarization",
+		buildSummarizationContext(promptText),
+		createSummarizationOptions(model, apiKey, headers, env, signal, thinkingLevel, sessionId),
 		streamFn,
 		retry,
 		callbacks,
-		onResponse,
 	);
+
+	const failure = getSummarizationFailure(response, "Turn prefix summarization");
+	if (failure) {
+		throw new Error(failure);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Turn prefix summarization attempted to call a tool");
+	}
+
+	return {
+		text: contentText(response.content),
+		usage: response.usage,
+	};
 }

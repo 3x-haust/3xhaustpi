@@ -4,6 +4,7 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { contentText, type Message } from "@earendil-works/pi-ai";
+import { sliceHead } from "../tools/truncate.ts";
 
 // ============================================================================
 // File Operation Tracking
@@ -92,21 +93,6 @@ export function formatFileOperations(readFiles: string[], modifiedFiles: string[
 
 /** Maximum characters for a tool result in serialized summaries. */
 const TOOL_RESULT_MAX_CHARS = 2000;
-const TOOL_ARGUMENT_MAX_CHARS = 512;
-const EXACT_ARGUMENT_KEYS = new Set([
-	"accountId",
-	"childSessionId",
-	"command",
-	"objective",
-	"parentToolCallId",
-	"path",
-	"pattern",
-	"query",
-	"sessionId",
-	"taskId",
-	"toolCallId",
-	"workId",
-]);
 
 /**
  * Truncate text to a maximum character length for summarization.
@@ -115,36 +101,7 @@ const EXACT_ARGUMENT_KEYS = new Set([
 function truncateForSummary(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
 	const truncatedChars = text.length - maxChars;
-	const headChars = Math.ceil(maxChars / 2);
-	const tailChars = Math.floor(maxChars / 2);
-	return `${text.slice(0, headChars)}\n\n[... ${truncatedChars} characters omitted ...]\n\n${text.slice(-tailChars)}`;
-}
-
-function stableDigest(value: string): string {
-	let hash = 0x811c9dc5;
-	for (let index = 0; index < value.length; index++) {
-		hash ^= value.charCodeAt(index);
-		hash = Math.imul(hash, 0x01000193);
-	}
-	return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function compactToolArgument(key: string, value: unknown): string {
-	const serialized = typeof value === "string" ? value : JSON.stringify(value);
-	if (serialized === undefined) return "undefined";
-	if (EXACT_ARGUMENT_KEYS.has(key) && serialized.length <= TOOL_RESULT_MAX_CHARS) {
-		return JSON.stringify(value);
-	}
-	if (serialized.length <= TOOL_ARGUMENT_MAX_CHARS) return JSON.stringify(value);
-	return `[${serialized.length} chars digest=${stableDigest(serialized)}]`;
-}
-
-function formatToolArguments(value: unknown): string {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return compactToolArgument("value", value);
-	return Object.entries(value)
-		.sort(([left], [right]) => left.localeCompare(right))
-		.map(([key, entry]) => `${key}=${compactToolArgument(key, entry)}`)
-		.join(", ");
+	return `${sliceHead(text, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
 }
 
 /**
@@ -173,7 +130,11 @@ export function serializeConversation(messages: Message[]): string {
 
 			for (const block of msg.content) {
 				if (block.type === "toolCall") {
-					toolCalls.push(`${block.name}#${block.id}(${formatToolArguments(block.arguments)})`);
+					const args = block.arguments as Record<string, unknown>;
+					const argsStr = Object.entries(args)
+						.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+						.join(", ");
+					toolCalls.push(`${block.name}(${argsStr})`);
 				}
 			}
 
@@ -186,9 +147,7 @@ export function serializeConversation(messages: Message[]): string {
 		} else if (msg.role === "toolResult") {
 			const content = contentText(msg.content, "");
 			if (content) {
-				parts.push(
-					`[Tool result name=${msg.toolName} id=${msg.toolCallId} status=${msg.isError ? "error" : "success"}]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`,
-				);
+				parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 			}
 		}
 	}

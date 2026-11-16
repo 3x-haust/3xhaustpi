@@ -33,20 +33,8 @@ import type { Static } from "@earendil-works/pi-schema";
 export type StreamFn = (
 	model: Model<Api>,
 	context: TranscriptContext,
-	options?: AgentStreamOptions,
+	options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
-
-/** Options the agent and its callers pass to a {@link StreamFn}. */
-export interface AgentStreamOptions extends SimpleStreamOptions {
-	/**
-	 * Set on requests that reuse the session's request prefix without continuing the conversation:
-	 * `"warm"` for a one-token cache warm-up (`warmAgentRequest`), `"summary"` for a summary sent on
-	 * the cached transcript. A stream function that keeps the latest session request's cache warm
-	 * must not adopt these as the request to refresh. Not a provider option; strip it before
-	 * forwarding.
-	 */
-	sideRequest?: "warm" | "summary";
-}
 
 /**
  * Configuration for how tool calls from a single assistant message are executed.
@@ -57,13 +45,6 @@ export interface AgentStreamOptions extends SimpleStreamOptions {
  *   while tool-result message artifacts are emitted later in assistant source order.
  */
 export type ToolExecutionMode = "sequential" | "parallel";
-
-/**
- * Per-tool execution mode. "exclusive" waits for the earlier calls of its batch, runs alone,
- * and holds back the later ones, which still run in parallel with each other. Use it for tools
- * with unknown side effects, such as shell commands, so they never race a file edit.
- */
-export type AgentToolExecutionMode = ToolExecutionMode | "exclusive";
 
 /**
  * Controls how many queued user messages are injected when the agent loop reaches a queue drain point.
@@ -523,11 +504,10 @@ export interface AgentTool<TParameters extends object = object, TDetails = any> 
 	 * Per-tool execution mode override.
 	 * - "sequential": this tool must execute one at a time with other tool calls.
 	 * - "parallel": this tool can execute concurrently with other tool calls.
-	 * - "exclusive": this tool runs alone between the calls before and after it.
 	 *
 	 * If omitted, the default execution mode applies.
 	 */
-	executionMode?: AgentToolExecutionMode;
+	executionMode?: ToolExecutionMode;
 }
 
 /** Context snapshot passed into the low-level agent loop. */

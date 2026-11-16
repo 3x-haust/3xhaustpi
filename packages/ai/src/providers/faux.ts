@@ -84,7 +84,6 @@ export function fauxAssistantMessage(
 		errorMessage?: string;
 		responseId?: string;
 		timestamp?: number;
-		usage?: Usage;
 	} = {},
 ): AssistantMessage {
 	return {
@@ -93,7 +92,7 @@ export function fauxAssistantMessage(
 		api: DEFAULT_API,
 		provider: DEFAULT_PROVIDER,
 		model: DEFAULT_MODEL_ID,
-		usage: options.usage ?? DEFAULT_USAGE,
+		usage: DEFAULT_USAGE,
 		stopReason: options.stopReason ?? "stop",
 		...(options.deferred === undefined ? {} : { deferred: options.deferred }),
 		...(options.errorMessage === undefined ? {} : { errorMessage: options.errorMessage }),
@@ -517,10 +516,12 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 		requestModel: Model<string>,
 	): Promise<AssistantMessage> => {
 		const resolved = typeof step === "function" ? await step(context, streamOptions, state, requestModel) : step;
-		const message = cloneMessage(resolved, api, provider, requestModel.id);
-		// Only the helper's default usage is a placeholder; explicit usage can be all zeros.
-		if (resolved.usage !== undefined && resolved.usage !== DEFAULT_USAGE) return message;
-		return withUsageEstimate(message, context, streamOptions, promptCache);
+		return withUsageEstimate(
+			cloneMessage(resolved, api, provider, requestModel.id),
+			context,
+			streamOptions,
+			promptCache,
+		);
 	};
 
 	const stream: StreamFunction<string, SimpleStreamOptions> = (requestModel, context, streamOptions) => {
