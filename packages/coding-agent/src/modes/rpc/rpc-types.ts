@@ -372,6 +372,9 @@ export type RpcResponse =
 // Extension UI Events (stdout)
 // ============================================================================
 
+/** Emitted when an unanswered dialog is aborted or times out; dismiss only the matching request. */
+export type RpcExtensionUICancel = { type: "extension_ui_cancel"; id: string };
+
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }

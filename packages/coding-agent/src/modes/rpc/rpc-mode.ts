@@ -32,6 +32,7 @@ import { buildContextReport } from "./context-report.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
+	RpcExtensionUICancel,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcLoginOutput,
@@ -44,6 +45,7 @@ import type {
 // Re-export types for consumers
 export type {
 	RpcCommand,
+	RpcExtensionUICancel,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -114,15 +116,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			const onAbort = () => {
 				cleanup();
+				output({ type: "extension_ui_cancel", id } satisfies RpcExtensionUICancel);
 				resolve(defaultValue);
 			};
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
 			if (opts?.timeout) {
-				timeoutId = setTimeout(() => {
-					cleanup();
-					resolve(defaultValue);
-				}, opts.timeout);
+				timeoutId = setTimeout(onAbort, opts.timeout);
 			}
 
 			pendingExtensionRequests.set(id, {
