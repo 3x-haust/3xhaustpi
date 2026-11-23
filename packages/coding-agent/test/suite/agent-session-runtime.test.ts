@@ -11,6 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { MissingSessionCwdError } from "../../src/core/session-cwd.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type {
 	AgentToolResult,
@@ -39,7 +40,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 	async function createRuntimeForTest(
 		extensionFactory: ExtensionFactory,
-		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean; persistSession?: boolean },
+		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean },
 	) {
 		const tempDir =
 			options?.cwd ?? join(tmpdir(), `pi-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -107,8 +108,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager:
-				options?.persistSession === false ? SessionManager.inMemory(tempDir) : SessionManager.create(tempDir),
+			sessionManager: SessionManager.create(tempDir),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -164,71 +164,6 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(persistedAssistant.usage.cost.total).toBe(0.123);
 	});
 
-	it.each([true, false])(
-		"settles forked request usage in the source session (persisted: %s)",
-		async (persistSession) => {
-			const { runtime, faux } = await createRuntimeForTest(() => {}, { persistSession });
-			await runtime.session.prompt("root");
-			const source = runtime.session;
-			const sourceId = source.sessionId;
-			const sourceFile = source.sessionFile;
-			const baseline = source.getSessionStats();
-			const usage = {
-				input: 10,
-				output: 20,
-				cacheRead: 30,
-				cacheWrite: 40,
-				totalTokens: 100,
-				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
-			};
-			faux.setResponses([fauxAssistantMessage("x".repeat(10000), { usage })]);
-			let notifyUpdate!: () => void;
-			const firstUpdate = new Promise<void>((resolve) => {
-				notifyUpdate = resolve;
-			});
-			let abortedSessionId: string | undefined;
-			let abortedUsage: unknown;
-			source.subscribe((event) => {
-				if (event.type === "message_update") notifyUpdate();
-				if (
-					event.type === "message_end" &&
-					event.message.role === "assistant" &&
-					event.message.stopReason === "aborted"
-				) {
-					abortedSessionId = source.sessionId;
-					abortedUsage = event.message.usage;
-				}
-			});
-			const prompt = source.prompt("fork during response");
-			await firstUpdate;
-			const target = source.getUserMessagesForForking().at(-1)!;
-			const result = await runtime.fork(target.entryId);
-			await prompt;
-
-			expect(result.cancelled).toBe(false);
-			expect(abortedSessionId).toBe(sourceId);
-			expect(abortedUsage).toEqual(usage);
-			expect(runtime.session.sessionId).not.toBe(sourceId);
-			expect(runtime.session.getSessionStats().tokens).toEqual(baseline.tokens);
-			expect(runtime.session.getSessionStats().cost).toBe(baseline.cost);
-			expect(source.sessionId).toBe(sourceId);
-			expect(source.getSessionStats().tokens.cacheRead).toBe(baseline.tokens.cacheRead + usage.cacheRead);
-			expect(source.getSessionStats().tokens.cacheWrite).toBe(baseline.tokens.cacheWrite + usage.cacheWrite);
-			if (sourceFile) {
-				const saved = SessionManager.open(sourceFile).getEntries();
-				expect(
-					saved.some(
-						(entry) =>
-							entry.type === "message" &&
-							entry.message.role === "assistant" &&
-							entry.message.stopReason === "aborted" &&
-							entry.message.usage.cacheWrite === 40,
-					),
-				).toBe(true);
-			}
-		},
-	);
-
 	it("settles the active response before session replacement", async () => {
 		let toolStarted!: () => void;
 		const toolStartedPromise = new Promise<void>((resolve) => {
@@ -277,6 +212,31 @@ describe("AgentSessionRuntime characterization", () => {
 			"toolResult",
 			"assistant",
 		]);
+	});
+
+	// #11060
+	it("leaves no copy behind when an import fails on a missing session cwd", async () => {
+		const { runtime, tempDir } = await createRuntimeForTest(() => {});
+		const sessionDir = runtime.session.sessionManager.getSessionDir();
+		const importPath = join(tempDir, "import", "orphan.jsonl");
+		mkdirSync(join(tempDir, "import"), { recursive: true });
+		writeFileSync(
+			importPath,
+			`${JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "orphan",
+				timestamp: new Date().toISOString(),
+				cwd: join(tempDir, "renamed-away"),
+			})}\n`,
+		);
+
+		await expect(runtime.importFromJsonl(importPath)).rejects.toBeInstanceOf(MissingSessionCwdError);
+		expect(existsSync(join(sessionDir, "orphan.jsonl"))).toBe(false);
+
+		await runtime.importFromJsonl(importPath, tempDir);
+		expect(runtime.session.sessionFile).toBe(join(sessionDir, "orphan.jsonl"));
+		expect(existsSync(join(sessionDir, "orphan-1.jsonl"))).toBe(false);
 	});
 
 	it("preserves an existing session when importing a file with the same name", async () => {

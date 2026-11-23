@@ -96,14 +96,6 @@ function sortedById<T extends { id: string }>(models: readonly T[]): [string, T]
 }
 
 async function generateModels(generatorOptions: GeneratorOptions): Promise<void> {
-	// Builds consume the reviewed, committed snapshot. Refreshing external catalogs is explicit
-	// (`npm run generate-models`), so hydration never depends on network access.
-	if (generatorOptions.dataOnly) {
-		validateGeneratedModelData(packageRoot);
-		console.log("Committed model data is valid; no network hydration needed.");
-		return;
-	}
-
 	const sources = await loadCatalogSources(generatorOptions.strict);
 	const catalogs = buildCatalog(PROVIDERS, sources, generatorOptions.strict);
 	// Providers without any models are left out, as if they did not exist.

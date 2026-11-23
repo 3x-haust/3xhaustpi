@@ -1058,8 +1058,6 @@ describe("durable length recovery", () => {
 				.buildSessionProjection()
 				.messages.some((message) => getMessageText(message) === "partial response"),
 		).toBe(false);
-		// The fork rejects an input that cannot fit the summary budget before sending it, so the
-		// summary request may never be made; either way the turn must not be retried.
-		expect(harness.faux.state.callCount).toBeLessThan(3);
+		expect(harness.faux.state.callCount).toBe(2);
 	});
 });

@@ -112,7 +112,7 @@ Emitted when the user changes the thinking/reasoning level.
 
 ### UsageEntry
 
-Records model-attributed usage that is not an assistant message and does not participate in LLM context. `kind` is an arbitrary string identifying the operation; for example, cache warming uses `"cache_warm"` and an explicit warm-up (`AgentSession.warm()`, RPC `warm`) uses `"cache_prewarm"`.
+Records model-attributed usage that is not an assistant message and does not participate in LLM context. `kind` is an arbitrary string identifying the operation; for example, cache warming uses `"cache_warm"`.
 
 ```json
 {"type":"usage","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:08:00.000Z","kind":"cache_warm","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":0,"output":0,"cacheRead":50000,"cacheWrite":0,"totalTokens":50000,"cost":{"input":0,"output":0,"cacheRead":0.015,"cacheWrite":0,"total":0.015}}}
@@ -172,8 +172,6 @@ Extension state persistence. Does NOT participate in LLM context.
 Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context.
 
 Pi stores [virtual model](virtual-models.md) router state as custom entries with `customType` `pi.virtual-model-state` and `data` `{ provider, modelId, state }`.
-
-The built-in `pi.summarization_usage` custom type stores failed, aborted, or discarded compaction/branch-summary responses. Its `data` contains `usage`, `source` (`compaction` or `branchSummary`), `provider`, `model`, `stopReason`, and an optional `responseId`. Session statistics include these records.
 
 ### CustomMessageEntry
 

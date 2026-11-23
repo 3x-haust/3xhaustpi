@@ -24,7 +24,6 @@ export {
 	type SessionStats,
 } from "./core/agent-session.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
-export { type CacheHitRates, computeCacheHitRates } from "./core/cache-stats.ts";
 export type { CacheWarmingDecision, CacheWarmingStatus } from "./core/cache-warmer.ts";
 // Compaction
 export {
@@ -38,7 +37,6 @@ export {
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
-	estimateWeightedChars,
 	type FileOperations,
 	findCutPoint,
 	findTurnStartIndex,
@@ -46,7 +44,6 @@ export {
 	generateBranchSummary,
 	generateSummary,
 	generateSummaryWithUsage,
-	getCompactionThreshold,
 	getLastAssistantUsage,
 	prepareBranchEntries,
 	serializeConversation,
@@ -62,7 +59,6 @@ export type {
 	AgentEndEvent,
 	AgentSettledEvent,
 	AgentStartEvent,
-	AgentToolExecutionMode,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	AppKeybinding,
@@ -126,8 +122,11 @@ export type {
 	KeybindingsManager,
 	LoadExtensionsResult,
 	LsToolCallEvent,
+	MarkdownMessageType,
 	MarkdownTransformContext,
 	MarkdownTransformer,
+	MarkdownTransformerOptions,
+	MarkdownTransformerRegistration,
 	McpServersChangeEvent,
 	MessageEndEvent,
 	MessageEndEventResult,
@@ -250,7 +249,6 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
-export { prefixCacheKey } from "./core/prompt-cache-key.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage

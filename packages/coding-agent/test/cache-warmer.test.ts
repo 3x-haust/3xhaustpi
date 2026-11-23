@@ -2,6 +2,9 @@ import {
 	type Api,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
+	getCacheWarmingDelayMs,
+	getPromptCacheTtlMs,
+	isCacheWarmingReplayable,
 	type Model,
 	type ModelsSimpleStreamOptions,
 	normalizeContext,
@@ -18,10 +21,6 @@ import {
 	type CacheWarmRequest,
 	formatCacheWarmingStatus,
 	formatCacheWarmingUsage,
-	getCacheWarmingDelayMs,
-	getPromptCacheTtlMs,
-	isReplayable,
-	resolveSessionCacheRetention,
 } from "../src/core/cache-warmer.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
@@ -29,7 +28,6 @@ import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 import { type SessionEntry, SessionManager, type UsageEntry } from "../src/core/session-manager.ts";
 import type { CacheWarmingMode } from "../src/core/settings-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 const adaptiveModel: Model<Api> = {
@@ -139,10 +137,10 @@ describe("cache warming", () => {
 			[270_000, 50_000, undefined],
 		);
 		expect([
-			isReplayable(budgetModel, { reasoning: "medium" }),
-			isReplayable(budgetModel, undefined),
-			isReplayable(adaptiveModel, { reasoning: "medium" }),
-			isReplayable(openaiModel, { reasoning: "medium" }),
+			isCacheWarmingReplayable(budgetModel, { reasoning: "medium" }),
+			isCacheWarmingReplayable(budgetModel, undefined),
+			isCacheWarmingReplayable(adaptiveModel, { reasoning: "medium" }),
+			isCacheWarmingReplayable(openaiModel, { reasoning: "medium" }),
 		]).toEqual([false, true, true, true]);
 	});
 
@@ -157,7 +155,14 @@ describe("cache warming", () => {
 
 		expect(calls[0]).toMatchObject({
 			model: adaptiveModel,
-			options: { reasoning: "high", sessionId: "s", transformHeaders, maxTokens: 1, maxRetries: 0 },
+			options: {
+				reasoning: "high",
+				sessionId: "s",
+				transformHeaders,
+				maxTokens: 1,
+				maxRetries: 0,
+				disableContinuation: true,
+			},
 		});
 		expect(calls[0].options?.signal).not.toBe(signal);
 		expect(events[0]).toMatchObject({
@@ -333,7 +338,9 @@ describe("cache warming", () => {
 			usage,
 			"extension override",
 		);
-		expect(formatCacheWarmingUsage(entry)).toBe("Cache warmed (extension override): $0.029497");
+		expect(formatCacheWarmingUsage(entry.usage.cost.total, entry.note)).toBe(
+			"Cache warmed (extension override): $0.029497",
+		);
 	});
 });
 
@@ -364,30 +371,5 @@ describe("ExtensionRunner.emitCacheWarmingDecision", () => {
 		};
 
 		expect(await runner.emitCacheWarmingDecision(event)).toBe("stop");
-	});
-});
-
-describe("session cache retention", () => {
-	const claude = getBuiltinModel("anthropic", "claude-sonnet-4-5");
-	const runtime = (subscription: boolean) => ({ isUsingSubscription: () => subscription });
-
-	it("defaults to auto, which uses the long tier only on subscription logins", () => {
-		expect(SettingsManager.inMemory().getCacheRetention()).toBe("auto");
-		expect(resolveSessionCacheRetention("auto", claude, runtime(true), {})).toBe("long");
-		expect(resolveSessionCacheRetention("auto", claude, runtime(false), {})).toBeUndefined();
-	});
-
-	it("leaves models without a long tier and an explicit PI_CACHE_RETENTION to the provider", () => {
-		const { promptCache: _promptCache, ...noLongTier } = claude;
-		expect(resolveSessionCacheRetention("auto", noLongTier, runtime(true), {})).toBeUndefined();
-		expect(
-			resolveSessionCacheRetention("auto", claude, runtime(true), { PI_CACHE_RETENTION: "short" }),
-		).toBeUndefined();
-	});
-
-	it("passes an explicit setting through", () => {
-		expect(resolveSessionCacheRetention("short", claude, runtime(true), {})).toBe("short");
-		expect(resolveSessionCacheRetention("long", claude, runtime(false), {})).toBe("long");
-		expect(SettingsManager.inMemory({ cacheRetention: "short" }).getCacheRetention()).toBe("short");
 	});
 });

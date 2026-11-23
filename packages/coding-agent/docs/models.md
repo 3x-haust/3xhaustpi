@@ -111,6 +111,20 @@ Use `promptCache` to declare the provider's best-effort cache lifetime in second
 
 Choose the conservative end of any published range. A model without a lifetime for the active tier is not eligible for cache warming. A `modelOverrides` entry can set `inputLimits` or `promptCache` for a built-in or extension model, including a model accessed through a validated proxy. See [`cacheWarming`](settings.md#model-and-thinking).
 
+### Map thinking levels
+
+Use `thinkingLevelMap` to choose which thinking levels `/thinking` offers and which provider value Pi sends for each:
+
+```json
+{
+  "id": "reasoning-model",
+  "reasoning": true,
+  "thinkingLevelMap": { "minimal": null, "xhigh": "xhigh", "max": "max" }
+}
+```
+
+A string is sent to the provider as the effort value, and `null` hides the level. Levels left out use the provider's default value for `off` through `high`. `xhigh` and `max` are opt-in: Pi offers them only when the map gives them a string, which must be a value the provider accepts. Set the map in `models.json`, on a custom model or in a `modelOverrides` entry for a built-in model, not in `settings.json`.
+
 ### Configure sampling by thinking level
 
 OpenAI-compatible APIs support free-form `samplingParams` model defaults and `samplingParamsByThinkingLevel` overrides. The latter uses Pi thinking-level keys (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`), not provider values from `thinkingLevelMap`:
@@ -141,7 +155,7 @@ Compatibility settings should describe verified differences in the endpoint's re
 
 ## Use classifier models
 
-Classifier models do not chat. They answer typed questions about JSON state: pick one of several choices, answer yes or no, or give a score, each with probabilities. Pi includes TypeSafe's Jev model from these providers, Cloudflare's Clef, Clef Flash, and Clef Omni models from Workers AI and OpenRouter, and OpenAI's GPT-6 Luna through the [Decisions API](https://developers.openai.com/api/docs/guides/decisions):
+Classifier models do not chat. They answer typed questions about JSON state: pick one of several choices, answer yes or no, or give a score, each with probabilities. Pi includes TypeSafe's Jev model from these providers, Cloudflare's Clef, Clef Flash, and Clef Omni models from Workers AI and OpenRouter, OpenAI's GPT-6 Luna through the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), and Microsoft-Decision-1 through GitHub Copilot:
 
 | Provider | Model IDs | Authentication |
 |---|---|---|
@@ -151,6 +165,7 @@ Classifier models do not chat. They answer typed questions about JSON state: pic
 | `vercel-ai-gateway` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
 | `opencode` | `jev-1.13`, `jev-1.13-free` | `OPENCODE_API_KEY` |
 | `openai` | `gpt-6-luna` | `OPENAI_API_KEY` |
+| `github-copilot` | `microsoft-decision-1` | `COPILOT_GITHUB_TOKEN` or `/login` |
 
 Chat models on a [llama.cpp router](llama-cpp.md#classification) are also listed as classifier models.
 

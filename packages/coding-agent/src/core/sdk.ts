@@ -6,7 +6,7 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession, markRuntimeStreamFunction } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import { CacheWarmer, resolveSessionCacheRetention } from "./cache-warmer.ts";
+import { CacheWarmer } from "./cache-warmer.ts";
 import { getClientIdentity } from "./client-identity.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -14,7 +14,6 @@ import { createToolNameMatcher } from "./mcp-servers.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
-import { transcriptPrefixCacheKey } from "./prompt-cache-key.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
@@ -104,14 +103,6 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
-	/**
-	 * Share the prompt cache with every session that opens with the same system prompt and tools:
-	 * session requests carry a `promptCacheKey` derived from that prefix instead of the session id,
-	 * so a new session's first call can read the cache another one wrote on providers that route
-	 * their cache by key (OpenAI `prompt_cache_key`). Keep what differs between the sessions out of
-	 * the system prompt or nothing is shared. Default: the `sharedPromptCache` setting (false).
-	 */
-	sharedPromptCache?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -408,7 +399,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			model: model.id,
 		});
 	};
-	const sharedPromptCache = options.sharedPromptCache ?? settingsManager.getSharedPromptCache();
 
 	const agent = new Agent({
 		initialState: {
@@ -419,34 +409,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			messages: existingSession.messages,
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		streamFn: async (model, context, agentOptions) => {
-			// sideRequest is an agent marker, not a provider option.
-			const { sideRequest, ...rest } = agentOptions ?? {};
-			const options = agentOptions ? rest : undefined;
-			// Summaries and other standalone requests use their own routing ids; only session
-			// requests share the prefix key.
-			const promptCacheKey =
-				options?.promptCacheKey ??
-				(sharedPromptCache && options?.sessionId === sessionManager.getSessionId()
-					? transcriptPrefixCacheKey(context)
-					: undefined);
-			// Explicit retention (summaries send "none") wins over the session setting.
-			const cacheRetention =
-				options?.cacheRetention ??
-				resolveSessionCacheRetention(settingsManager.getCacheRetention(), model, modelRuntime);
-			const requestOptions = buildRequestOptions({
-				...options,
-				...(promptCacheKey ? { promptCacheKey } : {}),
-				...(cacheRetention ? { cacheRetention } : {}),
-			});
-			// Only session requests replace the cache entry, so warming restarts from them. Standalone
-			// summaries use their own routing ids. Side requests share the session id but end in a
-			// turn nobody continues (a warm-up's placeholder message or a summary instruction), so
-			// refreshing them would keep alive an entry the next prompt does not read. Keep warming
-			// while the current transcript still extends the request's prefix. Agent state may
-			// shallow-copy the messages array or refresh the model object without changing the
-			// provider request, so top-level object identity is not a valid cache key.
-			if (options?.sessionId === sessionManager.getSessionId() && sideRequest === undefined) {
+		streamFn: async (model, context, options) => {
+			const requestOptions = buildRequestOptions(options);
+			// Compaction and summaries use their own routing ids; only session requests
+			// replace the cache entry, so warming restarts from them. Keep warming while
+			// the current transcript still extends the request's prefix. Agent state may
+			// shallow-copy the messages array or refresh the model object without changing
+			// the provider request, so top-level object identity is not a valid cache key.
+			if (options?.sessionId === sessionManager.getSessionId()) {
 				cacheWarmer.start({ model, context, options: requestOptions }, cacheContextIsCurrent(model));
 			}
 			return modelRuntime.streamSimple(model, context, requestOptions);

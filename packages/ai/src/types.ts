@@ -12,6 +12,7 @@ import type { PiMessagesOptions } from "./api/pi-messages.ts";
 import type {
 	AnthropicMessagesCompat,
 	BedrockCompat,
+	GoogleCompat,
 	MistralConversationsCompat,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
@@ -36,6 +37,7 @@ export type {
 	AnthropicMessagesCompat,
 	BedrockCompat,
 	ChatTemplateKwargValue,
+	GoogleCompat,
 	MistralConversationsCompat,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
@@ -83,7 +85,8 @@ export type KnownClassifierApi =
 	| "typesafe-system-one"
 	| "cloudflare-workers-ai-system-one"
 	| "llama-cpp-classify"
-	| "openai-decisions";
+	| "openai-decisions"
+	| "pi-classifier";
 
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
@@ -126,6 +129,7 @@ export type KnownProvider =
 	| "qwen-token-plan"
 	| "qwen-token-plan-cn"
 	| "qwen-token-plan-individual"
+	| "qwen-token-plan-individual-cn"
 	| "xiaomi"
 	| "xiaomi-token-plan-cn"
 	| "xiaomi-token-plan-ams"
@@ -256,11 +260,12 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 */
 	sessionId?: string;
 	/**
-	 * Optional provider prompt-cache routing key when it must be separated from
-	 * the transport/session resource identifier. Providers that do not support
-	 * an explicit prompt-cache key ignore it.
+	 * Do not use or record server-side continuation state for this request (for example
+	 * Anthropic message threads). Set this for replays such as cache warming, which must not
+	 * replace the state of the real conversation. Providers that do not keep continuation
+	 * state ignore it.
 	 */
-	promptCacheKey?: string;
+	disableContinuation?: boolean;
 	/**
 	 * WebSocket connect timeout in milliseconds for providers that support
 	 * WebSocket transports. This covers the connection/open handshake only;
@@ -891,7 +896,9 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 					? BedrockCompat
 					: TApi extends "mistral-conversations"
 						? MistralConversationsCompat
-						: never;
+						: TApi extends "google-generative-ai" | "google-vertex"
+							? GoogleCompat
+							: never;
 }
 
 /** Image-generation model: usable with `generateImages()` only. */

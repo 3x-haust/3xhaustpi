@@ -30,8 +30,6 @@ function checkSource(source, manifest) {
 		...Object.keys(manifest.dependencies ?? {}),
 		...Object.keys(manifest.optionalDependencies ?? {}),
 		...Object.keys(manifest.peerDependencies ?? {}),
-		// Workspace packages that the package's own bundler inlines, so they are not runtime imports.
-		...(manifest.bundledImports ?? []),
 	]);
 
 	function checkSpecifier(node) {

@@ -79,6 +79,7 @@ describe("Anthropic strict tool schemas", () => {
 			type: "object",
 			properties: legacyParameters.properties,
 			required: legacyParameters.required,
+			additionalProperties: false,
 		});
 
 		const strictTool = await captureFirstTool(
@@ -96,6 +97,51 @@ describe("Anthropic strict tool schemas", () => {
 			properties: { optional: { anyOf: [{ type: "number" }, { type: "null" }] } },
 			title: "StrictLookupInput",
 		});
+	});
+
+	// https://github.com/earendil-works/pi/issues/9557
+	it("keeps root definitions in non-strict schemas so property refs resolve", async () => {
+		const settings = { type: "object", properties: { verbose: { type: "boolean" } } };
+		const cases = [
+			{ ref: "#/$defs/Settings", definitions: { $defs: { Settings: settings } } },
+			{ ref: "#/definitions/Settings", definitions: { definitions: { Settings: settings } } },
+		];
+		for (const { ref, definitions } of cases) {
+			const parameters = {
+				type: "object",
+				properties: { settings: { $ref: ref } },
+				required: ["settings"],
+				...definitions,
+			} as unknown as Tool["parameters"];
+			const tool = await captureFirstTool(createTool(parameters));
+			expect(tool.strict).toBeUndefined();
+			expect(tool.input_schema).toEqual({
+				type: "object",
+				properties: { settings: { $ref: ref } },
+				required: ["settings"],
+				...definitions,
+			});
+		}
+	});
+
+	// https://github.com/earendil-works/pi/issues/12212
+	it("preserves the declared dialect and tuple syntax in non-strict schemas", async () => {
+		const parameters = {
+			$schema: "http://json-schema.org/draft-07/schema#",
+			type: "object",
+			properties: {
+				pair: {
+					type: "array",
+					items: [{ type: "string" }, { type: "string" }],
+					minItems: 2,
+					maxItems: 2,
+				},
+			},
+			required: ["pair"],
+		} as unknown as Tool["parameters"];
+		const tool = await captureFirstTool(createTool(parameters));
+		expect(tool.strict).toBeUndefined();
+		expect(tool.input_schema).toEqual(parameters);
 	});
 
 	// https://github.com/earendil-works/pi/issues/9953
