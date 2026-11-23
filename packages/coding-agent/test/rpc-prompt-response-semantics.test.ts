@@ -12,7 +12,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { LoadExtensionsResult } from "../src/core/extensions/index.ts";
+import type {
+	ExtensionUIContext,
+	ExtensionUIDialogOptions,
+	LoadExtensionsResult,
+} from "../src/core/extensions/index.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
@@ -168,10 +172,26 @@ async function startRpcMode(options: Parameters<typeof createRuntimeHost>[0]): P
 	rpcIo.lineHandler = undefined;
 
 	const { runtimeHost, cleanup } = await createRuntimeHost(options);
+	const watchedSignals = ["SIGTERM", "SIGHUP"] as const;
+	const previousSignals = new Map(watchedSignals.map((signal) => [signal, new Set(process.listeners(signal))]));
+	const previousInputEnd = new Set(process.stdin.listeners("end"));
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return {
+		lineHandler: rpcIo.lineHandler!,
+		cleanup: async () => {
+			await cleanup();
+			for (const signal of watchedSignals) {
+				for (const listener of process.listeners(signal)) {
+					if (!previousSignals.get(signal)?.has(listener)) process.off(signal, listener as () => void);
+				}
+			}
+			for (const listener of process.stdin.listeners("end")) {
+				if (!previousInputEnd.has(listener)) process.stdin.off("end", listener as () => void);
+			}
+		},
+	};
 }
 
 describe("RPC prompt response semantics", () => {
@@ -446,6 +466,113 @@ describe("RPC prompt response semantics", () => {
 			await sleep(600);
 			expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "agent_start")).toHaveLength(1);
 		} finally {
+			await cleanup();
+		}
+	});
+
+	it.each(["abort", "timeout"] as const)(
+		"cancels only the matching parallel dialog on %s and ignores late replies",
+		async (reason) => {
+			let ui!: ExtensionUIContext;
+			const { lineHandler, cleanup } = await startRpcMode({
+				withAuth: false,
+				responseDelayMs: 0,
+				extensionsResult: await createTestExtensionsResult([
+					(pi) => {
+						pi.on("session_start", (_event, ctx) => {
+							ui = ctx.ui;
+						});
+					},
+				]),
+			});
+
+			vi.useFakeTimers();
+			try {
+				const dialogs = [
+					(opts: ExtensionUIDialogOptions) => ui.confirm("Same title", "Allow?", opts),
+					(opts: ExtensionUIDialogOptions) => ui.select("Same title", ["Allow"], opts),
+					(opts: ExtensionUIDialogOptions) => ui.input("Same title", "Value", opts),
+				];
+				for (const dialog of dialogs) {
+					rpcIo.outputLines = [];
+					const controller = new AbortController();
+					const kept = dialog({});
+					const cancelled = dialog({ signal: controller.signal, timeout: 100 });
+					const requests = parseOutputLines(rpcIo.outputLines).filter(
+						(record) => record.type === "extension_ui_request",
+					);
+					expect(requests).toHaveLength(2);
+					const [keptRequest, cancelledRequest] = requests;
+					if (reason === "abort") controller.abort();
+					else await vi.advanceTimersByTimeAsync(100);
+
+					expect(await cancelled).toBe(cancelledRequest.method === "confirm" ? false : undefined);
+					lineHandler(
+						JSON.stringify({
+							type: "extension_ui_response",
+							id: cancelledRequest.id,
+							confirmed: true,
+							value: "late",
+						}),
+					);
+					lineHandler(
+						JSON.stringify({
+							type: "extension_ui_response",
+							id: keptRequest.id,
+							confirmed: true,
+							value: "Allow",
+						}),
+					);
+					expect(await kept).toBe(keptRequest.method === "confirm" ? true : "Allow");
+					controller.abort();
+					await vi.advanceTimersByTimeAsync(100);
+					expect(
+						parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "extension_ui_cancel"),
+					).toEqual([{ type: "extension_ui_cancel", id: cancelledRequest.id }]);
+				}
+			} finally {
+				vi.useRealTimers();
+				await cleanup();
+			}
+		},
+	);
+
+	it("does not emit cancellation after a dialog response or for an already aborted request", async () => {
+		let ui!: ExtensionUIContext;
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: false,
+			responseDelayMs: 0,
+			extensionsResult: await createTestExtensionsResult([
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						ui = ctx.ui;
+					});
+				},
+			]),
+		});
+
+		vi.useFakeTimers();
+		try {
+			for (const response of [{ confirmed: true }, { cancelled: true }]) {
+				rpcIo.outputLines = [];
+				const controller = new AbortController();
+				const result = ui.confirm("Allow?", "Proceed?", { signal: controller.signal, timeout: 100 });
+				const request = parseOutputLines(rpcIo.outputLines).find(
+					(record) => record.type === "extension_ui_request",
+				)!;
+				lineHandler(JSON.stringify({ type: "extension_ui_response", id: request.id, ...response }));
+				expect(await result).toBe("confirmed" in response);
+				controller.abort();
+				await vi.advanceTimersByTimeAsync(100);
+				expect(
+					parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "extension_ui_cancel"),
+				).toEqual([]);
+				rpcIo.outputLines = [];
+				expect(await ui.confirm("Allow?", "Proceed?", { signal: controller.signal })).toBe(false);
+				expect(parseOutputLines(rpcIo.outputLines)).toEqual([]);
+			}
+		} finally {
+			vi.useRealTimers();
 			await cleanup();
 		}
 	});
