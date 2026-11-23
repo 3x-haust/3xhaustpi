@@ -169,6 +169,18 @@ Set the text in the input editor. Fire-and-forget.
 }
 ```
 
+## Cancellations from Pi
+
+When a pending `select`, `confirm`, or `input` dialog is aborted through its `AbortSignal` or its timeout expires, Pi emits:
+
+```json
+{"type": "extension_ui_cancel", "id": "uuid-2"}
+```
+
+The `id` matches the original `extension_ui_request`. Dismiss only that dialog and discard its response callback; other pending dialogs remain active. No response is needed. Pi resolves the extension's call with `undefined` (select/input) or `false` (confirm) and ignores late responses for that ID.
+
+Pi does not emit this event after a client response, including a `cancelled: true` response. An already-aborted signal emits neither a request nor a cancellation event.
+
 ## Responses to Pi
 
 Responses are sent for dialog methods only (`select`, `confirm`, `input`, `editor`). The `id` must match the request.
