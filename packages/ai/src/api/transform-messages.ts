@@ -137,6 +137,12 @@ export function transformMessages<TApi extends Api>(
 					return block;
 				}
 
+				if (block.type === "serverTool") {
+					// Provider blocks only mean something to the API that produced them. Across models of the same
+					// API they stay, since their results and citations refer to them.
+					return assistantMsg.provider === model.provider && assistantMsg.api === model.api ? block : [];
+				}
+
 				if (block.type === "text") {
 					if (isSameModel) return block;
 					return {

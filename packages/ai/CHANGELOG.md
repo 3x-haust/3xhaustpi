@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Provider-hosted web search: `hostedWebSearch: true` (or `PI_HOSTED_WEB_SEARCH=1`) declares Anthropic's `web_search_20250305` server tool on first-party Anthropic Messages (API keys and Claude subscription OAuth) and the hosted `web_search` tool on OpenAI Responses and OpenAI Codex. Anthropic `server_tool_use` and `*_tool_result` blocks and OpenAI `web_search_call` items become `serverTool` content blocks that keep the provider block in `raw` and replay unchanged to the same provider and API, in order with thinking; Anthropic text citations are kept in `TextContent.citations`. New `servertool_start` and `servertool_end` events carry the search query. When a provider rejects the tool, the session turns it off and the request is retried without it (`hosted_web_search_fallback` diagnostic).
+
+### Fixed
+
+- Anthropic `pause_turn` no longer ends the response: the request is resent with the paused content appended and the continuation streams into the same assistant message, up to 10 times.
+- Anthropic server tool blocks (`server_tool_use`, `web_search_tool_result`, ...) and text citations are no longer dropped from stored assistant messages, which broke replay of encrypted search results and signed thinking.
+
 ## [1.5.0] - 2026-11-02
 
 ### Breaking Changes
