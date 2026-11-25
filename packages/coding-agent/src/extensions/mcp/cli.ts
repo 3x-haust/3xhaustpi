@@ -81,6 +81,8 @@ const DEFAULT_LOGIN_TIMEOUT_SECONDS = 300;
 export interface McpCommandOptions {
 	cwd: string;
 	agentDir: string;
+	/** Where the global mcp.json and mcp.log are (\`PI_MCP_DIR\`). Defaults to the agent directory. */
+	mcpDir?: string;
 	/** Defaults to `mcp-auth.json` in the agent directory. */
 	credentials?: McpOAuthCredentialStore;
 	/** Defaults to the platform browser. */
@@ -123,7 +125,7 @@ function createConnection(entry: McpServerEntry, options: McpCommandOptions, cre
 		cwd: options.cwd,
 		createTransport: createDefaultTransport,
 		credentials,
-		log: new McpServerLog(join(options.agentDir, "mcp.log")),
+		log: new McpServerLog(join(options.mcpDir ?? options.agentDir, "mcp.log")),
 		onTools: () => {},
 	});
 }
@@ -201,7 +203,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			: remove(rest, projectConfig, options, log, error);
 	}
 	const projectTrusted = new ProjectTrustStore(options.agentDir).get(options.cwd) === true;
-	const loaded = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
+	const loaded = loadMcpConfig({ agentDir: options.mcpDir ?? options.agentDir, cwd: options.cwd, projectTrusted });
 	const untrustedNote =
 		!projectTrusted && existsSync(projectConfig)
 			? `${projectConfig} is ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
@@ -401,7 +403,7 @@ function add(
 	}
 
 	const project = values.has("local");
-	const path = project ? projectConfig : join(options.agentDir, "mcp.json");
+	const path = project ? projectConfig : join(options.mcpDir ?? options.agentDir, "mcp.json");
 	const scope = project ? "project" : "global";
 	let replaced: boolean;
 	try {
@@ -439,7 +441,7 @@ function remove(
 		return 1;
 	}
 	const project = parsed.values.has("local");
-	const globalConfig = join(options.agentDir, "mcp.json");
+	const globalConfig = join(options.mcpDir ?? options.agentDir, "mcp.json");
 	const path = project ? projectConfig : globalConfig;
 	const scope = project ? "project" : "global";
 	let removed: boolean;
@@ -453,9 +455,11 @@ function remove(
 		log(`Removed ${scope} MCP server "${name}" from ${path}.`);
 		return 0;
 	}
-	const other = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted: true }).servers.find(
-		(server) => server.name === name && server.scope !== scope,
-	);
+	const other = loadMcpConfig({
+		agentDir: options.mcpDir ?? options.agentDir,
+		cwd: options.cwd,
+		projectTrusted: true,
+	}).servers.find((server) => server.name === name && server.scope !== scope);
 	error(
 		`No ${scope} MCP server named "${name}" in ${path}.${other ? ` It is defined in ${other.source}${other.scope === "project" ? "; use --local" : "; omit --local"}.` : ""}`,
 	);
@@ -516,7 +520,9 @@ async function list(
 		return failed ? 1 : 0;
 	}
 	if (reports.length === 0 && loaded.errors.length === 0) {
-		log(`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or .pi/mcp.json.`);
+		log(
+			`No MCP servers configured. Add them to ${join(options.mcpDir ?? options.agentDir, "mcp.json")} or .pi/mcp.json.`,
+		);
 	}
 	for (const report of reports) {
 		const state =

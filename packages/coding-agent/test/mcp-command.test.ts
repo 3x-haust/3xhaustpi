@@ -37,6 +37,29 @@ describe("pi mcp", () => {
 		bad: { args: ["no command"] },
 	};
 
+	it("reads and writes the MCP folder it is given (PI_MCP_DIR) instead of the agent directory", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-agent-"));
+		const mcpDir = mkdtempSync(join(tmpdir(), "pi-mcp-dir-"));
+		dirs.push(agentDir, mcpDir);
+		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { other: servers.fixture } }));
+		const output: string[] = [];
+		const options = {
+			cwd: agentDir,
+			agentDir,
+			mcpDir,
+			log: (line: string) => output.push(line),
+			error: (line: string) => output.push(line),
+		};
+		expect(await runMcpCommand(["add", "own", "--", process.execPath, FIXTURE], options)).toBe(0);
+		expect(readConfig(join(mcpDir, "mcp.json"))).toMatchObject({
+			mcpServers: { own: { command: process.execPath } },
+		});
+		output.length = 0;
+		expect(await runMcpCommand(["list"], options)).toBe(0);
+		expect(output.join("\n")).toContain("own: connected");
+		expect(output.join("\n")).not.toContain("other");
+	});
+
 	it("lists servers with their state, tools, and errors, and fails while anything is wrong", async () => {
 		const { exitCode, output } = await run(["list"], servers);
 		expect(exitCode).toBe(1);
