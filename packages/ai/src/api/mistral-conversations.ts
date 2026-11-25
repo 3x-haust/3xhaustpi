@@ -829,6 +829,8 @@ function toChatMessages(messages: Message[], supportsImages: boolean): MistralCh
 					}
 					continue;
 				}
+				// Server tool blocks of other providers never reach here: transformMessages drops them.
+				if (block.type !== "toolCall") continue;
 				toolCalls.push({
 					id: block.id,
 					type: "function",

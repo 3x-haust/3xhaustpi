@@ -1,11 +1,18 @@
-import type { Usage } from "@earendil-works/pi-ai";
+import type { ServerToolContent, Usage } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "../core/agent-session.ts";
 
 type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;
 
+/** A server tool block on the wire: the provider's raw block (search results can be large) stays in `message_end`. */
+type JsonServerTool = Omit<ServerToolContent, "raw">;
+
 type ToJsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
 	? WithoutPartial<T> & { id: string; toolName: string }
-	: WithoutPartial<T>;
+	: T extends { type: "servertool_start"; partial: unknown }
+		? WithoutPartial<T> & { id: string; toolName: string }
+		: T extends { type: "servertool_end"; partial: unknown }
+			? Omit<WithoutPartial<T>, "serverTool"> & { serverTool: JsonServerTool }
+			: WithoutPartial<T>;
 
 type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
 type JsonMessageUpdateEvent = {
@@ -27,6 +34,21 @@ function toJsonAssistantMessageEvent(
 		}
 		const { partial: _partial, ...deltaEvent } = event;
 		return { ...deltaEvent, id: toolCall.id, toolName: toolCall.name };
+	}
+
+	if (event.type === "servertool_start") {
+		const block = event.partial.content[event.contentIndex];
+		if (block?.type !== "serverTool") {
+			throw new Error(`servertool_start content at index ${event.contentIndex} is not a server tool block`);
+		}
+		const { partial: _partial, ...deltaEvent } = event;
+		return { ...deltaEvent, id: block.id, toolName: block.name };
+	}
+
+	if (event.type === "servertool_end") {
+		const { partial: _partial, serverTool, ...deltaEvent } = event;
+		const { raw: _raw, ...summary } = serverTool;
+		return { ...deltaEvent, serverTool: summary };
 	}
 
 	if (!("partial" in event)) {

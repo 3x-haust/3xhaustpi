@@ -61,6 +61,9 @@ export function estimateMessageTokens(message: Message): number {
 			chars += block.text.length;
 		} else if (block.type === "thinking") {
 			chars += block.thinking.length;
+		} else if (block.type === "serverTool") {
+			// Search results replay as input, so the stored block approximates their size.
+			chars += safeJsonStringify(block.raw).length;
 		} else {
 			chars += block.name.length + safeJsonStringify(block.arguments).length;
 		}

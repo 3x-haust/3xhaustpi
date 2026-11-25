@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+
+- `PI_HOSTED_WEB_SEARCH=1` turns on the provider's own web search for Anthropic, OpenAI and OpenAI Codex models. JSON and RPC output report it as `message_update` events `servertool_start` (`id`, `toolName`) and `servertool_end` (`serverTool` with `name`, `phase`, `input.query`, `sources`; the raw provider block stays in `message_end`).
+
 ## [1.5.0] - 2026-11-02
 
 ### New Features

@@ -273,6 +273,13 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * For example, Anthropic uses `user_id` for abuse tracking and rate limiting.
 	 */
 	metadata?: Record<string, unknown>;
+	/**
+	 * Declare the provider's own hosted web search tool (Anthropic `web_search`, OpenAI Responses `web_search`) on
+	 * APIs that support it: first-party Anthropic Messages, OpenAI Responses and OpenAI Codex. Default: the
+	 * `PI_HOSTED_WEB_SEARCH` environment variable ("1" or "true"). A provider that rejects the tool turns it off
+	 * for the rest of the session; the request is retried without it.
+	 */
+	hostedWebSearch?: boolean;
 }
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
@@ -429,6 +436,11 @@ export interface TextContent {
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
+	/**
+	 * Provider citations attached to this text, such as Anthropic web search result locations. Kept as received and
+	 * replayed unchanged to the same provider and API, which require them back; other providers never see them.
+	 */
+	citations?: JsonObject[];
 }
 
 export interface ThinkingContent {
@@ -439,6 +451,29 @@ export interface ThinkingContent {
 	 *  encrypted payload is stored in `thinkingSignature` so it can be passed back
 	 *  to the API for multi-turn continuity. */
 	redacted?: boolean;
+}
+
+/**
+ * A tool the provider ran on its own servers during the response, such as hosted web search. `raw` is the
+ * provider's block as received: it is replayed unchanged to the same provider and API, where it keeps signed
+ * thinking and encrypted search results valid, and is dropped for every other provider.
+ */
+export interface ServerToolContent {
+	type: "serverTool";
+	/** Provider id; a call and its result share it. */
+	id: string;
+	/** Tool name as the provider reports it, e.g. "web_search". */
+	name: string;
+	/** "call": the model asked the tool to run. "result": what the tool returned. */
+	phase: "call" | "result";
+	/** Call arguments, e.g. `{ query }` for a web search. */
+	input?: JsonObject;
+	/** Pages a result returned or a call read, for display. */
+	sources?: { url: string; title?: string }[];
+	/** Error code the provider reported for a failed call. */
+	errorCode?: string;
+	/** The provider's block or item as received. */
+	raw: JsonObject;
 }
 
 export interface ImageContent {
@@ -590,7 +625,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
 	role: "assistant";
-	content: (TextContent | ThinkingContent | ToolCall)[];
+	content: (TextContent | ThinkingContent | ToolCall | ServerToolContent)[];
 	api: Api;
 	provider: ProviderId;
 	model: string;
@@ -824,7 +859,8 @@ export type TranscriptContext = {
  * emitted and grow only through their corresponding `*_delta` events until the
  * authoritative `*_end`. Redacted thinking may be complete at start and emit no
  * deltas. Tool-call arguments at `toolcall_start` are provider-specific;
- * `toolcall_delta` carries subsequent JSON updates.
+ * `toolcall_delta` carries subsequent JSON updates. A server tool block (hosted web search) is added at
+ * `servertool_start`, possibly before its input is known, and is complete at `servertool_end`.
  */
 export type AssistantMessageEvent =
 	| { type: "start"; partial: AssistantMessage }
@@ -837,6 +873,8 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
+	| { type: "servertool_start"; contentIndex: number; partial: AssistantMessage }
+	| { type: "servertool_end"; contentIndex: number; serverTool: ServerToolContent; partial: AssistantMessage }
 	| {
 			type: "done";
 			reason: Extract<StopReason, "stop" | "length" | "toolUse" | "deferred">;

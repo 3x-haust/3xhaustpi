@@ -24,6 +24,7 @@ import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+import { OPENAI_WEB_SEARCH_TOOL, streamWithHostedWebSearch } from "./hosted-web-search.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
 	convertResponsesMessages,
@@ -155,7 +156,14 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 	model: Model<"openai-responses">,
 	context: TranscriptContext,
 	options?: OpenAIResponsesOptions,
-): AssistantMessageEventStream => {
+): AssistantMessageEventStream =>
+	streamWithHostedWebSearch(model, options, (resolved) => streamOnce(model, context, resolved));
+
+function streamOnce(
+	model: Model<"openai-responses">,
+	context: TranscriptContext,
+	options?: OpenAIResponsesOptions,
+): AssistantMessageEventStream {
 	const stream = new AssistantMessageEventStream();
 	const normalizedContext = resolveTranscript(context, getCompat(model).supportsMidConvoSystemMessages);
 
@@ -269,7 +277,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 	})();
 
 	return stream;
-};
+}
 
 export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOptions> = (
 	model: Model<"openai-responses">,
@@ -390,6 +398,9 @@ function buildParams(
 			supportsStrictMode: compat.supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		});
+	}
+	if (options?.hostedWebSearch === true) {
+		params.tools = [...(params.tools ?? []), { ...OPENAI_WEB_SEARCH_TOOL }];
 	}
 
 	if (options?.toolChoice !== undefined) {

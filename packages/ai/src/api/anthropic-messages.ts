@@ -2,7 +2,9 @@ import Anthropic, { type ClientOptions } from "@anthropic-ai/sdk";
 import type {
 	BetaInputTransformation,
 	BetaStopReason,
+	BetaTextCitationParam,
 	BetaTool,
+	BetaToolUnion,
 	BetaCacheControlEphemeral as CacheControlEphemeral,
 	BetaContentBlockParam as ContentBlockParam,
 	MessageCreateParamsStreaming,
@@ -24,10 +26,12 @@ import type {
 	CacheRetention,
 	Context,
 	ImageContent,
+	JsonObject,
 	Message,
 	Model,
 	ProviderEnv,
 	ProviderHeaders,
+	ServerToolContent,
 	SimpleStreamOptions,
 	StopReason,
 	StreamFunction,
@@ -53,6 +57,7 @@ import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import {
 	getCurrentTools,
+	getDeclaredTools,
 	getInitialSystemMessage,
 	normalizeContext,
 	resolveTranscript,
@@ -68,6 +73,7 @@ import {
 	type UnsupportedStrictSchemaKeywordCheck,
 } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+import { ANTHROPIC_WEB_SEARCH_TOOL, HOSTED_WEB_SEARCH_NAME, streamWithHostedWebSearch } from "./hosted-web-search.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 import { splitErrorToolResultImages, transformMessages } from "./transform-messages.ts";
 
@@ -607,11 +613,24 @@ async function* iterateAnthropicEvents(
 	}
 }
 
+/**
+ * Requests that end with `pause_turn` (the server-side tool loop paused) continued within one response before the
+ * response ends as it is. Each pause comes after up to 10 server-side iterations.
+ */
+const MAX_PAUSE_CONTINUATIONS = 10;
+
 export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	model: Model<"anthropic-messages">,
 	context: TranscriptContext,
 	options?: AnthropicOptions,
-): AssistantMessageEventStream => {
+): AssistantMessageEventStream =>
+	streamWithHostedWebSearch(model, options, (resolved) => streamOnce(model, context, resolved));
+
+function streamOnce(
+	model: Model<"anthropic-messages">,
+	context: TranscriptContext,
+	options?: AnthropicOptions,
+): AssistantMessageEventStream {
 	const stream = new AssistantMessageEventStream();
 	const normalizedContext = resolveTranscript(context, getAnthropicCompat(model).supportsMidConvoSystemMessages);
 	const currentTools = getCurrentTools(normalizedContext.messages);
@@ -688,11 +707,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					: options;
 			let disablePreferredStrictTools = false;
 			let response: Response;
+			// The request as sent, which a paused turn resends with the response so far appended.
+			let params: MessageCreateParamsStreaming;
 			for (;;) {
 				options?.signal?.throwIfAborted();
 				const built = buildParams(model, normalizedContext, isOAuth, paramsOptions, disablePreferredStrictTools);
 				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
-				let params = built.params;
+				params = built.params;
 				const nextParams = await options?.onPayload?.(params, model);
 				if (nextParams !== undefined) {
 					params = { ...(nextParams as MessageCreateParamsStreaming), stream: true };
@@ -750,6 +771,49 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
+			// Usage of the earlier requests of a paused turn; each request reports only its own.
+			let prior = { ...output.usage };
+			// Events of the response and, while it pauses (`pause_turn`), of its continuations. A paused server-side
+			// tool loop resumes when the same request is resent with the paused content appended unchanged; the API
+			// sees the trailing server tool block and continues. The consumer has handled every event of a response,
+			// including its stop reason, before the generator resumes.
+			const turnEvents = async function* (): AsyncGenerator<RawMessageStreamEvent> {
+				for (let pauses = 0; ; pauses++) {
+					yield* iterateAnthropicEvents(response, options?.signal);
+					if (output.rawStopReason !== "pause_turn" || options?.signal?.aborted) return;
+					if (pauses >= MAX_PAUSE_CONTINUATIONS) {
+						appendAssistantMessageDiagnostic(output, {
+							type: "anthropic_pause_turn_limit",
+							timestamp: Date.now(),
+							details: { continuations: pauses },
+						});
+						return;
+					}
+					prior = { ...output.usage };
+					const paused = convertAssistantContent(
+						output.content,
+						isOAuth,
+						getAnthropicCompat(model).allowEmptySignature,
+					);
+					const continued: MessageCreateParamsStreaming = {
+						...params,
+						messages: [...params.messages, { role: "assistant", content: paused }],
+					};
+					response = await retryProviderRequest(
+						() => client.beta.messages.create(continued, requestOptions).asResponse(),
+						{
+							maxRetries: options?.maxRetries,
+							maxRetryDelayMs: options?.maxRetryDelayMs,
+							signal: options?.signal,
+						},
+					);
+					await options?.onResponse?.(
+						{ status: response.status, headers: headersToRecord(response.headers) },
+						model,
+					);
+				}
+			};
+
 			// Stream state per Anthropic block index, kept off the content blocks so it never reaches partials.
 			const openBlocks = new Map<number, { contentIndex: number; arguments?: ToolCallArgumentsStream }>();
 			const openBlock = (anthropicIndex: number) => {
@@ -757,7 +821,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				return open === undefined ? undefined : { ...open, block: output.content[open.contentIndex]! };
 			};
 
-			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
+			for await (const event of turnEvents()) {
 				await options?.onProviderStreamEvent?.(event, model);
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
@@ -774,11 +838,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					usageModel = fallbackCost ? { ...model, id: responseModel, cost: fallbackCost } : model;
 					// Capture initial token usage from message_start event
 					// This ensures we have input token counts even if the stream is aborted early
-					output.usage.input = event.message.usage.input_tokens || 0;
-					output.usage.output = event.message.usage.output_tokens || 0;
-					output.usage.cacheRead = event.message.usage.cache_read_input_tokens || 0;
-					output.usage.cacheWrite = event.message.usage.cache_creation_input_tokens || 0;
-					output.usage.cacheWrite1h = event.message.usage.cache_creation?.ephemeral_1h_input_tokens || 0;
+					output.usage.input = prior.input + (event.message.usage.input_tokens || 0);
+					output.usage.output = prior.output + (event.message.usage.output_tokens || 0);
+					output.usage.cacheRead = prior.cacheRead + (event.message.usage.cache_read_input_tokens || 0);
+					output.usage.cacheWrite = prior.cacheWrite + (event.message.usage.cache_creation_input_tokens || 0);
+					output.usage.cacheWrite1h =
+						(prior.cacheWrite1h ?? 0) + (event.message.usage.cache_creation?.ephemeral_1h_input_tokens || 0);
 					// Anthropic doesn't provide total_tokens, compute from components
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
@@ -791,7 +856,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						continue;
 					}
 					if (event.content_block.type === "text") {
-						output.content.push({ type: "text", text: event.content_block.text ?? "" });
+						const citations = event.content_block.citations;
+						output.content.push({
+							type: "text",
+							text: event.content_block.text ?? "",
+							...(citations && citations.length > 0 ? { citations: citations as unknown as JsonObject[] } : {}),
+						});
 						openBlocks.set(event.index, { contentIndex: output.content.length - 1 });
 						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "thinking") {
@@ -825,6 +895,20 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							arguments: new ToolCallArgumentsStream(),
 						});
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					} else {
+						const block = toServerToolContent(event.content_block as unknown as JsonObject);
+						if (block) {
+							output.content.push(block);
+							openBlocks.set(event.index, {
+								contentIndex: output.content.length - 1,
+								...(block.phase === "call" ? { arguments: new ToolCallArgumentsStream() } : {}),
+							});
+							stream.push({
+								type: "servertool_start",
+								contentIndex: output.content.length - 1,
+								partial: output,
+							});
+						}
 					}
 				} else if (event.type === "content_block_delta") {
 					const open = openBlock(event.index);
@@ -848,8 +932,17 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						}
+					} else if (event.delta.type === "citations_delta") {
+						if (open?.block.type === "text") {
+							open.block.citations = [
+								...(open.block.citations ?? []),
+								event.delta.citation as unknown as JsonObject,
+							];
+						}
 					} else if (event.delta.type === "input_json_delta") {
-						if (open?.block.type === "toolCall" && open.arguments !== undefined) {
+						if (open?.block.type === "serverTool" && open.arguments !== undefined) {
+							open.arguments.append(event.delta.partial_json);
+						} else if (open?.block.type === "toolCall" && open.arguments !== undefined) {
 							open.block.arguments = open.arguments.append(event.delta.partial_json);
 							stream.push({
 								type: "toolcall_delta",
@@ -891,6 +984,19 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								toolCall: block,
 								partial: output,
 							});
+						} else if (block.type === "serverTool") {
+							// The start block carries `input: {}`; the input streams as JSON deltas, if at all.
+							if (open.arguments !== undefined && open.arguments.text.length > 0) {
+								const input = open.arguments.finish().arguments;
+								block.input = input;
+								block.raw = { ...block.raw, input };
+							}
+							stream.push({
+								type: "servertool_end",
+								contentIndex: index,
+								serverTool: block,
+								partial: output,
+							});
 						}
 					}
 				} else if (event.type === "message_delta") {
@@ -908,28 +1014,28 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					// Preserves input_tokens from message_start when proxies omit it in message_delta.
 					if (event.usage) {
 						if (event.usage.input_tokens != null) {
-							output.usage.input = event.usage.input_tokens;
+							output.usage.input = prior.input + event.usage.input_tokens;
 						}
 						if (event.usage.output_tokens != null) {
-							output.usage.output = event.usage.output_tokens;
+							output.usage.output = prior.output + event.usage.output_tokens;
 						}
 						if (event.usage.cache_read_input_tokens != null) {
-							output.usage.cacheRead = event.usage.cache_read_input_tokens;
+							output.usage.cacheRead = prior.cacheRead + event.usage.cache_read_input_tokens;
 						}
 						if (event.usage.cache_creation_input_tokens != null) {
-							output.usage.cacheWrite = event.usage.cache_creation_input_tokens;
+							output.usage.cacheWrite = prior.cacheWrite + event.usage.cache_creation_input_tokens;
 						}
 						// Vercel AI Gateway includes the TTL breakdown in deltas, though the SDK only types it on message_start.
 						const cacheCreation = (
 							event.usage as typeof event.usage & { cache_creation?: { ephemeral_1h_input_tokens?: number } }
 						).cache_creation;
 						if (cacheCreation?.ephemeral_1h_input_tokens != null) {
-							output.usage.cacheWrite1h = cacheCreation.ephemeral_1h_input_tokens;
+							output.usage.cacheWrite1h = (prior.cacheWrite1h ?? 0) + cacheCreation.ephemeral_1h_input_tokens;
 						}
 						// Anthropic reports reasoning tokens as a subset of output tokens.
 						const thinkingTokens = event.usage.output_tokens_details?.thinking_tokens;
 						if (thinkingTokens != null) {
-							output.usage.reasoning = thinkingTokens;
+							output.usage.reasoning = (prior.reasoning ?? 0) + thinkingTokens;
 						}
 					}
 					// Anthropic doesn't provide total_tokens, compute from components
@@ -982,7 +1088,49 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	})();
 
 	return stream;
-};
+}
+
+/**
+ * Pi block for an Anthropic server tool block (`server_tool_use`, `mcp_tool_use`, `*_tool_result`), or undefined for
+ * any other block type. The block is kept as received for replay.
+ */
+function toServerToolContent(raw: JsonObject): ServerToolContent | undefined {
+	const type = typeof raw.type === "string" ? raw.type : "";
+	if (type === "server_tool_use" || type === "mcp_tool_use") {
+		const input = raw.input;
+		return {
+			type: "serverTool",
+			id: typeof raw.id === "string" ? raw.id : "",
+			name: typeof raw.name === "string" ? raw.name : type,
+			phase: "call",
+			...(isJsonObject(input) && Object.keys(input).length > 0 ? { input } : {}),
+			raw: { ...raw },
+		};
+	}
+	if (!type.endsWith("_tool_result")) return undefined;
+	const content = raw.content;
+	const sources = Array.isArray(content)
+		? content.flatMap((item) =>
+				isJsonObject(item) && typeof item.url === "string"
+					? [{ url: item.url, ...(typeof item.title === "string" ? { title: item.title } : {}) }]
+					: [],
+			)
+		: [];
+	const errorCode = isJsonObject(content) && typeof content.error_code === "string" ? content.error_code : undefined;
+	return {
+		type: "serverTool",
+		id: typeof raw.tool_use_id === "string" ? raw.tool_use_id : "",
+		name: type.slice(0, -"_tool_result".length),
+		phase: "result",
+		...(sources.length > 0 ? { sources } : {}),
+		...(errorCode !== undefined ? { errorCode } : {}),
+		raw: { ...raw },
+	};
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /**
  * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
@@ -1335,6 +1483,16 @@ function buildParams(
 		}
 	}
 
+	// Server tools are not function tools: no Claude Code renaming, and a declared function tool of the same name
+	// keeps the hosted one off, since tool names must be unique.
+	if (
+		options?.hostedWebSearch === true &&
+		!getDeclaredTools(context.messages).some((tool) => tool.name === HOSTED_WEB_SEARCH_NAME)
+	) {
+		const hostedTool: BetaToolUnion = { ...ANTHROPIC_WEB_SEARCH_TOOL };
+		params.tools = [...(params.tools ?? []), hostedTool];
+	}
+
 	if (thinkingDisabled) {
 		// No effort is sent, so the model default applies. Anthropic rejects `block_binding`
 		// with disabled thinking.
@@ -1494,59 +1652,11 @@ function convertMessages(
 				});
 			}
 		} else if (msg.role === "assistant") {
-			const blocks: ContentBlockParam[] = [];
-
-			for (const block of msg.content) {
-				if (block.type === "text") {
-					if (block.text.trim().length === 0) continue;
-					blocks.push({
-						type: "text",
-						text: sanitizeSurrogates(block.text),
-					});
-				} else if (block.type === "thinking") {
-					// Redacted thinking: pass the opaque payload back as redacted_thinking
-					if (block.redacted) {
-						blocks.push({
-							type: "redacted_thinking",
-							data: block.thinkingSignature!,
-						});
-						continue;
-					}
-					const thinkingSignature = block.thinkingSignature;
-					const hasThinkingSignature = !!thinkingSignature && thinkingSignature.trim().length > 0;
-					if (block.thinking.trim().length === 0 && !hasThinkingSignature) continue;
-					// If thinking signature is missing/empty (e.g., from aborted stream),
-					// convert to plain text for Anthropic. Some compatible providers emit
-					// and accept empty signatures, so let marked models preserve the block.
-					if (!hasThinkingSignature) {
-						blocks.push(
-							allowEmptySignature
-								? {
-										type: "thinking",
-										thinking: sanitizeSurrogates(block.thinking),
-										signature: "",
-									}
-								: {
-										type: "text",
-										text: sanitizeSurrogates(block.thinking),
-									},
-						);
-					} else {
-						blocks.push({
-							type: "thinking",
-							thinking: sanitizeSurrogates(block.thinking),
-							signature: thinkingSignature,
-						});
-					}
-				} else if (block.type === "toolCall") {
-					blocks.push({
-						type: "tool_use",
-						id: block.id,
-						name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
-						input: block.arguments ?? {},
-					});
-				}
-			}
+			const blocks = convertAssistantContent(
+				i < transformedMessages.length - 1 ? withoutUnansweredServerCalls(msg.content) : msg.content,
+				isOAuthToken,
+				allowEmptySignature,
+			);
 			if (blocks.length === 0) continue;
 			flushPendingSystemMessages();
 			const messageIndex = params.length;
@@ -1592,6 +1702,84 @@ function convertMessages(
 	flushPendingSystemMessages();
 
 	return { messages: params, assistantLevels };
+}
+
+/** Anthropic blocks for assistant content, in order, as a request replays them. */
+function convertAssistantContent(
+	content: AssistantMessage["content"],
+	isOAuthToken: boolean,
+	allowEmptySignature: boolean,
+): ContentBlockParam[] {
+	const blocks: ContentBlockParam[] = [];
+	for (const block of content) {
+		if (block.type === "text") {
+			if (block.text.trim().length === 0) continue;
+			blocks.push({
+				type: "text",
+				text: sanitizeSurrogates(block.text),
+				...(block.citations ? { citations: block.citations as unknown as BetaTextCitationParam[] } : {}),
+			});
+		} else if (block.type === "thinking") {
+			// Redacted thinking: pass the opaque payload back as redacted_thinking
+			if (block.redacted) {
+				blocks.push({
+					type: "redacted_thinking",
+					data: block.thinkingSignature!,
+				});
+				continue;
+			}
+			const thinkingSignature = block.thinkingSignature;
+			const hasThinkingSignature = !!thinkingSignature && thinkingSignature.trim().length > 0;
+			if (block.thinking.trim().length === 0 && !hasThinkingSignature) continue;
+			// If thinking signature is missing/empty (e.g., from aborted stream),
+			// convert to plain text for Anthropic. Some compatible providers emit
+			// and accept empty signatures, so let marked models preserve the block.
+			if (!hasThinkingSignature) {
+				blocks.push(
+					allowEmptySignature
+						? {
+								type: "thinking",
+								thinking: sanitizeSurrogates(block.thinking),
+								signature: "",
+							}
+						: {
+								type: "text",
+								text: sanitizeSurrogates(block.thinking),
+							},
+				);
+			} else {
+				blocks.push({
+					type: "thinking",
+					thinking: sanitizeSurrogates(block.thinking),
+					signature: thinkingSignature,
+				});
+			}
+		} else if (block.type === "toolCall") {
+			blocks.push({
+				type: "tool_use",
+				id: block.id,
+				name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
+				input: block.arguments ?? {},
+			});
+		} else if (block.type === "serverTool") {
+			// Replayed unchanged: encrypted search results, citation indexes and signed thinking depend on it.
+			blocks.push({ ...block.raw } as unknown as ContentBlockParam);
+		}
+	}
+	return blocks;
+}
+
+/**
+ * Drops server tool calls that never got a result from a response without client tool calls. Only a response cut
+ * off by the pause limit ends that way; the API runs an unanswered call only when it is the last message. With a
+ * client tool call in the same response the call is pending on purpose: the API runs it after the tool results.
+ */
+function withoutUnansweredServerCalls(content: AssistantMessage["content"]): AssistantMessage["content"] {
+	if (content.some((block) => block.type === "toolCall")) return content;
+	const answered = new Set(
+		content.flatMap((block) => (block.type === "serverTool" && block.phase === "result" ? [block.id] : [])),
+	);
+	return content.filter((block) => block.type !== "serverTool" || block.phase !== "call" || answered.has(block.id));
 }
 
 function isAnthropicEffort(value: unknown): value is AnthropicEffort {

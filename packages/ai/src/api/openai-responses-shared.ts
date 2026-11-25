@@ -3,6 +3,7 @@ import type {
 	Tool as OpenAITool,
 	ResponseConfigurationUpdateItemParam,
 	ResponseCreateParamsStreaming,
+	ResponseFunctionWebSearch,
 	ResponseInput,
 	ResponseInputContent,
 	ResponseInputImage,
@@ -19,7 +20,9 @@ import type {
 	Api,
 	AssistantMessage,
 	ImageContent,
+	JsonObject,
 	Model,
+	ServerToolContent,
 	StopReason,
 	StreamOptions,
 	SystemMessage,
@@ -359,6 +362,13 @@ export function convertResponsesMessages<TApi extends Api>(
 						id: msgId,
 						phase: parsedSignature?.phase,
 					} satisfies ResponseOutputMessage);
+				} else if (block.type === "serverTool") {
+					// Hosted web search calls replay as the Codex CLI sends them: without the item id, which store:false
+					// responses cannot resolve, and only to the API that produced them.
+					if (isSameProviderAndApi && block.raw.type === "web_search_call") {
+						const { id: _id, ...item } = block.raw;
+						output.push(item as unknown as ResponseInputItem);
+					}
 				} else if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
 					const [callId, itemIdRaw] = toolCall.id.split("|");
@@ -495,6 +505,7 @@ type ToolCallInput =
 	  };
 
 type ResponsesOutputSlot =
+	| { type: "serverTool"; block: ServerToolContent; contentIndex: number }
 	| { type: "thinking"; block: ThinkingContent; contentIndex: number }
 	| { type: "text"; block: TextContent; contentIndex: number }
 	| { type: "toolCall"; block: ToolCall; contentIndex: number; input: ToolCallInput };
@@ -545,6 +556,18 @@ export async function processResponsesStream<TApi extends Api>(
 			} satisfies ResponsesOutputSlot;
 			outputSlots.set(outputIndex, slot);
 			stream.push({ type: "thinking_start", contentIndex: slot.contentIndex, partial: output });
+			return slot;
+		}
+		if (item.type === "web_search_call") {
+			const block = webSearchCallContent(item);
+			output.content.push(block);
+			const slot = {
+				type: "serverTool",
+				block,
+				contentIndex: output.content.length - 1,
+			} satisfies ResponsesOutputSlot;
+			outputSlots.set(outputIndex, slot);
+			stream.push({ type: "servertool_start", contentIndex: slot.contentIndex, partial: output });
 			return slot;
 		}
 		if (item.type === "message") {
@@ -749,7 +772,16 @@ export async function processResponsesStream<TApi extends Api>(
 			applyMessagePhaseStopReason(item);
 			const slot = getOrCreateSlot(event.output_index, item);
 
-			if (item.type === "reasoning" && slot?.type === "thinking") {
+			if (item.type === "web_search_call" && slot?.type === "serverTool") {
+				Object.assign(slot.block, webSearchCallContent(item));
+				stream.push({
+					type: "servertool_end",
+					contentIndex: slot.contentIndex,
+					serverTool: slot.block,
+					partial: output,
+				});
+				outputSlots.delete(event.output_index);
+			} else if (item.type === "reasoning" && slot?.type === "thinking") {
 				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
 				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
 				slot.block.thinking = summaryText || contentText || slot.block.thinking;
@@ -831,6 +863,35 @@ export async function processResponsesStream<TApi extends Api>(
 			);
 		}
 	}
+}
+
+/** Pi block for a hosted web search call; the query, page or pattern shows as its input. */
+function webSearchCallContent(item: ResponseFunctionWebSearch): ServerToolContent {
+	const action = item.action as ResponseFunctionWebSearch["action"] | undefined;
+	let input: JsonObject | undefined;
+	let sources: ServerToolContent["sources"];
+	if (action?.type === "search") {
+		const query = action.query ?? action.queries?.[0];
+		input = {
+			...(query !== undefined ? { query } : {}),
+			...(action.queries && action.queries.length > 1 ? { queries: action.queries } : {}),
+		};
+		sources = action.sources?.map((source) => ({ url: source.url }));
+	} else if (action?.type === "open_page") {
+		input = action.url ? { url: action.url } : {};
+	} else if (action?.type === "find_in_page") {
+		input = { pattern: action.pattern, ...(action.url ? { url: action.url } : {}) };
+	}
+	return {
+		type: "serverTool",
+		id: item.id,
+		name: "web_search",
+		phase: "call",
+		...(input && Object.keys(input).length > 0 ? { input } : {}),
+		...(sources && sources.length > 0 ? { sources } : {}),
+		...(item.status === "failed" ? { errorCode: "failed" } : {}),
+		raw: item as unknown as JsonObject,
+	};
 }
 
 type CustomInput = Extract<ToolCallInput, { kind: "custom" }>;

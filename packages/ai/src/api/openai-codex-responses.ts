@@ -40,6 +40,7 @@ import {
 } from "../utils/transcript.ts";
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
+import { OPENAI_WEB_SEARCH_TOOL, streamWithHostedWebSearch } from "./hosted-web-search.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
 	convertResponsesMessages,
@@ -244,7 +245,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 	model: Model<"openai-codex-responses">,
 	context: TranscriptContext,
 	options?: OpenAICodexResponsesOptions,
-): AssistantMessageEventStream => {
+): AssistantMessageEventStream =>
+	streamWithHostedWebSearch(model, options, (resolved) => streamOnce(model, context, resolved));
+
+function streamOnce(
+	model: Model<"openai-codex-responses">,
+	context: TranscriptContext,
+	options?: OpenAICodexResponsesOptions,
+): AssistantMessageEventStream {
 	const stream = new AssistantMessageEventStream();
 	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
@@ -519,7 +527,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 	})();
 
 	return stream;
-};
+}
 
 export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (
 	model: Model<"openai-codex-responses">,
@@ -613,6 +621,9 @@ function buildRequestBody(
 			supportsStrictMode,
 			supportsOpenAIGrammarTools,
 		});
+	}
+	if (options?.hostedWebSearch === true) {
+		body.tools = [...(body.tools ?? []), { ...OPENAI_WEB_SEARCH_TOOL }];
 	}
 
 	if (options?.reasoningEffort !== undefined) {

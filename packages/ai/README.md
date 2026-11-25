@@ -748,8 +748,12 @@ All streaming events emitted during assistant message generation:
 | `toolcall_start` | Tool call begins | `contentIndex`: Position in content array |
 | `toolcall_delta` | Tool arguments streaming | `delta`: JSON chunk, `partial.content[contentIndex].arguments`: Partial parsed args |
 | `toolcall_end` | Tool call complete | `toolCall`: Complete, but not schema-validated, tool call with `id`, `name`, `arguments` |
+| `servertool_start` | A provider-run tool block (hosted web search) was added | `contentIndex`: Position in content array |
+| `servertool_end` | The provider-run tool block is complete | `serverTool`: `name`, `phase` ("call" or "result"), `input` (e.g. `{ query }`), `sources`, `errorCode`, `raw` |
 | `done` | Stream complete | `reason`: Stop reason ("stop", "length", "toolUse"), `message`: Final assistant message |
 | `error` | Error occurred | `reason`: Error type ("error" or "aborted"), `error`: AssistantMessage with partial content |
+
+Hosted web search (`hostedWebSearch: true` or `PI_HOSTED_WEB_SEARCH=1`, on first-party Anthropic, OpenAI Responses and OpenAI Codex) adds `serverTool` content blocks. They keep the provider's block in `raw` and are replayed unchanged to the same provider and API, which keeps encrypted results, citations (`TextContent.citations`) and signed thinking valid; other providers never receive them. The provider's tool runs no pi tool, so `stopReason` is unaffected. An Anthropic `pause_turn` is continued inside the same response.
 
 Streaming events for different content blocks are not guaranteed to be contiguous. Providers may emit deltas for text, thinking, and tool calls in the same upstream chunk, and pi may surface corresponding events interleaved, for example `text_start`, `text_delta`, `toolcall_start`, `text_delta`, `toolcall_delta`. Consumers must use `contentIndex` to associate each delta/end event with its block and must not assume that a block's `*_start`/`*_delta`/`*_end` sequence is uninterrupted by events for other blocks.
 
@@ -1777,7 +1781,7 @@ That explicit override bundles the AWS SDK. Without it, Bedrock's opaque runtime
 
 ### Provider-Scoped Environment Overrides
 
-Pass `env` in stream options to scope provider configuration to a request. Values in `env` are used before process environment variables for provider auth and configuration such as Cloudflare account IDs, Azure OpenAI settings, Vertex project/location, Bedrock settings, `PI_CACHE_RETENTION`, and `HTTP_PROXY`/`HTTPS_PROXY`.
+Pass `env` in stream options to scope provider configuration to a request. Values in `env` are used before process environment variables for provider auth and configuration such as Cloudflare account IDs, Azure OpenAI settings, Vertex project/location, Bedrock settings, `PI_CACHE_RETENTION`, `PI_HOSTED_WEB_SEARCH`, and `HTTP_PROXY`/`HTTPS_PROXY`.
 
 ```typescript
 const models = builtinModels();
