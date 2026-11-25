@@ -29,7 +29,7 @@
 import { join, resolve } from "node:path";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { getAgentDir } from "../../config.ts";
+import { getMcpDir } from "../../config.ts";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -367,7 +367,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		};
 
 		const getServerLog = (runtime: typeof McpRuntime): McpServerLog => {
-			serverLog ??= new runtime.McpServerLog(options.logPath ?? join(getAgentDir(), "mcp.log"));
+			serverLog ??= new runtime.McpServerLog(options.logPath ?? join(getMcpDir(), "mcp.log"));
 			return serverLog;
 		};
 
@@ -802,7 +802,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					label: server.entry.name,
 					description: `${describeState(server)} · ${exposureOf(server.entry)} · ${server.entry.override ? "global, project override" : (server.entry.scope ?? server.entry.source)}`,
 				})),
-			empty: `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .pi/mcp.json.`,
+			empty: `No MCP servers configured. Add them to ${resolve(getMcpDir(), "mcp.json")} or .pi/mcp.json.`,
 			confirmLabel: "manage",
 			cancelLabel: "close",
 		});
@@ -1016,7 +1016,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 
 		const formatStatus = (): string => {
 			if (servers.length === 0 && configErrors.length === 0 && overridden.length === 0) {
-				return `No MCP servers configured. Add them to ${resolve(getAgentDir(), "mcp.json")} or .pi/mcp.json.`;
+				return `No MCP servers configured. Add them to ${resolve(getMcpDir(), "mcp.json")} or .pi/mcp.json.`;
 			}
 			const lines = servers.map((server) => {
 				const { name } = server.entry;
@@ -1341,7 +1341,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 }
 
 function defaultLoadConfig(ctx: ExtensionContext): LoadedMcpConfig {
-	return loadMcpConfig({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+	return loadMcpConfig({ agentDir: getMcpDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 }
 
 export default createMcpExtension();

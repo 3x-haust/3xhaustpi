@@ -602,6 +602,9 @@ export const VERSION: string = pkg.version || "0.0.0";
 // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`;
+// e.g., PI_MCP_DIR: where the global mcp.json, mcp-auth.json and mcp.log live (default: the agent dir).
+// A client that keeps several sets of MCP servers (one per workspace) points each session at its own.
+export const ENV_MCP_DIR = `${APP_NAME.toUpperCase()}_MCP_DIR`;
 
 export function expandTildePath(path: string): string {
 	return normalizePath(path);
@@ -618,6 +621,12 @@ export function getShareViewerUrl(gistId: string): string {
 // =============================================================================
 // User Config Paths (~/.pi/agent/*)
 // =============================================================================
+
+/** Where the global MCP config, OAuth credentials and log live: ${ENV_MCP_DIR}, else the agent dir. */
+export function getMcpDir(): string {
+	const envDir = process.env[ENV_MCP_DIR];
+	return envDir ? expandTildePath(envDir) : getAgentDir();
+}
 
 /** Get the agent config directory (e.g., ~/.pi/agent/) */
 export function getAgentDir(): string {

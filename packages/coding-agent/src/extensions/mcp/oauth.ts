@@ -32,7 +32,7 @@ import {
 	stepUpScope,
 } from "@earendil-works/pi-mcp/oauth";
 import lockfile from "proper-lockfile";
-import { APP_NAME, getAgentDir } from "../../config.ts";
+import { APP_NAME, getMcpDir } from "../../config.ts";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "../../core/auth-storage.ts";
 import { isClientMetadataDocumentCallback, mcpNamespace } from "../../core/mcp-servers.ts";
 
@@ -144,8 +144,8 @@ export class McpOAuthCredentialStore {
 	private readonly lockDir: string | undefined;
 
 	constructor(backend?: AuthStorageBackend, lockDir?: string) {
-		this.backend = backend ?? new FileAuthStorageBackend(join(getAgentDir(), "mcp-auth.json"));
-		this.lockDir = backend ? lockDir : getAgentDir();
+		this.backend = backend ?? new FileAuthStorageBackend(join(getMcpDir(), "mcp-auth.json"));
+		this.lockDir = backend ? lockDir : getMcpDir();
 	}
 
 	forServer(name: string, serverUrl: string): McpOAuthServerStore {
